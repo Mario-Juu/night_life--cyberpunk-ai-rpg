@@ -1,0 +1,178 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { GmEnvelope, InterpretResponse, NarrateResponse, PhoneResponse } from '@shared/types/gm';
+import type { LlmRunMeta } from '@shared/types/turn';
+import { buildCharacter, STAT_PRESETS } from '@shared/rules/creation';
+
+vi.mock('../services/audio', () => ({ sound: new Proxy({}, { get: () => () => undefined }) }));
+
+const calls: string[] = [];
+const narrateInputs: unknown[] = [];
+let interpretReply: InterpretResponse | null = null;
+const interpretQueue: InterpretResponse[] = [];
+const feedbacks: Array<string | undefined> = [];
+let narrateReply: NarrateResponse | null = null;
+let hold: (() => void) | null = null;
+
+const meta = (purpose: LlmRunMeta['purpose']): LlmRunMeta => ({
+  requestId: `req_${calls.length}`, sessionId: 's', turnId: 't', purpose, provider: 'fake', model: 'fake', promptVersion: 'test',
+  latencyMs: 1, attempts: [], toolsCalled: [], retrievedMemories: [], errors: [], degraded: false, createdAt: new Date().toISOString(),
+});
+const env = <T,>(payload: T, purpose: LlmRunMeta['purpose']): GmEnvelope<T> => ({ payload, meta: meta(purpose) });
+const narration = (over: Partial<NarrateResponse> = {}): NarrateResponse => ({ narration: 'Narração.', dialogues: [], toolCalls: [], discoveries: [], suggestedActions: ['a'], enemyActions: [], ...over });
+
+vi.mock('../services/api', () => ({
+  fetchStatus: async () => ({ status: 'ok', hasKey: true, defaultMode: 'flash', promptVersion: 'test' }),
+  api: {
+    interpret: vi.fn(async (_ctx: unknown, _text: string, _model: unknown, feedback?: string) => {
+      calls.push('interpret');
+      feedbacks.push(feedback);
+      if (hold) await new Promise<void>(r => (hold = r));
+      return env(interpretQueue.shift() ?? interpretReply!, 'interpret');
+    }),
+    narrate: vi.fn(async (_ctx, input) => {
+      calls.push(`narrate:${input.kind}`);
+      narrateInputs.push(input);
+      return env(narrateReply ?? narration(), input.kind === 'prologue' ? 'prologue' : 'narrate');
+    }),
+    phone: vi.fn(async () => {
+      calls.push('phone');
+      const reply: PhoneResponse = { replyText: 'Fechado.', suggestedReplies: [], toolCalls: [{ tool: 'modify_relationship', args: { npcId: 'npc_rafa', trust: 3 } }] };
+      return env(reply, 'phone');
+    }),
+    summarize: vi.fn(async () => env({ summary: 'resumo' }, 'summarize')),
+  },
+}));
+
+const { startCampaign, sendAction, rollPending, sendPhoneMessage, regenerateNarration } = await import('./turnController');
+const { useGameStore } = await import('./gameStore');
+const { getRepository, setRepository, createMemoryRepository } = await import('../services/repository');
+
+const character = () =>
+  buildCharacter({
+    name: 'Ren', handle: 'Sparks', age: 22, role: 'solo', occupation: 'x', district: 'WATSON',
+    familyTie: '', debtReason: '', personalAnchor: '', appearance: '',
+    stats: { ...STAT_PRESETS[0].stats }, starterWeaponId: 'pistol',
+  });
+
+beforeEach(() => {
+  calls.length = 0;
+  narrateInputs.length = 0;
+  interpretReply = null;
+  interpretQueue.length = 0;
+  feedbacks.length = 0;
+  narrateReply = null;
+  hold = null;
+  setRepository(createMemoryRepository());
+});
+
+describe('pipeline do turno', () => {
+  it('intérprete → motor → rolagem com seed → narrador → turno registrado', async () => {
+    await startCampaign(character());
+    expect(useGameStore.getState().game?.turn).toBe(1);
+
+    interpretReply = { intent: { type: 'social', summary: 'convencer o segurança', confidence: 0.9 }, framing: 'Ele cruza os braços.', toolCalls: [{ tool: 'persuade', args: { dv: 13, reason: 'Lábia no segurança' } }] };
+    await sendAction('Tento convencer o segurança');
+    let game = useGameStore.getState().game!;
+    expect(game.turn).toBe(2);
+    expect(game.pendingRoll).toMatchObject({ skillId: 'persuasion', dv: 13, origin: 'gm' });
+    expect(useGameStore.getState().activeTurn?.phase).toBe('awaiting_roll');
+    expect(calls).toEqual(['narrate:prologue', 'interpret']);
+
+    narrateReply = narration({ narration: 'Ele cede.', toolCalls: [{ tool: 'modify_heat', args: { delta: 1 } }] });
+    // Enquanto o narrador trabalha, os painéis mostram o estado de antes do dado.
+    const { useUiStore } = await import('./uiStore');
+    const concealedDuringNarration: boolean[] = [];
+    const unsub = useUiStore.subscribe(s => concealedDuringNarration.push(s.concealedGame !== null));
+    const outcome = await rollPending(0);
+    unsub();
+    expect(concealedDuringNarration).toContain(true);
+    expect(useUiStore.getState().concealedGame).toBeNull();
+    game = useGameStore.getState().game!;
+    expect(outcome?.check.dv).toBe(13);
+    expect(game.pendingRoll).toBeNull();
+    expect(game.world.heat).toBe(1);
+    expect(calls).toEqual(['narrate:prologue', 'interpret', 'narrate:action']);
+    expect((narrateInputs[1] as { engineResult: { roll: unknown } }).engineResult.roll).toBeTruthy();
+
+    const turns = await getRepository().listTurns(game.id);
+    const t2 = turns.find(t => t.turn === 2)!;
+    expect(t2).toMatchObject({ phase: 'complete', playerInput: 'Tento convencer o segurança', parsedIntent: { type: 'social' } });
+    expect(t2.toolCalls.map(t => `${t.origin}:${t.tool}:${t.ok}`)).toEqual(['interpreter:persuade:true', 'narrator:modify_heat:true']);
+    expect(t2.diceRolls[0]).toMatchObject({ dice: expect.stringMatching(/^[12]d10$/), seed: expect.any(String) });
+    expect(t2.checks[0]).toMatchObject({ check: 'PERSUASION', difficulty: 13 });
+    expect(t2.llmRuns.map(r => r.purpose)).toEqual(['interpret', 'narrate']);
+    expect(t2.events.some(e => e.type === 'HEAT_CHANGED')).toBe(true);
+    expect(t2.stateVersionAfter).toBeGreaterThan(t2.stateVersionBefore);
+  });
+
+  it('ação sem risco vai direto ao narrador; pedido ambíguo só pergunta', async () => {
+    await startCampaign(character());
+    interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [] };
+    await sendAction('Olho pela janela');
+    expect(calls).toEqual(['narrate:prologue', 'interpret', 'narrate:action']);
+
+    interpretReply = { intent: { type: 'other', summary: '?', confidence: 0.2 }, clarification: 'Atirar em quem, choom?', toolCalls: [] };
+    await sendAction('Atiro');
+    expect(calls.at(-1)).toBe('interpret');
+    expect(useGameStore.getState().game!.chat.at(-1)?.text).toBe('Atirar em quem, choom?');
+  });
+
+  it('arma sem munição: nenhum disparo, munição continua 0 e o narrador recebe a recusa', async () => {
+    await startCampaign(character());
+    const g = useGameStore.getState().game!;
+    useGameStore.getState().setGame({ ...g, character: { ...g.character, inventory: g.character.inventory.map(i => (i.weapon ? { ...i, weapon: { ...i.weapon, loaded: 0 } } : i)) } });
+    interpretReply = { intent: { type: 'attack', summary: 'atirar', confidence: 1 }, toolCalls: [{ tool: 'attack', args: { targetName: 'Segurança' } }] };
+    await sendAction('Atiro no segurança');
+    const game = useGameStore.getState().game!;
+    expect(game.pendingRoll).toBeNull();
+    expect(game.character.inventory.find(i => i.weapon)?.weapon?.loaded).toBe(0);
+    const input = narrateInputs.at(-1) as { engineResult: { tools: Array<{ ok: boolean; summary: string }> } };
+    expect(input.engineResult.tools[0]).toMatchObject({ ok: false, summary: expect.stringMatching(/descarregada/) });
+  });
+
+  it('telefone e narrativa são serializados; relação via ferramenta persiste', async () => {
+    await startCampaign(character());
+    interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [] };
+    hold = () => undefined;
+    const action = sendAction('Olho em volta');
+    const phone = sendPhoneMessage('npc_rafa', 'Topo o corre');
+    await new Promise(r => setTimeout(r, 0));
+    expect(calls).toEqual(['narrate:prologue', 'interpret']);
+    hold!();
+    await Promise.all([action, phone]);
+    expect(calls).toEqual(['narrate:prologue', 'interpret', 'narrate:action', 'phone']);
+    const game = useGameStore.getState().game!;
+    expect(game.npcs.find(n => n.id === 'npc_rafa')?.trust).toBe(13);
+  });
+
+  it('chamada mal formada volta ao intérprete com o erro e o pagamento acontece', async () => {
+    await startCampaign(character());
+    const money = useGameStore.getState().game!.character.money;
+    interpretQueue.push(
+      { intent: { type: 'trade', summary: 'pagar', confidence: 1 }, toolCalls: [{ tool: 'pay_money', args: { recipient: 'Síndico', combatantId: 'm_rent' } }] },
+      { intent: { type: 'trade', summary: 'pagar', confidence: 1 }, toolCalls: [{ tool: 'pay_money', args: { amount: 300, recipient: 'Síndico', questId: 'm_rent' } }] },
+    );
+    await sendAction('Transfiro €$300 para o síndico');
+    expect(calls).toEqual(['narrate:prologue', 'interpret', 'interpret', 'narrate:action']);
+    expect(feedbacks[1]).toMatch(/pay_money: argumento "amount"/);
+    expect(useGameStore.getState().game!.character.money).toBe(money - 300);
+    const input = narrateInputs.at(-1) as { engineResult: { tools: Array<{ tool: string; ok: boolean }> } };
+    expect(input.engineResult.tools).toEqual([expect.objectContaining({ tool: 'pay_money', ok: true })]);
+  });
+
+  it('regenerar narração mantém a mesma mecânica', async () => {
+    await startCampaign(character());
+    interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [{ tool: 'move_location', args: { spot: 'Telhado', minutes: 10 } }] };
+    narrateReply = narration({ narration: 'Primeira versão.' });
+    await sendAction('Subo ao telhado');
+    const before = useGameStore.getState().game!;
+    narrateReply = narration({ narration: 'Segunda versão.' });
+    await regenerateNarration();
+    const after = useGameStore.getState().game!;
+    expect(after.chat.filter(e => e.kind === 'narration').map(e => e.text)).toEqual(['Narração.', 'Segunda versão.']);
+    expect(after.world.location.spot).toBe('Telhado');
+    expect(after.world.time).toBe(before.world.time);
+    expect(after.turn).toBe(before.turn);
+  });
+});

@@ -1,0 +1,6 @@
+{
+  "name": "NIGHT//LIFE - Cyberpunk AI RPG",
+  "description": "Mesa virtual de RPG narrativo ambientado em Night City com Mestre de IA, sistema Cyberpunk RED, dados RNG reais e gerenciamento de campanha persistente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

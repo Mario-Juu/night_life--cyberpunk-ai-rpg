@@ -1,0 +1,229 @@
+@import "tailwindcss";
+/* Dentro de layer(components) para que utilitários Tailwind possam ajustar as classes cp-* */
+@import "@rintran720/cyberpunk-ui" layer(components);
+
+:root {
+  --cp-font-body: "Chakra Petch", "Rajdhani", system-ui, sans-serif;
+}
+
+/*
+ * Design system NIGHT//LIFE
+ * - Paleta e superfícies derivam dos tokens da cyberpunk-ui (--cp-*), para UM visual coeso.
+ * - Escala de z-index única: base 0 · sticky 10 · drawer 40 · modal 50 · dados 55 · toast 60.
+ */
+@theme {
+  --font-sans: "Chakra Petch", "Rajdhani", system-ui, sans-serif;
+  --font-display: "Orbitron", "Rajdhani", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-surface-0: #05010a;
+  --color-surface-1: #0a0418;
+  --color-surface-2: #120825;
+  --color-surface-3: #1b0f36;
+  --color-line: #2a2050;
+  --color-line-soft: #1a1438;
+  --color-fg: #e9eaff;
+  --color-muted: #9192c0;
+  --color-dim: #5b5d8a;
+
+  --color-neon-cyan: #00f0ff;
+  --color-neon-magenta: #ff00ea;
+  --color-neon-yellow: #fcee0a;
+  --color-neon-green: #39ff14;
+  --color-neon-purple: #bd00ff;
+  --color-danger: #ff003c;
+
+  --animate-fade-in: fade-in 180ms ease-out both;
+  --animate-slide-up: slide-up 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-in-right: slide-in-right 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-dice: dice-shake 450ms ease-in-out both;
+  --animate-dice-tumble: dice-tumble 360ms linear infinite;
+  --animate-dice-land: dice-land 450ms cubic-bezier(0.2, 1.6, 0.4, 1) both;
+  --animate-pulse-soft: pulse-soft 1.6s ease-in-out infinite;
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes slide-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(100%); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes dice-shake {
+    0%, 100% { transform: rotate(0) scale(1); }
+    25% { transform: rotate(-12deg) scale(1.1); }
+    50% { transform: rotate(10deg) scale(0.95); }
+    75% { transform: rotate(-6deg) scale(1.05); }
+  }
+  @keyframes dice-tumble {
+    0% { transform: rotate(0deg) translateY(0) scale(1); }
+    25% { transform: rotate(90deg) translateY(-10px) scale(0.92); }
+    50% { transform: rotate(180deg) translateY(0) scale(1.04); }
+    75% { transform: rotate(270deg) translateY(-7px) scale(0.95); }
+    100% { transform: rotate(360deg) translateY(0) scale(1); }
+  }
+  @keyframes dice-land {
+    0% { transform: scale(1.4) rotate(-14deg); }
+    60% { transform: scale(0.9) rotate(5deg); }
+    100% { transform: scale(1) rotate(0deg); }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-surface-0);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  /* Ruído de scanlines sutil sobre superfícies de destaque */
+  .scanlines {
+    background-image: linear-gradient(rgba(255, 255, 255, 0.025) 50%, transparent 50%);
+    background-size: 100% 4px;
+  }
+
+  /* Rótulo pequeno em caixa-alta usado em painéis */
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+  }
+
+  .tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Barra de rolagem fina e discreta para faixas horizontais (sugestões). */
+@utility suggestion-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* ---------------------------------------------------------------- VFX */
+@layer components {
+  .vfx-scanlines {
+    background-image: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
+  }
+  .vfx-flash { animation: vfx-flash 650ms ease-out both; }
+  .vfx-flash-slow { animation: vfx-flash 1100ms ease-out both; }
+  .vfx-pulse { animation: vfx-pulse 2.4s ease-in-out infinite; }
+  .vfx-pulse-fast { animation: vfx-pulse 0.9s ease-in-out infinite; }
+  .vfx-siren { animation: vfx-siren 1.4s ease-in-out both; }
+  .vfx-glitch { animation: vfx-glitch 450ms steps(2) both; }
+  .vfx-shake { animation: vfx-shake 420ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+  .vfx-shake-hard { animation: vfx-shake-hard 520ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both; }
+  .animate-reveal { animation: reveal 520ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+  .vfx-logo {
+    text-shadow: 0 0 18px rgba(0, 240, 255, 0.6);
+    animation: logo-glitch 3.2s steps(1) infinite;
+  }
+  .caret-blink::after {
+    content: '▌';
+    margin-left: 2px;
+    animation: pulse-soft 0.9s steps(2) infinite;
+  }
+}
+
+@keyframes vfx-flash {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes vfx-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@keyframes vfx-siren {
+  0%, 100% { opacity: 0; }
+  20%, 60% { opacity: 1; }
+  40%, 80% { opacity: 0.2; }
+}
+@keyframes vfx-glitch {
+  0% { opacity: 1; transform: translateX(0); }
+  50% { opacity: 1; transform: translateX(-6px); filter: hue-rotate(90deg); }
+  100% { opacity: 0; transform: translateX(4px); }
+}
+@keyframes vfx-shake {
+  10%, 90% { transform: translate3d(-1px, 0, 0); }
+  20%, 80% { transform: translate3d(2px, 1px, 0); }
+  30%, 50%, 70% { transform: translate3d(-3px, -1px, 0); }
+  40%, 60% { transform: translate3d(3px, 1px, 0); }
+}
+@keyframes vfx-shake-hard {
+  10%, 90% { transform: translate3d(-2px, 1px, 0) skewX(-1deg); }
+  20%, 80% { transform: translate3d(4px, -1px, 0); }
+  30%, 50%, 70% { transform: translate3d(-6px, 2px, 0) skewX(2deg); filter: hue-rotate(40deg); }
+  40%, 60% { transform: translate3d(6px, -2px, 0); }
+}
+@keyframes logo-glitch {
+  0%, 92%, 100% { text-shadow: 0 0 18px rgba(0, 240, 255, 0.6); transform: none; }
+  93% { text-shadow: -3px 0 #ff00ea, 3px 0 #00f0ff; transform: translateX(2px) skewX(-6deg); }
+  95% { text-shadow: 3px 0 #ff00ea, -3px 0 #00f0ff; transform: translateX(-2px); }
+  97% { text-shadow: 0 0 18px rgba(0, 240, 255, 0.6); transform: none; }
+}
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+@utility safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
