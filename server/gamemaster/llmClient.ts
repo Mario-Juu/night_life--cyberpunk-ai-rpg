@@ -94,7 +94,12 @@ export const geminiProvider: LlmProvider = {
     } catch (err) {
       throw new LlmError((err as Error).message, [{ model: '-', ok: false, latencyMs: 0, error: (err as Error).message }]);
     }
-    for (const model of modelChain(req.mode)) {
+    // GM_RETRIES: novas tentativas no MESMO modelo em 429/503 (útil em chaves gratuitas).
+    const retries = Math.max(0, Number(process.env.GM_RETRIES) || 0);
+    const tries = modelChain(req.mode).flatMap(model => Array.from({ length: retries + 1 }, (_, i) => ({ model, i })));
+    let skip: string | null = null;
+    for (const { model, i } of tries) {
+      if (model === skip) continue;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
       const started = Date.now();
@@ -124,7 +129,9 @@ export const geminiProvider: LlmProvider = {
         const status = statusOf(err);
         attempts.push({ model, ok: false, latencyMs: Date.now() - started, error: `${status ?? ''} ${(err as Error)?.message ?? err}`.trim().slice(0, 300) });
         if (!isRetryable(err)) break;
-        await new Promise(r => setTimeout(r, status === 429 ? 1000 : 300));
+        const busy = status === 429 || status === 503;
+        if (!busy) skip = model;
+        await new Promise(r => setTimeout(r, busy && i < retries ? 2000 * 2 ** i : status === 429 ? 1000 : 300));
       } finally {
         clearTimeout(timer);
       }
