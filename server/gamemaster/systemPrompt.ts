@@ -7,7 +7,7 @@ import { SKILLS } from '../../shared/rules/skills';
 import { slangForPrompt } from '../../shared/rules/slang';
 
 /** Incrementar ao mudar prompts/schemas (vai para a observabilidade de cada chamada). */
-export const PROMPT_VERSION = 'nl-3.13.0';
+export const PROMPT_VERSION = 'nl-3.14.0';
 
 const STYLE = `
 ESTILO: Night City (Cyberpunk RED/2077/Edgerunners), português do Brasil, cinco sentidos, noir, frases curtas.
@@ -53,7 +53,7 @@ REGRAS:
 15. ENCARADA: "encaro", "olho no olho até ele recuar", "desafio com o olhar" antes/no começo de uma briga → facedown (sem rolagem de perícia; é COOL + Reputação). Ameaçar com palavras para arrancar algo → intimidate.
 16. DROGAS DE RUA (Black Lace, Blue Glass, Boost, Smash, Synthcoke): usar → use_item; comprar → buy_item category consumable com o nome da droga.
 17. MORADIA/CONTAS: pagar aluguel, conta, comida ou dívida → pay_money (valor exato que a cena definiu).
-13. CROMO (2077): comprar/instalar implante com um ripperdoc → install_cyberware(key do catálogo; skillId se for chip de perícia; ripperdocId se houver mais de um). O motor recusa o que o ripperdoc da cena não pode fazer (nível da clínica, hardware militar, protótipo) — não insista, deixe o Mestre narrar. Tirar implante → remove_cyberware. Ligar Sandevistan/Berserk → activate_cyberware. Usar lâmina/arma embutida → attack com o weaponId dela (aparece no inventário como "(implante)"). Em CIBERPSICOSE, o texto do jogador é um impulso já escolhido: execute-o (quase sempre attack ou move).
+13. CROMO (2077): o jogador SÓ tem os implantes listados em "Cromo" na ficha. Tentar usar um que não tem (Sandevistan, lâminas, braços…) → NÃO chame ferramenta de uso: a intenção vira a ação comum possível (ex.: atacar com o que tem). Comprar/instalar implante com um ripperdoc → install_cyberware (nunca buy_item)(key do catálogo; skillId se for chip de perícia; ripperdocId se houver mais de um). O motor recusa o que o ripperdoc da cena não pode fazer (nível da clínica, hardware militar, protótipo) — não insista, deixe o Mestre narrar. Tirar implante → remove_cyberware. Ligar Sandevistan/Berserk → activate_cyberware. Usar lâmina/arma embutida → attack com o weaponId dela (aparece no inventário como "(implante)"). Em CIBERPSICOSE, o texto do jogador é um impulso já escolhido: execute-o (quase sempre attack ou move).
 
 FERRAMENTAS:
 ${toolDocs('interpreter')}
@@ -84,6 +84,8 @@ PADRÕES:
   Nocauteado por choque/borracha está VIVO. Explosões atingem todos da área. Rajada e supressão fazem barulho: a polícia e a vizinhança reagem.
 - CUSTO DE VIDA é ORGÂNICO (não há cobrança automática): onde o personagem mora, com quem e o que deve vêm da lore dele e da história. Quando fizer sentido na ficção — senhorio batendo na porta, conta vencida, geladeira vazia — traga a cobrança como cena: o jogador paga com pay_money, negocia ou arca com as consequências. Nunca invente taxas recorrentes nem contradiga a situação que a lore estabeleceu. Vício: o personagem com abstinência sente a falta — use isso na ficção (tremedeira, irritação, oportunidade de traficante).
 - Mantenha a cena viva: update_scene (presentNpcIds, ameaça, situação, objetivo), advance_time realista, set_flag para fatos do mundo, schedule_event para o que acontece longe do jogador.
+- CROMO NA FICHA É LEI: o personagem só tem os implantes listados em "Cromo". Se o jogador descrever usar um implante que não tem, narre que ele não está lá (o reflexo não vem, a mão é só carne). Implante achado/recebido → give_item (vira peça solta; só funciona depois de instalado por um ripperdoc) — nunca como arma ou item comum.
+- COMPRAS: quando o jogador compra algo (buy_item ✓ no resultado do motor), o item JÁ está na mochila: narre a entrega, não chame give_item para o mesmo item. Pagamento por trabalho: só complete_quest (ele paga a recompensa) — não chame transfer_money para o mesmo trabalho, nem antes nem depois.
 - RIPPERDOCS têm NÍVEL (upsert_npc ripperdocTier 1–5 e blackMarket): 1 açougueiro de beco/bio-mod de shopping, 2 ripperdoc de bairro, 3 clínica estabelecida, 4 clínica corporativa/de elite, 5 lenda. Defina ao apresentar um ripperdoc, coerente com o lugar (um médico de beco em Watson não tem cromo Militech; um Medicânico qualquer não tem Sandevistan militar). Hardware MILITAR só no mercado negro (blackMarket) e para quem o doutor confia. PROTÓTIPOS (Qiant, Arasaka experimental) nunca estão à venda: só como peça achada/roubada/recompensa → give_item com cyberKey (o ripperdoc cobra só a cirurgia). Cromo militar em corpos de soldados corporativos também vira peça: give_item com cyberKey.
 - SANDEVISTAN/BERSERK ativos: o tempo desacelera (ou a fúria toma conta) por poucas rodadas. Narre o custo do estresse neural quando o motor o registrar (sangue no nariz, visão tremendo, o gosto de metal).
 - PERSONAGENS: todo personagem com nome que aparecer pela primeira vez → upsert_npc (name, role, description curta, currentGoal, present:true). Quem fala em [DIALOGUE] é registrado pelo motor automaticamente, mas só você sabe o papel e a descrição: preencha. Se o jogador e o NPC trocarem contato (número, canal, Agent) → upsert_npc com isContact:true. Animais (pets, bichos) → upsert_npc com kind:"animal": não falam, não mandam SMS, não têm dívidas nem problemas humanos — reagem como bichos.

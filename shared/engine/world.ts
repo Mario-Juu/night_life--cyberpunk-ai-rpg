@@ -44,12 +44,28 @@ export function evaluateQuestFlags(state: GameState): GameState {
 }
 
 /** Conclui/falha uma missão. Conclusão paga rewardEddies uma única vez. */
-/** Entradas de dinheiro deste turno, por origem (recompensa de missão × transferência do narrador). */
-export function sameTurnPayments(state: GameState, kind: 'quest_reward' | 'transfer'): Array<{ value: number; source?: string; questId?: string; reward?: number }> {
-  const turnId = turnIdOf(state);
+/** Janela (em turnos) em que um pagamento do contratante depois da missão concluída conta como o MESMO. */
+export const PAYMENT_WINDOW_TURNS = 3;
+
+export interface Payment {
+  id: string;
+  turn: number;
+  value: number;
+  source?: string;
+  questId?: string;
+  reward?: number;
+  offsetIds?: string[];
+}
+
+/**
+ * Entradas de dinheiro desta linha do tempo a partir de um turno, por origem (recompensa de
+ * missão × transferência do narrador).
+ */
+export function recentPayments(state: GameState, kind: 'quest_reward' | 'transfer', sinceTurn: number): Payment[] {
+  const branch = `${state.id}:${state.session.branchId}:`;
   return state.events
-    .filter(e => e.turnId === turnId && e.type === 'MONEY_CHANGED' && (e.data as { kind?: string } | undefined)?.kind === kind && typeof e.value === 'number' && e.value > 0)
-    .map(e => ({ value: e.value as number, source: e.source, ...(e.data as { questId?: string; reward?: number }) }));
+    .filter(e => e.turnId.startsWith(branch) && e.turn >= sinceTurn && e.type === 'MONEY_CHANGED' && (e.data as { kind?: string } | undefined)?.kind === kind && typeof e.value === 'number' && e.value > 0)
+    .map(e => ({ id: e.id, turn: e.turn, value: e.value as number, source: e.source, ...(e.data as { questId?: string; reward?: number; offsetIds?: string[] }) }));
 }
 
 const norm = (t: string) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -73,9 +89,13 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
   if (status === 'COMPLETED') {
     s = emit(s, 'QUEST_COMPLETED', `Missão concluída: ${quest.title}`, { target: quest.id, value: quest.rewardEddies, data: { reason } });
     if (quest.rewardEddies > 0) {
-      // O narrador às vezes já "pagou" o trabalho na cena (transfer_money) neste mesmo turno:
-      // é o MESMO pagamento — a recompensa só completa o que faltar.
-      const already = Math.min(quest.rewardEddies, sameTurnPayments(s, 'transfer').filter(p => paymentMatchesQuest(s, quest, p)).reduce((n, p) => n + p.value, 0));
+      // O narrador às vezes já "pagou" o trabalho na cena (transfer_money) desde que a missão começou —
+      // no mesmo turno ou antes. É o MESMO pagamento: a recompensa só completa o que faltar.
+      // (Cada transferência só abate UMA recompensa.)
+      const used = new Set(recentPayments(s, 'quest_reward', 0).flatMap(p => p.offsetIds ?? []));
+      const advances = recentPayments(s, 'transfer', quest.startedTurn).filter(p => !used.has(p.id) && paymentMatchesQuest(s, quest, p));
+      const already = Math.min(quest.rewardEddies, advances.reduce((n, p) => n + p.value, 0));
+      const offsetIds = advances.map(p => p.id);
       // Operador (Canal, rank 5+): negocia +20% no pagamento do trabalho.
       const bonus = s.character.bio.role === 'fixer' ? Math.round(quest.rewardEddies * operatorPerks(s.character.roleRank).jobBonus) : 0;
       const paid = quest.rewardEddies - already + bonus;
@@ -84,10 +104,10 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
         s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${bonus ? `, +${bonus} negociados pelo Operador` : ''}${already ? `; €$${already} já pagos na cena` : ''})`, {
           source: quest.giverId ?? quest.id,
           value: paid,
-          data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies },
+          data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies, offsetIds },
         });
       } else {
-        s = emit(s, 'MONEY_CHANGED', `Recompensa de ${quest.title} já paga na cena (€$${already})`, { source: quest.giverId ?? quest.id, value: 0, data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies } });
+        s = emit(s, 'MONEY_CHANGED', `Recompensa de ${quest.title} já paga na cena (€$${already})`, { source: quest.giverId ?? quest.id, value: 0, data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies, offsetIds } });
       }
     }
   } else {

@@ -391,3 +391,55 @@ export function findCyberware(q: string | undefined): CyberwareDef | undefined {
 }
 
 export const STAT_FOR_BODY: StatKey = 'BODY';
+
+/** Nomes populares (inclusive em inglês, do jogo de 2077) → chave do catálogo. */
+const IMPLANT_ALIASES: Array<[RegExp, string]> = [
+  [/apogee/, 'sandevistan_apogee'],
+  [/falcon/, 'sandevistan_falcon'],
+  [/warp ?dancer/, 'sandevistan_warp_dancer'],
+  [/sandevistan|sandy\b/, 'sandevistan'],
+  [/berserk/, 'berserk_moore'],
+  [/kerenzikov/, 'kerenzikov'],
+  [/louva.?a.?deus|mantis/, 'popup_melee'],
+  [/gorila|gorilla/, 'gorilla_arms'],
+  [/monofio|monowire|mono.?fio/, 'slice_n_dice'],
+  [/lan[cç]ador de proj|projectile launch/, 'projectile_launcher'],
+  [/wolvers/, 'wolvers'],
+  [/rippers/, 'rippers'],
+  [/scratchers/, 'scratchers'],
+  [/big knucks/, 'big_knucks'],
+  [/cybersnake/, 'cybersnake'],
+  [/vampyres/, 'vampyres'],
+  [/ciberbra[cç]o|cyberarm|bra[cç]o cibern/, 'cyberarm'],
+  [/ciberperna|cyberleg|perna cibern/, 'cyberleg'],
+  [/ciberolho|cybereye|olho cibern|kiroshi/, 'cybereye'],
+  [/pele tecida|skin ?weave/, 'skin_weave'],
+  [/armadura subd[eé]rmica|subdermal armor/, 'subdermal_armor'],
+  [/segundo cora[cç][aã]o|second heart/, 'second_heart'],
+  [/camuflagem [oó]ptica|optical camo/, 'optical_camo'],
+  [/neural ?link|kit neural|interface neural/, 'neural_link'],
+  [/amplificador (de )?(audio|auditivo)|audicao ampliada|amplified hearing/, 'amplified_hearing'],
+  [/suite de ciberaudio|cyberaudio/, 'cyberaudio_suite'],
+  [/visao noturna|low.?light/, 'low_light'],
+  [/mira telescopica|targeting scope/, 'targeting_scope'],
+  [/soquete de chip|chipware socket/, 'chipware_socket'],
+  [/plugues? de interface|interface plugs?/, 'interface_plugs'],
+  [/editor de dor|pain editor/, 'pain_editor'],
+];
+
+/**
+ * O nome descreve um IMPLANTE (cromo)? Cromo não é item comum: não se compra na loja nem se usa
+ * sem cirurgia. Devolve a peça do catálogo, ou nada se for um item normal.
+ */
+/** Palavras que, na clínica de um ripperdoc, denunciam cromo (e não mercadoria de balcão). */
+export const CHROME_WORDS = /implante|cromo|ciber|cyber|neural|optic|otico|ocular|auditiv|audio|subderm|chip de|enxert|protese/;
+
+export function implantFromName(name: string | undefined): CyberwareDef | undefined {
+  if (!name) return undefined;
+  const n = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const alias = IMPLANT_ALIASES.find(([re]) => re.test(n));
+  if (alias) return CYBERWARE[alias[1]];
+  const def = findCyberware(name);
+  // Só nomes específicos (o fuzzy de findCyberware é para chaves; aqui evita "chip", "olho" soltos).
+  return def && n.length >= 6 && def.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') === n ? def : undefined;
+}

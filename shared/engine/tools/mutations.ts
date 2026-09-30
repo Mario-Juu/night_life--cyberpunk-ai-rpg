@@ -13,7 +13,7 @@ import { DISTANCE_LABEL } from '../../rules/weapons';
 import { THREAT_LABEL } from '../world';
 import { releaseGrapple } from '../brawl';
 import { installCyberware } from '../cyberware';
-import { findCyberware } from '../../rules/cyberware';
+import { findCyberware, implantFromName } from '../../rules/cyberware';
 import { humanityBand, isCyberpsycho } from '../../rules/humanity';
 import { CRITICAL_INJURIES, findCriticalInjuryTemplate } from '../../rules/criticalInjuries';
 import { computeMaxHumanity, STAT_KEYS } from '../../rules/stats';
@@ -22,10 +22,10 @@ import { advanceGameTime, formatGameTime } from '../../rules/world';
 import { applyDamageToCharacter, healCharacter } from '../health';
 import { makeId, slugId } from '../ids';
 import { emit } from '../events';
-import { advanceTime, normalizeFlagKey, paymentMatchesQuest, resolveQuest, sameTurnPayments, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
+import { advanceTime, normalizeFlagKey, PAYMENT_WINDOW_TURNS, paymentMatchesQuest, recentPayments, resolveQuest, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
 import { defineTool, fail, ok } from './registry';
 import { ensureNpc } from '../npcs';
-import { addToInventory, buildCombatant, buildItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, sameName } from './helpers';
+import { addToInventory, buildCombatant, buildItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, recentAcquisition, sameName } from './helpers';
 
 const NARR = ['narrator', 'engine'] as const;
 const NARR_PHONE = ['narrator', 'phone', 'engine'] as const;
@@ -462,13 +462,18 @@ export const MUTATION_TOOLS = [
     },
     run: (s0, a) => {
       const source = a.source ?? 'cena';
-      const cyber = a.cyberKey ? findCyberware(a.cyberKey) : undefined;
+      // O jogador acabou de COMPRAR (ou já recebeu) este item neste turno: o narrador descrevendo o
+      // vendedor entregando é a MESMA coisa — não entra de novo na mochila.
+      const dup = recentAcquisition(s0, a.name);
+      if (dup) return fail(s0, `Item duplicado: "${dup.name}" já entrou no inventário neste turno (${dup.via === 'buy' ? 'comprado pelo jogador' : 'entregue antes'}). Narre a entrega, não dê de novo.`);
+      // Implante entregue pela cena (mesmo sem cyberKey) vira PEÇA SOLTA: só funciona depois de instalado.
+      const cyber = a.cyberKey ? findCyberware(a.cyberKey) : implantFromName(a.name);
       if (a.cyberKey && !cyber) return fail(s0, `Cromo "${a.cyberKey}" não existe no catálogo.`);
       const item = cyber
         ? { id: makeId('item'), name: `${cyber.name}${cyber.brand ? ` (${cyber.brand})` : ''} — peça solta`, category: 'gear' as const, quantity: 1, description: `${cyber.effect} Precisa de um ripperdoc para instalar.`, value: 0, cyberKey: cyber.key }
         : buildItem({ ...a, value: a.estimatedValue });
       const s = addToInventory(s0, item);
-      return ok(emit(s, 'ITEM_ACQUIRED', `Recebeu ${item.quantity}× ${item.name} (${source})`, { target: item.id, source, value: item.quantity }), `+${item.quantity}× ${item.name}`);
+      return ok(emit(s, 'ITEM_ACQUIRED', `Recebeu ${item.quantity}× ${item.name} (${source})`, { target: item.id, source, value: item.quantity, data: { name: item.name, via: 'give' } }), `+${item.quantity}× ${item.name}`);
     },
   }),
   defineTool({
@@ -504,14 +509,14 @@ export const MUTATION_TOOLS = [
       const money = s0.character.money;
       if (a.amount < 0 && money < -a.amount) return fail(s0, `Saldo insuficiente: tem €$${money}, precisa pagar €$${-a.amount}.`);
       if (a.amount > 0) {
-        // A missão concluída NESTE turno já pagou o trabalho: não pagar de novo pela cena.
-        const reward = sameTurnPayments(s0, 'quest_reward').find(p => {
+        // Missão concluída há pouco (neste turno ou nos últimos) já pagou o trabalho: não pagar de novo pela cena.
+        const reward = recentPayments(s0, 'quest_reward', s0.turn - PAYMENT_WINDOW_TURNS).find(p => {
           const quest = s0.missions.find(m => m.id === p.questId);
           return quest && paymentMatchesQuest(s0, quest, { value: a.amount, source: a.counterpart });
         });
         if (reward) {
           const quest = s0.missions.find(m => m.id === reward.questId)!;
-          return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" (€$${reward.reward ?? reward.value}) já foi paga pelo motor ao concluir a missão neste turno. Narre esse pagamento, não pague de novo.`);
+          return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" (€$${reward.reward ?? reward.value}) já foi paga pelo motor quando a missão foi concluída. Narre esse pagamento, não pague de novo.`);
         }
       }
       const s = { ...s0, character: { ...s0.character, money: money + a.amount } };

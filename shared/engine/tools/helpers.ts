@@ -1,3 +1,4 @@
+import { turnIdOf } from '../events';
 import type { AmmoKind, Combatant, GameState, InventoryItem, ItemCategory, Modifier, Npc } from '../../types/game';
 import { AMMO_LABEL, WEAPONS, guessWeaponClass, isDistanceBracket, isWeaponClass } from '../../rules/weapons';
 import { isValidNotation } from '../dice';
@@ -102,6 +103,36 @@ export function buildItem(a: ItemArgs): InventoryItem {
     }
   }
   return item;
+}
+
+const STOP = new Set(['de', 'da', 'do', 'das', 'dos', 'com', 'para', 'uma', 'um', 'the', 'of']);
+const itemTokens = (name: string) =>
+  name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 3 && !STOP.has(t));
+
+/** Mesmo item com nomes um pouco diferentes ("Kit médico" × "Kit Médico de Trauma", "Pistola pesada Militech")? */
+export function similarItemName(a: string, b: string): boolean {
+  const ta = itemTokens(a);
+  const tb = itemTokens(b);
+  if (!ta.length || !tb.length) return sameName(a, b);
+  const [small, big] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  return small.every(t => big.includes(t));
+}
+
+/** Item que já entrou no inventário NESTE turno (compra ou entrega), pelo nome. */
+export function recentAcquisition(state: GameState, name: string): { name: string; via: string } | null {
+  const turnId = turnIdOf(state);
+  for (const e of state.events) {
+    if (e.turnId !== turnId || e.type !== 'ITEM_ACQUIRED') continue;
+    const d = e.data as { name?: string; via?: string } | undefined;
+    if (d?.name && similarItemName(d.name, name)) return { name: d.name, via: d.via ?? 'give' };
+  }
+  return null;
 }
 
 /** Adiciona ao inventário, empilhando munição/consumíveis de mesmo tipo. */

@@ -2,6 +2,7 @@
  * Ações do jogador interpretadas pelo LLM. O motor valida TUDO
  * (arma, munição, alvo vivo, alcance, dinheiro) e prepara a rolagem quando necessário.
  */
+import { CHROME_WORDS, implantFromName } from '../../rules/cyberware';
 import type { GameState, RollRequest, StatKey } from '../../types/game';
 import { SKILLS, getSkill } from '../../rules/skills';
 import { STAT_KEYS } from '../../rules/stats';
@@ -370,6 +371,14 @@ export const ACTION_TOOLS = [
     run: (s0, a) => {
       const seller = findNpc(s0, a.sellerNpcId);
       if (seller?.status === 'dead') return fail(s0, `${seller.name} está morto — não vende nada.`);
+      // Cromo não é mercadoria de balcão: compra + cirurgia com um ripperdoc (tier, grau, Humanidade).
+      const implant = implantFromName(a.name);
+      if (implant) return fail(s0, `"${a.name}" é um implante (${implant.name}). Implante se compra e instala com um ripperdoc: use install_cyberware (key "${implant.key}").`);
+      // Na clínica de um ripperdoc, "comprar" algo com cara de cromo é instalar um implante do catálogo.
+      const atClinic = seller?.ripperdoc || s0.npcs.some(n => n.ripperdoc && s0.scene.presentNpcIds.includes(n.id));
+      const plain = a.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (atClinic && CHROME_WORDS.test(plain))
+        return fail(s0, `"${a.name}" parece cromo, e isto é uma clínica de ripperdoc: implante não é mercadoria — use install_cyberware com a key do catálogo mais próxima (ex.: neural_link, amplified_hearing, cybereye…).`);
       const item = buildItem({ ...a, quantity: a.quantity ?? 1 });
       const base = priceFor({
         category: item.category,
@@ -408,7 +417,7 @@ export const ACTION_TOOLS = [
       let s: GameState = { ...s0, character: { ...s0.character, money: money - total } };
       s = addToInventory(s, { ...item, value: Math.round(total / item.quantity) });
       s = emit(s, 'MONEY_CHANGED', `−${total} €$ (compra: ${item.name})`, { value: -total, target: seller?.id, data: { priceSource: source } });
-      s = emit(s, 'ITEM_ACQUIRED', `Comprou ${item.quantity}× ${item.name}`, { target: item.id, value: item.quantity });
+      s = emit(s, 'ITEM_ACQUIRED', `Comprou ${item.quantity}× ${item.name}`, { target: item.id, value: item.quantity, data: { name: item.name, via: 'buy' } });
       return ok(s, `Comprou ${item.quantity}× ${item.name} por €$${total}${perks.length ? ` (Operador: ${perks.join(', ')})` : ''} (saldo €$${s.character.money}).`, { total, balance: s.character.money });
     },
   }),

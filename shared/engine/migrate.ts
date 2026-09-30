@@ -7,6 +7,7 @@ import { makeId } from './ids';
 import { MAIN_BRANCH } from './initialState';
 import { withRoleDefaults } from './roles';
 import { starterDeck } from './net';
+import { implantFromName } from '../rules/cyberware';
 
 /** Campos adicionados dentro da v3 (habilidades de papel, Rede): preenche sem mudar a versão. */
 function fillDefaults(s: GameState): GameState {
@@ -17,6 +18,17 @@ function fillDefaults(s: GameState): GameState {
     const link = { id: makeId('cw'), key: 'neural_link', name: 'Neural Link', category: 'Neuralware' as const, humanityLoss: 0, description: 'Fundação da neuralware.' };
     const plugs = { id: makeId('cw'), key: 'interface_plugs', name: 'Plugues de Interface', category: 'Neuralware' as const, humanityLoss: 0, description: 'Conexão direta com o ciberdeck.', parentId: link.id };
     character = { ...character, cyberware: [...(character.cyberware ?? []).filter(cw => cw.key !== 'neural_link'), link, plugs] };
+  }
+  // Implantes que entraram como item comum (arma/equipamento sem cirurgia — bug antigo) viram peça solta.
+  if (character.inventory.some(i => !i.implant && !i.cyberKey && implantFromName(i.name))) {
+    character = {
+      ...character,
+      inventory: character.inventory.map(i => {
+        const def = !i.implant && !i.cyberKey ? implantFromName(i.name) : undefined;
+        if (!def) return i;
+        return { id: i.id, name: `${def.name}${def.brand ? ` (${def.brand})` : ''} — peça solta`, category: 'gear' as const, quantity: 1, description: `${def.effect} Precisa de um ripperdoc para instalar.`, value: 0, cyberKey: def.key };
+      }),
+    };
   }
   // Categorias renomeadas (Cyber- → Ciber-).
   if (character.cyberware?.some(cw => /^Cyber/.test(cw.category))) character = { ...character, cyberware: character.cyberware.map(cw => ({ ...cw, category: cw.category.replace(/^Cyber/, 'Ciber') as typeof cw.category })) };
