@@ -54,6 +54,17 @@ export async function fetchStatus(): Promise<GMStatus> {
   return { status: 'ok', hasKey: false, defaultMode: 'flash', promptVersion: '?' };
 }
 
+/** Valida uma chave Gemini (ainda não salva) no servidor do jogo, que pergunta ao Google. */
+export async function checkKey(key: string): Promise<{ valid: boolean | null; reason?: string }> {
+  try {
+    const res = await fetch('/api/gm/key-check', { headers: { 'x-gemini-key': key.trim() }, signal: AbortSignal.timeout(20_000) });
+    if (res.ok) return await res.json();
+  } catch {
+    // servidor fora do ar
+  }
+  return { valid: null, reason: 'network' };
+}
+
 export const api = {
   interpret: (context: GameContext, text: string, model: ModelMode, feedback?: string) => post<InterpretResponse>('/api/gm/interpret', { context, text, model, feedback }),
   narrate: (context: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null }, model: ModelMode) =>

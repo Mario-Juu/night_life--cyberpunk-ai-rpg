@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { ToastHost } from '../ui';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
@@ -13,6 +13,7 @@ import { SandboxModal } from '../features/system/SandboxModal';
 import { DiceOverlay } from '../features/dice/DiceOverlay';
 import { VfxLayer } from '../features/vfx/VfxLayer';
 import { IntroConsole } from '../features/intro/IntroConsole';
+import { KeyGate } from '../features/intro/KeyGate';
 import { TutorialModal } from '../features/tutorial/TutorialModal';
 
 export default function App() {
@@ -20,10 +21,25 @@ export default function App() {
   // Enquanto o Mestre narra uma rolagem, o registro também não antecipa o desfecho.
   const concealed = useUiStore(s => s.concealedGame);
   const introSeen = useUiStore(s => s.introSeen);
+  const hasKey = useUiStore(s => s.hasKey);
+  const geminiKey = useUiStore(s => s.geminiKey);
+  // Só decide se pede a chave depois de perguntar ao servidor (ele pode ter uma chave própria).
+  const [statusChecked, setStatusChecked] = useState(false);
 
   useEffect(() => {
-    void fetchStatus().then(status => useUiStore.getState().setHasKey(status.hasKey));
+    void fetchStatus().then(status => {
+      useUiStore.getState().setHasKey(status.hasKey);
+      setStatusChecked(true);
+    });
   }, []);
+
+  // Sem chave no servidor nem no navegador: o terminal de acesso vem ANTES da introdução e da criação.
+  const needsKey = statusChecked && !hasKey && !geminiKey;
+  // Fica aberto até o terminal terminar a animação de "acesso concedido" (a chave já foi salva).
+  const [gateOpen, setGateOpen] = useState(false);
+  useEffect(() => {
+    if (needsKey) setGateOpen(true);
+  }, [needsKey]);
 
   return (
     <>
@@ -38,7 +54,11 @@ export default function App() {
       ) : (
         <CreationScreen />
       )}
-      {!introSeen && <IntroConsole onDone={() => useUiStore.getState().setIntroSeen(true)} />}
+      {needsKey || gateOpen ? (
+        <KeyGate onDone={() => setGateOpen(false)} />
+      ) : (
+        statusChecked && !introSeen && <IntroConsole onDone={() => useUiStore.getState().setIntroSeen(true)} />
+      )}
       <RulesModal />
       {game && <TutorialModal />}
       <DiceOverlay />

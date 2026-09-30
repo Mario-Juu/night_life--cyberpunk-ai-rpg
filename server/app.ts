@@ -6,11 +6,14 @@ import type { GameMaster } from './gamemaster/gameMaster';
 import { PROMPT_VERSION } from './gamemaster/systemPrompt';
 import { InterpretBody, NarrateBody, PhoneBody, SummarizeBody } from './validation';
 import { requestKey, runWithKey, sanitizeKey } from './gamemaster/requestKey';
+import { checkApiKey, type KeyCheck } from './gamemaster/llmClient';
 
 export interface AppOptions {
   gm: GameMaster;
   hasKey: () => boolean;
   defaultMode: () => ModelMode;
+  /** Valida a chave do jogador junto ao Google (injetável nos testes). */
+  checkKey?: (key: string | undefined) => Promise<KeyCheck>;
 }
 
 function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
@@ -25,7 +28,7 @@ function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.i
 
 const asContext = (c: unknown) => c as GameContext;
 
-export function createApp({ gm, hasKey, defaultMode }: AppOptions) {
+export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey }: AppOptions) {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   // Chave Gemini do próprio jogador (cabeçalho), válida só para este pedido.
@@ -38,6 +41,11 @@ export function createApp({ gm, hasKey, defaultMode }: AppOptions) {
   app.get('/api/gm/status', (_req, res) => {
     const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION };
     res.json(status);
+  });
+
+  /** Tela de acesso: a chave que o jogador colou (cabeçalho x-gemini-key) é aceita pelo Google? */
+  app.get('/api/gm/key-check', async (_req, res) => {
+    res.json(await checkKey(requestKey()));
   });
 
   /** 1. Intenção: texto livre → ferramentas (o cliente executa no motor). */

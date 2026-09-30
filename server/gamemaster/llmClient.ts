@@ -377,6 +377,33 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
   throw new LlmError((lastError as Error)?.message ?? 'Nenhum modelo respondeu.', attempts, mainFailure(kinds));
 }
 
+// ---------------------------------------------------------------- validação de chave
+
+export interface KeyCheck {
+  /** true = o Google aceitou; false = recusou; null = não deu para verificar (rede). */
+  valid: boolean | null;
+  reason?: 'missing' | 'invalid' | 'network';
+}
+
+/**
+ * Valida uma chave Gemini listando modelos (não consome a cota de geração de texto).
+ * Chave inválida: o Google responde 400 ("API key not valid") ou 401/403.
+ */
+export async function checkApiKey(apiKey: string | undefined, fetchImpl: typeof fetch = fetch): Promise<KeyCheck> {
+  if (!apiKey) return { valid: false, reason: 'missing' };
+  try {
+    const res = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', {
+      headers: { 'x-goog-api-key': apiKey },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return { valid: true };
+    if (res.status === 400 || res.status === 401 || res.status === 403) return { valid: false, reason: 'invalid' };
+    return { valid: null, reason: 'network' };
+  } catch {
+    return { valid: null, reason: 'network' };
+  }
+}
+
 // ---------------------------------------------------------------- Gemini
 
 /** Um cliente por chave (cada jogador pode usar a sua). */
