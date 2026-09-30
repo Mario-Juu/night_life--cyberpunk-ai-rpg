@@ -3,7 +3,7 @@
  */
 import type { GameEvent, RollOutcome, RollRecord } from './game';
 
-export type IntentType = 'attack' | 'skill' | 'social' | 'move' | 'trade' | 'use_item' | 'observe' | 'dialogue' | 'rest' | 'other';
+export type IntentType = 'attack' | 'skill' | 'social' | 'move' | 'trade' | 'use_item' | 'observe' | 'dialogue' | 'rest' | 'netrun' | 'other';
 
 /** Intenção interpretada pelo LLM a partir do texto livre do jogador. */
 export interface ParsedIntent {
@@ -49,6 +49,9 @@ export interface LlmAttempt {
 
 export type LlmPurpose = 'interpret' | 'narrate' | 'prologue' | 'phone' | 'summarize';
 
+/** Por que uma chamada ao LLM falhou (a causa que o jogador precisa saber). */
+export type FailureKind = 'quota_day' | 'quota_minute' | 'overloaded' | 'timeout' | 'auth' | 'bad_request' | 'model_unavailable' | 'invalid_json' | 'network' | 'other';
+
 /** Metadados de observabilidade de cada chamada ao LLM. */
 export interface LlmRunMeta {
   requestId: string;
@@ -68,6 +71,8 @@ export interface LlmRunMeta {
   retrievedMemories: string[];
   errors: string[];
   degraded: boolean;
+  /** Causa principal quando degradado. */
+  failureKind?: FailureKind;
   createdAt: string;
 }
 
@@ -80,7 +85,8 @@ export interface EngineResult {
   offscreen: string[];
 }
 
-export type TurnPhase = 'interpreting' | 'awaiting_roll' | 'narrating' | 'complete' | 'failed';
+/** in_net: o jogador está usando Ações de Rede pelo painel (o turno fecha com o ICE + narração). */
+export type TurnPhase = 'interpreting' | 'awaiting_roll' | 'in_net' | 'narrating' | 'complete' | 'failed';
 export type TurnKind = 'action' | 'prologue';
 
 export interface TurnRecord {

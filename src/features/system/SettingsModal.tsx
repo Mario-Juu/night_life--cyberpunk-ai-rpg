@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { Button, Modal, cn } from '../../ui';
+import { Button, Input, Modal, cn } from '../../ui';
+import { fetchStatus } from '../../services/api';
 import { sound } from '../../services/audio';
 import { useUiStore } from '../../store/uiStore';
 import { newCampaign } from '../../store/turnController';
 import { RadioControl } from '../radio/RadioControl';
+import { TUTORIALS } from '../tutorial/tutorials';
 
 function Toggle({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -29,8 +31,11 @@ export function SettingsModal() {
   const revealDv = useUiStore(s => s.revealDv);
   const animateDice = useUiStore(s => s.animateDice);
   const vfxOn = useUiStore(s => s.vfx);
+  const tutorialsOn = useUiStore(s => s.tutorialsOn);
   const [sfxVolume, setSfxVolume] = useState(sound.getVolume());
   const hasKey = useUiStore(s => s.hasKey);
+  const geminiKey = useUiStore(s => s.geminiKey);
+  const [keyDraft, setKeyDraft] = useState('');
   const close = () => useUiStore.getState().openModal(null);
   const [sfx, setSfx] = useState(sound.isEnabled());
   const [ambience, setAmbience] = useState(sound.isAmbienceActive());
@@ -38,25 +43,51 @@ export function SettingsModal() {
   return (
     <Modal open={open} onClose={close} title="Configurações" size="sm">
       <div className="space-y-5">
-        <section className="space-y-2">
+        <section className="space-y-1">
           <p className="eyebrow">Modelo do Mestre</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(['flash', 'pro'] as const).map(m => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => useUiStore.getState().setModel(m)}
-                aria-pressed={model === m}
-                className={cn('border p-2.5 text-left', model === m ? 'border-neon-cyan bg-neon-cyan/10' : 'border-line hover:border-muted')}
+          <p className="text-[11px] text-muted">Gemini Flash. Se uma versão estiver ocupada ou sem cota, o Mestre desce para a anterior (3.8 → 3.7 → 3.6 → 3.5) e, por último, para o Flash-Lite.</p>
+        </section>
+
+        <section className="space-y-2">
+          <p className="eyebrow">Sua chave Gemini</p>
+          <p className="text-[11px] text-muted">
+            Use a sua própria chave (grátis no Google AI Studio). Ela fica salva só neste navegador e vai para o servidor deste jogo em cada pedido ao Mestre — nunca para mais
+            ninguém. Sem ela, vale a chave do servidor (se houver).
+          </p>
+          <div className="flex gap-1.5">
+            <Input type="password" value={keyDraft} onChange={e => setKeyDraft(e.target.value)} placeholder={geminiKey ? '•••••••• (salva)' : 'Cole sua chave aqui'} autoComplete="off" aria-label="Chave Gemini" className="h-9 text-sm" />
+            <Button
+              size="sm"
+              variant="solid"
+              disabled={!keyDraft.trim()}
+              onClick={async () => {
+                useUiStore.getState().setGeminiKey(keyDraft);
+                setKeyDraft('');
+                const status = await fetchStatus();
+                useUiStore.getState().setHasKey(status.hasKey);
+              }}
+            >
+              Salvar
+            </Button>
+            {geminiKey && (
+              <Button
+                size="sm"
+                variant="ghost"
+                tone="danger"
+                onClick={async () => {
+                  useUiStore.getState().setGeminiKey('');
+                  const status = await fetchStatus();
+                  useUiStore.getState().setHasKey(status.hasKey);
+                }}
               >
-                <span className="font-display text-xs uppercase tracking-wider">{m === 'flash' ? 'Flash' : 'Pro'}</span>
-                <span className="block text-[11px] text-muted">{m === 'flash' ? 'Rápido e direto' : 'Prosa densa, mais lento'}</span>
-              </button>
-            ))}
+                Remover
+              </Button>
+            )}
           </div>
+          {geminiKey && <p className="text-[11px] text-neon-green">Usando a sua chave.</p>}
           {!hasKey && (
             <p className="flex items-start gap-1.5 text-xs text-neon-yellow">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> Nenhuma chave Gemini configurada no servidor (.env). O Mestre responderá em modo degradado.
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> Nenhuma chave Gemini disponível: coloque a sua acima (ou no .env do servidor). Sem chave, o Mestre responde em modo degradado.
             </p>
           )}
         </section>
@@ -100,6 +131,31 @@ export function SettingsModal() {
             checked={revealDv}
             onChange={v => useUiStore.getState().setRevealDv(v)}
           />
+        </section>
+
+        <section className="space-y-2 border-t border-line-soft pt-4">
+          <Toggle
+            label="Tutoriais"
+            description="Cada sistema (Rede, combate, papel, Humanidade) se apresenta na primeira vez que aparece."
+            checked={tutorialsOn}
+            onChange={v => useUiStore.getState().setTutorialsOn(v)}
+          />
+          <p className="text-[11px] text-dim">Rever agora:</p>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.values(TUTORIALS).map(t => (
+              <Button
+                key={t.id}
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  useUiStore.getState().openModal(null);
+                  useUiStore.getState().showTutorial(t.id, true);
+                }}
+              >
+                {t.title}
+              </Button>
+            ))}
+          </div>
         </section>
 
         <section className="space-y-2 border-t border-line-soft pt-4">

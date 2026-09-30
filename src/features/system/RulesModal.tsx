@@ -1,6 +1,7 @@
 import { DV_TABLE } from '@shared/rules/difficulty';
 import { CRITICAL_INJURIES } from '@shared/rules/criticalInjuries';
 import { RANGED_BRACKETS, WEAPONS } from '@shared/rules/weapons';
+import { SLANG } from '@shared/rules/slang';
 import { Modal } from '../../ui';
 import { useUiStore } from '../../store/uiStore';
 
@@ -93,7 +94,23 @@ export function RulesModal() {
 
         <section className="space-y-2">
           <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Evolução</h3>
-          <p className="text-muted">O Mestre concede Pontos de Melhoria (PM) ao fim de cenas marcantes. Subir uma perícia custa 20 × o novo nível, até o nível 10.</p>
+          <p className="text-muted">
+            O Mestre concede Pontos de Melhoria (PM) ao fim de cenas marcantes. Subir uma perícia custa 20 × o novo nível, até o nível 10; subir o rank da Habilidade de Papel
+            custa 60 × o novo rank.
+          </p>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Gírias de Night City</h3>
+          <p className="text-muted">O que o povo da rua quer dizer quando fala com você.</p>
+          <dl className="grid sm:grid-cols-2 gap-x-4 gap-y-1.5">
+            {SLANG.map(s => (
+              <div key={s.term} className="text-xs">
+                <dt className="inline font-display uppercase tracking-wider text-neon-yellow">{s.term}</dt>
+                <dd className="inline text-muted"> — {s.meaning}</dd>
+              </div>
+            ))}
+          </dl>
         </section>
       </div>
     </Modal>

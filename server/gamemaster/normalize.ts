@@ -12,7 +12,7 @@ const text = (v: unknown, max: number): string => (typeof v === 'string' ? v.tri
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
-const INTENTS: IntentType[] = ['attack', 'skill', 'social', 'move', 'trade', 'use_item', 'observe', 'dialogue', 'rest', 'other'];
+const INTENTS: IntentType[] = ['attack', 'skill', 'social', 'move', 'trade', 'use_item', 'observe', 'dialogue', 'rest', 'netrun', 'other'];
 
 /** Mantém só ferramentas existentes e permitidas para a origem; aceita {tool,args} ou {type,payload}. */
 export function normalizeToolCalls(raw: unknown, origin: ToolOrigin, max: number): ToolCall[] {

@@ -2,7 +2,14 @@
  * Monta o contexto em seções:
  * PERSONAGEM + CENA + NPCs + MISSÕES + MUNDO/FLAGS + MEMÓRIAS + RESUMOS + HISTÓRICO + ENTRADA DO TURNO.
  */
-import type { Character, RollOutcome } from '../../shared/types/game';
+import type { Character, Condition, RollOutcome } from '../../shared/types/game';
+import { CONDITION_LABEL } from '../../shared/engine/conditions';
+import { COMBAT_AWARENESS, DRUGS, MAKER_SPECIALTIES, ROLE_ABILITY, familyVehicle, operatorPerks } from '../../shared/rules/roles';
+import { PROGRAMS, netActionsFor } from '../../shared/rules/net';
+import { surgeryValue, unlockedDrugs } from '../../shared/engine/roles';
+import { describeNet } from '../../shared/engine/net';
+import { humanityBand } from '../../shared/rules/humanity';
+import { describeCyberware } from '../../shared/engine/cyberware';
 import type { EngineResult } from '../../shared/types/turn';
 import type { GameContext } from '../../shared/types/gm';
 import { getSkill } from '../../shared/rules/skills';
@@ -13,6 +20,48 @@ import { statValue } from '../../shared/engine/checks';
 import { WOUND_LABEL, characterSp, characterWoundState, woundPenalty } from '../../shared/engine/health';
 import { unarmedDamage } from '../../shared/rules/weapons';
 import { THREAT_LABEL } from '../../shared/engine/world';
+
+function humanityLine(c: Character): string {
+  const band = humanityBand(c);
+  if (band.band === 'stable') return '';
+  return `HUMANIDADE ${c.humanity.current}/${c.humanity.max} — ${band.label}: ${band.narrator}`;
+}
+
+/** Habilidade de Papel (Cyberpunk RED) — o que o motor já aplica e o que o Mestre deve considerar. */
+export function describeRoleAbility(c: Character): string {
+  const info = ROLE_ABILITY[c.bio.role];
+  const d = c.roleData;
+  let detail = '';
+  switch (c.bio.role) {
+    case 'solo':
+      detail = COMBAT_AWARENESS.filter(o => (d.combatAwareness?.[o.key] ?? 0) > 0)
+        .map(o => `${o.label}: ${o.describe(d.combatAwareness![o.key]!)}`)
+        .join('; ');
+      break;
+    case 'netrunner':
+      detail = `${netActionsFor(c.roleRank)} Ações de Rede/turno · deck ${c.deck?.name ?? '—'} (${(c.deck?.programs ?? []).filter(p => !p.destroyed).map(p => PROGRAMS[p.key].name).join(', ')})`;
+      break;
+    case 'tech':
+      detail = MAKER_SPECIALTIES.map(m => `${m.label} ${d.maker?.[m.key] ?? 0}`).join(', ');
+      break;
+    case 'medtech':
+      detail = `Cirurgia ${surgeryValue(c)} · Farmacêutica ${d.medicine?.pharma ?? 0} (${unlockedDrugs(d).map(k => DRUGS[k].label).join(', ') || '—'}) · Criossistemas ${d.medicine?.cryo ?? 0}`;
+      break;
+    case 'fixer': {
+      const op = operatorPerks(c.roleRank);
+      detail = `alcance de mercado: ${op.reach} · pechincha −${Math.round(op.discount * 100)}%${op.jobBonus ? ` · trabalhos +${Math.round(op.jobBonus * 100)}%` : ''}`;
+      break;
+    }
+    case 'nomad':
+      detail = `+${c.roleRank} em Condução/Tec. de Veículos · veículo da família: ${familyVehicle(c.roleRank)}`;
+      break;
+  }
+  return `HABILIDADE DE PAPEL: ${info.name} rank ${c.roleRank}${detail ? ` — ${detail}` : ''}`;
+}
+
+function describeConditions(list: Condition[]): string {
+  return list.map(x => `${CONDITION_LABEL[x.key]} desde o turno ${x.sinceTurn}${x.source ? ` (${x.source})` : ''}`).join('; ');
+}
 
 export function describeCharacter(c: Character): string {
   const sp = characterSp(c);
@@ -25,7 +74,12 @@ export function describeCharacter(c: Character): string {
   const items = c.inventory
     .map(i => {
       let d = `  - [${i.id}] ${i.name} ×${i.quantity}`;
-      if (i.weapon) d += ` (arma ${i.weapon.weaponClass}, ${i.weapon.damage}${i.weapon.magSize !== null ? `, pente ${i.weapon.loaded}/${i.weapon.magSize}` : ''})`;
+      if (i.weapon) {
+        const w = i.weapon;
+        const tags = [w.quality === 'poor' ? 'RUIM' : w.quality === 'excellent' ? 'EXCELENTE' : '', w.jammed ? 'TRAVADA' : '', w.nonLethal ? 'não letal' : '', w.grenade ? `granada ${w.grenade}` : ''].filter(Boolean);
+        d += ` (arma ${w.weaponClass}, ${w.damage}${w.magSize !== null ? `, pente ${w.loaded}/${w.magSize}` : ''}${tags.length ? `, ${tags.join(', ')}` : ''})`;
+      }
+      if (i.streetDrug) d += ' (droga de rua)';
       if (i.armor) d += ` (armadura ${i.armor.slot === 'head' ? 'cabeça' : 'corpo'} SP ${i.armor.sp}/${i.armor.maxSp})`;
       if (i.equipped) d += ' [equipado]';
       return d;
@@ -39,9 +93,15 @@ export function describeCharacter(c: Character): string {
     `Perícias: ${skills}`,
     `Desarmado (Briga): ${unarmedDamage(c.stats.BODY)}`,
     `Inventário:\n${items || '  (vazio)'}`,
-    c.cyberware.length ? `Ciberware: ${c.cyberware.map(cw => cw.name).join(', ')}` : '',
+    describeCyberware(c),
     c.criticalInjuries.length ? `Ferimentos: ${c.criticalInjuries.map(i => `[${i.id}] ${i.name} (${i.effect})`).join('; ')}` : '',
-    `Laços: ${c.bio.familyTie || '—'} · Dívida: ${c.bio.debtReason || '—'} · Sonho: ${c.bio.personalAnchor || '—'}`,
+    c.conditions?.length ? `CONDIÇÕES: ${describeConditions(c.conditions)}` : '',
+    c.grappling ? `AGARRANDO: ${c.grappling}${c.humanShield ? ` (escudo humano${c.humanShield.corpseHp !== undefined ? `-cadáver, ${c.humanShield.corpseHp} PV` : ''})` : ''}` : '',
+    humanityLine(c),
+    c.addictions?.length ? `VICIADO em: ${c.addictions.join(', ')} (abstinência quando sóbrio)` : '',
+    describeRoleAbility(c),
+    `Laço: ${c.bio.familyTie || '—'} · Sonho: ${c.bio.personalAnchor || '—'}`,
+    `Pressão imediata (é do PRÓPRIO jogador, não do laço): ${c.bio.debtReason || '—'}`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -59,10 +119,17 @@ function describeScene(ctx: GameContext): string {
     `Objetivo imediato: ${ctx.world.objective}`,
   ];
   if (ctx.activeEffects.length) lines.push(`Efeitos ativos: ${ctx.activeEffects.map(e => e.name).join(', ')}`);
+  const lt = ctx.scene.lethalThreat;
+  if (lt) {
+    const armed = lt.sinceTurn < ctx.turn;
+    lines.push(`⚠ AMEAÇA LETAL (desde o turno ${lt.sinceTurn}): ${lt.description}${armed ? ' — se o jogador não escapar AGORA, execute(targetId "player") é permitido' : ' — recém-anunciada: o jogador ainda tem este turno para reagir'}`);
+  }
+  if (ctx.net) lines.push(...describeNet({ net: ctx.net }));
+  if (ctx.sandbox) lines.push('MODO SANDBOX (teste de mecânicas): atenda na hora pedidos meta do jogador (spawnar inimigos por template, criar rede, aplicar condições/ameaças, ferir, curar) usando as ferramentas; narração curta e direta.');
   if (ctx.combat.active) {
     lines.push(`COMBATE — rodada ${ctx.combat.round}${ctx.combat.playerInitiative !== null ? `, iniciativa do jogador ${ctx.combat.playerInitiative}` : ''}`);
     for (const c of ctx.combat.combatants)
-      lines.push(`  - [${c.id}] ${c.name}: PV ${c.hp.current}/${c.hp.max}, SP ${c.sp.body}, ${c.weapon.name} (${c.weapon.damage}), ${DISTANCE_LABEL[c.distance]}, cobertura ${c.cover}, ${c.status}`);
+      lines.push(`  - [${c.id}] ${c.name}: PV ${c.hp.current}/${c.hp.max}, SP ${c.sp.body}, ${c.weapon.name} (${c.weapon.damage}), ${DISTANCE_LABEL[c.distance]}, cobertura ${c.cover}${c.cover === 'full' && c.coverHp !== undefined ? ` (${c.coverHp} PV)` : ''}, ${c.status}${c.conditions?.length ? `, ${describeConditions(c.conditions)}` : ''}${c.skipNextAttack ? `, PERDE o próximo ataque (${c.skipNextAttack})` : ''}${c.facedown ? `, Encarada: ${c.facedown === 'player' ? 'recuou diante do jogador (−2)' : 'venceu o jogador (jogador −2 contra ele)'}` : ''}`);
   } else if (ctx.combat.combatants.length) {
     lines.push(`Corpos/inimigos da última luta: ${ctx.combat.combatants.map(c => `[${c.id}] ${c.name} (${c.status}${c.looted ? ', revistado' : ''})`).join(', ')}`);
   }
@@ -76,8 +143,9 @@ function describeNpcs(ctx: GameContext): string {
         const secrets = n.knowledge.filter(k => k.secret).map(k => k.fact);
         const known = n.knowledge.filter(k => !k.secret).map(k => k.fact);
         return [
-          `  - [${n.id}] ${n.name} (${n.role}) ${n.status === 'dead' ? '☠ MORTO' : n.status === 'missing' ? 'DESAPARECIDO' : ''}`.trimEnd(),
+          `  - [${n.id}] ${n.name} (${n.role}) ${n.ripperdoc ? `RIPPERDOC nível ${n.ripperdoc.tier}${n.ripperdoc.blackMarket ? ' + mercado negro' : ''} ` : ''}${n.kind === 'animal' ? 'ANIMAL (não fala, não usa o Agent) ' : ''}${n.status === 'dead' ? '☠ MORTO' : n.status === 'missing' ? 'DESAPARECIDO' : ''}`.trimEnd(),
           `    confiança ${n.trust} · respeito ${n.respect} · medo ${n.fear} · raiva ${n.anger}${n.location ? ` · em ${n.location}` : ''}`,
+          n.conditions?.length ? `    condições: ${describeConditions(n.conditions)}` : '',
           n.currentGoal ? `    objetivo: ${n.currentGoal}` : '',
           n.pendingMatters ? `    pendente: ${n.pendingMatters}` : '',
           known.length ? `    fatos públicos: ${known.join(' | ')}` : '',
@@ -116,7 +184,7 @@ export function describeOutcome(o: RollOutcome): string {
     return lines.join('\n');
   }
   if (o.attack?.failure) {
-    const reason = { no_ammo: 'ARMA SEM MUNIÇÃO (clique seco, nada disparou)', out_of_range: 'ALVO FORA DO ALCANCE', in_cover: 'ALVO EM COBERTURA TOTAL', no_target: 'ALVO INDISPONÍVEL' }[o.attack.failure];
+    const reason = { no_ammo: 'ARMA SEM MUNIÇÃO (clique seco, nada disparou)', out_of_range: 'ALVO FORA DO ALCANCE', in_cover: 'ALVO EM COBERTURA TOTAL', no_target: 'ALVO INDISPONÍVEL', jammed: 'ARMA TRAVADA (nada disparou; destravar custa uma ação)' }[o.attack.failure];
     lines.push(`ATAQUE NÃO REALIZADO: ${reason}.`);
     return lines.join('\n');
   }
@@ -128,14 +196,31 @@ export function describeOutcome(o: RollOutcome): string {
   );
   const a = o.attack;
   if (a) {
+    if (a.closedIn) lines.push(`O jogador AVANÇOU até ${a.targetName} (Ação de Movimento) antes do golpe — agora estão corpo a corpo.`);
     lines.push(`Ataque com ${a.weaponName} contra ${a.targetName}: ${a.hit ? 'ACERTOU' : 'ERROU'}. Munição no pente: ${a.ammoAfter ?? '—'}.`);
     if (a.application && a.damage) {
       const app = a.application;
       lines.push(`Dano ${a.damage.notation} [${a.damage.rolls.join(', ')}] = ${app.raw} ${app.location === 'head' ? 'na CABEÇA (×2)' : 'no corpo'} − SP ${app.spBefore} → ${app.hpDamage} de dano (PV ${app.hpBefore} → ${app.hpAfter}).${app.ablated ? ` Armadura do alvo cai para SP ${app.spAfter}.` : ''}`);
       if (app.criticalInjury) lines.push(`FERIMENTO CRÍTICO: ${app.criticalInjury.name} (+5 direto).`);
-      if (a.targetStatusAfter === 'down') lines.push(`${a.targetName} CAIU (0 PV). Decida com update_combatant se morreu, desmaiou ou agoniza.`);
+      if (a.knockedOut) lines.push(`${a.targetName} foi NOCAUTEADO (arma de choque): está vivo e inconsciente.`);
+      else if (a.targetStatusAfter === 'down') lines.push(`${a.targetName} CAIU (0 PV). Decida com update_combatant se morreu, desmaiou ou agoniza.`);
+      if (a.nonLethal === 'rubber') lines.push('Munição de borracha: dói e derruba, mas não mata.');
+    }
+    if (a.autofireMult) lines.push(`RAJADA: 10 tiros, dano 2d6 × ${a.autofireMult}.`);
+    if (a.ambush) lines.push('EMBOSCADA: o alvo foi pego desprevenido; os outros inimigos perdem a próxima ação (surpresa).');
+    if (a.jammedNow) lines.push('A ARMA (de qualidade ruim) TRAVOU neste disparo: nada saiu. O jogador precisa gastar uma ação destravando.');
+    if (a.coverDamage) lines.push(`O tiro acertou a COBERTURA de ${a.targetName}: ${a.coverDamage.before} → ${a.coverDamage.after} PV${a.coverDamage.after <= 0 ? ' — DESTRUÍDA, o alvo ficou exposto' : ''}. O alvo em si não foi ferido.`);
+    if (a.areaHits?.length) {
+      lines.push(`EXPLOSÃO${a.grenade && a.grenade !== 'basic' ? ` (${a.grenade})` : ''} na área de ${a.targetName}:`);
+      for (const h of a.areaHits) {
+        lines.push(`  - ${h.name}: ${h.dodged ? 'saltou para fora da área' : [h.application ? `−${h.application.hpDamage} PV (PV ${h.application.hpBefore} → ${h.application.hpAfter})` : '', h.effect ?? '', h.statusAfter === 'down' ? 'FORA DE COMBATE' : ''].filter(Boolean).join(', ') || 'sem efeito'}`);
+      }
+    }
+    if (a.suppression) {
+      lines.push(`FOGO DE SUPRESSÃO (10 tiros, sem dano direto): ${a.suppression.length ? a.suppression.map(x => `${x.name} ${x.held ? 'segurou os nervos' : 'mergulhou na cobertura e PERDE o próximo ataque'}`).join('; ') : 'ninguém ao alcance'}.`);
     }
   }
+  if (o.followUp) lines.push('— SEGUNDO ATAQUE (Cadência 2, mesma ação) —', describeOutcome(o.followUp));
   return lines.join('\n');
 }
 
@@ -201,7 +286,7 @@ ${feedback}
 Refaça as chamadas usando exatamente os parâmetros aceitos.` : ''}`;
 }
 
-export function buildNarratePrompt(ctx: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null }, isPro: boolean, correction?: string): string {
+export function buildNarratePrompt(ctx: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null }, correction?: string): string {
   const role = getRole(ctx.character.bio.role).label;
   const turnBlock =
     input.kind === 'prologue'
@@ -218,7 +303,7 @@ ${describeEngineResult(input.engineResult)}
 Narre a consequência exatamente como o motor determinou.`;
   return `${contextSections(ctx)}
 
-${turnBlock}${correction ? `\n\n# CORREÇÃO OBRIGATÓRIA\nSua narração anterior contradisse o motor: ${correction}\nReescreva respeitando o resultado.` : ''}${isPro ? '\n\n[MODO PRO]: prosa noir densa, pausas e linguagem corporal.' : ''}`;
+${turnBlock}${correction ? `\n\n# CORREÇÃO OBRIGATÓRIA\nSua narração anterior contradisse o motor: ${correction}\nReescreva respeitando o resultado.` : ''}`;
 }
 
 export function buildPhonePrompt(ctx: GameContext, npcId: string, message: string): string {

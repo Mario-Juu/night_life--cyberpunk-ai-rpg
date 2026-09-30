@@ -9,10 +9,18 @@ import type {
   SummarizeResponse,
 } from '@shared/types/gm';
 import type { EngineResult } from '@shared/types/turn';
+import { useUiStore } from '../store/uiStore';
 
-const TIMEOUT_MS = 120_000;
+/** Sempre MAIOR que o orçamento do servidor (GM_BUDGET_MS = 110 s): o servidor responde antes (narração ou fallback). */
+const TIMEOUT_MS = 150_000;
 
 export class ApiError extends Error {}
+
+/** Chave Gemini do próprio jogador, se ele configurou uma. */
+function keyHeader(): Record<string, string> {
+  const key = useUiStore.getState().geminiKey;
+  return key ? { 'x-gemini-key': key } : {};
+}
 
 async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
   const controller = new AbortController();
@@ -20,7 +28,7 @@ async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
   try {
     const res = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...keyHeader() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -38,7 +46,7 @@ async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
 
 export async function fetchStatus(): Promise<GMStatus> {
   try {
-    const res = await fetch('/api/gm/status');
+    const res = await fetch('/api/gm/status', { headers: keyHeader() });
     if (res.ok) return await res.json();
   } catch {
     // servidor offline

@@ -83,7 +83,7 @@ export function JournalPanel({ game }: { game: GameState }) {
         {game.factions.map(f => (
           <div key={f.id} className="flex items-center justify-between gap-2 text-sm">
             <span className="text-fg truncate">
-              {f.name} <span className="text-[10px] text-dim">{f.category}</span>
+              {f.name} <span className="text-[10px] text-dim">{f.category === 'Gang' ? 'Gangue' : f.category}</span>
             </span>
             <span className={cn('tabular text-xs', standingTone(f.standing))}>
               {f.standing > 0 ? '+' : ''}

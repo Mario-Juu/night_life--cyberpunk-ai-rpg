@@ -3,6 +3,10 @@ import { Check, ChevronDown, GitBranch, History, ListTree, RotateCcw, ScrollText
 import type { GameEventType, GameState } from '@shared/types/game';
 import type { TurnRecord } from '@shared/types/turn';
 import { formatGameTime } from '@shared/rules/world';
+import { EVENT_LABEL, INTENT_LABEL, ORIGIN_LABEL, PHASE_LABEL } from '@shared/rules/labels';
+
+/** Fatos ocultos são do Mestre: não aparecem para o jogador. */
+const isSecret = (e: { type: string; data?: Record<string, unknown> }) => e.type === 'WORLD_FLAG_CHANGED' && e.data?.visibility === 'hidden';
 import { Badge, Button, Empty, Modal, Spinner, Tabs, cn } from '../../ui';
 import { useUiStore, type LogTab } from '../../store/uiStore';
 import { getRepository, type SnapshotMeta } from '../../services/repository';
@@ -24,7 +28,7 @@ function eventTone(type: GameEventType): Tone {
 function EventsTab({ game }: { game: GameState }) {
   const [showNoise, setShowNoise] = useState(false);
   const noisy = (t: GameEventType) => t === 'TOOL_REJECTED' || t === 'TIME_ADVANCED' || t === 'ROLL_MADE';
-  const events = useMemo(() => game.events.filter(e => showNoise || !noisy(e.type)).slice().reverse(), [game.events, showNoise]);
+  const events = useMemo(() => game.events.filter(e => !isSecret(e) && (showNoise || !noisy(e.type))).slice().reverse(), [game.events, showNoise]);
   return (
     <div className="space-y-2">
       <label className="flex items-center gap-2 text-xs text-muted">
@@ -37,7 +41,7 @@ function EventsTab({ game }: { game: GameState }) {
               T{e.turn} {formatGameTime(e.time).time}
             </span>
             <Badge tone={eventTone(e.type)} className="shrink-0 text-[9px]!">
-              {e.type}
+              {EVENT_LABEL[e.type] ?? e.type}
             </Badge>
             <span className="text-fg/90 min-w-0 break-words">{e.summary}</span>
           </li>
@@ -58,14 +62,14 @@ function TurnCard({ t }: { t: TurnRecord }) {
       <button type="button" onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2" aria-expanded={open}>
         <span className="font-display text-xs text-neon-cyan w-12 shrink-0">T{t.turn}</span>
         <span className="flex-1 min-w-0 text-sm truncate">{t.playerInput ?? (t.kind === 'prologue' ? 'Prólogo' : t.parsedIntent?.summary ?? '—')}</span>
-        <Badge tone={t.phase === 'complete' ? 'green' : t.phase === 'failed' ? 'danger' : 'yellow'}>{t.phase}</Badge>
+        <Badge tone={t.phase === 'complete' ? 'green' : t.phase === 'failed' ? 'danger' : 'yellow'}>{PHASE_LABEL[t.phase] ?? t.phase}</Badge>
         <ChevronDown className={cn('w-4 h-4 text-muted transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
         <div className="px-3 pb-3 space-y-3 text-xs border-t border-line-soft pt-2">
           {t.parsedIntent && (
             <p>
-              <span className="eyebrow">Intenção</span> <Badge tone="purple">{t.parsedIntent.type}</Badge> {t.parsedIntent.summary}
+              <span className="eyebrow">Intenção</span> <Badge tone="purple">{INTENT_LABEL[t.parsedIntent.type] ?? t.parsedIntent.type}</Badge> {t.parsedIntent.summary}
             </p>
           )}
           {t.toolCalls.length > 0 && (
@@ -75,7 +79,7 @@ function TurnCard({ t }: { t: TurnRecord }) {
                 {t.toolCalls.map((c, i) => (
                   <li key={i} className="flex items-start gap-1.5">
                     {c.ok ? <Check className="w-3.5 h-3.5 text-neon-green shrink-0" /> : <X className="w-3.5 h-3.5 text-danger shrink-0" />}
-                    <span className="text-dim shrink-0">{c.origin}</span>
+                    <span className="text-dim shrink-0">{ORIGIN_LABEL[c.origin] ?? c.origin}</span>
                     <span className="text-fg shrink-0">{c.tool}</span>
                     <span className="text-muted break-words">{c.summary}</span>
                   </li>
@@ -95,7 +99,7 @@ function TurnCard({ t }: { t: TurnRecord }) {
               ))}
               {t.diceRolls.map(r => (
                 <p key={r.rollId} className="tabular text-dim">
-                  {r.rollId.split(':').slice(-2).join(':')} · {r.dice} [{r.results.join(', ')}] · seed {r.seed}
+                  {r.rollId.split(':').slice(-2).join(':')} · {r.dice} [{r.results.join(', ')}] · semente {r.seed}
                 </p>
               ))}
             </div>
@@ -103,13 +107,13 @@ function TurnCard({ t }: { t: TurnRecord }) {
           {t.llmRuns.length > 0 && (
             <div>
               <p className="eyebrow mb-1">
-                Modelo · {(latency / 1000).toFixed(2)}s · {tokensIn} in / {tokensOut} out
+                Modelo · {(latency / 1000).toFixed(2)}s · {tokensIn} tokens de entrada / {tokensOut} de saída
               </p>
               <ul className="space-y-0.5 tabular">
                 {t.llmRuns.map(r => (
                   <li key={r.requestId} className={cn(r.degraded && 'text-neon-yellow')}>
-                    {r.purpose} · {r.model} · {(r.latencyMs / 1000).toFixed(2)}s · {r.inputTokens ?? '?'}/{r.outputTokens ?? '?'} tok
-                    {r.cachedTokens ? ` (${r.cachedTokens} cache)` : ''} · prompt {r.promptVersion}
+                    {r.purpose} · {r.model} · {(r.latencyMs / 1000).toFixed(2)}s · {r.inputTokens ?? '?'}/{r.outputTokens ?? '?'} tokens
+                    {r.cachedTokens ? ` (${r.cachedTokens} em cache)` : ''} · versão do prompt {r.promptVersion}
                     {r.attempts.length > 1 && ` · ${r.attempts.length} tentativas`}
                     {r.errors.length > 0 && <span className="text-danger"> · {r.errors.join('; ')}</span>}
                   </li>
@@ -240,7 +244,7 @@ export function EventLogModal({ game }: { game: GameState }) {
   const tab = useUiStore(s => s.logTab);
   const close = () => useUiStore.getState().openModal(null);
   return (
-    <Modal open={open} onClose={close} title="Registro da campanha" subtitle={`Turno ${game.turn} · estado v${game.session.version} · linha ${game.session.branchId}`} size="lg">
+    <Modal open={open} onClose={close} title="Registro da campanha" subtitle={`Turno ${game.turn} · estado v${game.session.version} · linha ${game.session.branchId === 'main' ? 'principal' : game.session.branchId}`} size="lg">
       <Tabs<LogTab>
         value={tab}
         onChange={t => useUiStore.setState({ logTab: t })}

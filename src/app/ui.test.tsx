@@ -91,3 +91,23 @@ describe('GameLayout', () => {
     expect(screen.getAllByText('Sucesso').length).toBeGreaterThan(0);
   });
 });
+
+describe('Tutoriais de primeira vez', () => {
+  it('o combate se apresenta uma vez; depois de visto não volta', async () => {
+    const { TutorialModal } = await import('../features/tutorial/TutorialModal');
+    useUiStore.setState({ introSeen: true, tutorialsOn: true, seenTutorials: [], tutorial: null });
+    const game = { ...makeGame(), combat: { active: true, round: 1, playerInitiative: null, combatants: [], log: [] } };
+    render(
+      <>
+        <GameLayout game={game} />
+        <TutorialModal />
+      </>,
+    );
+    expect(useUiStore.getState().tutorial).toBe('combat');
+    expect(screen.getByText('O motor resolve, o Mestre narra')).toBeTruthy();
+    act(() => useUiStore.getState().closeTutorial());
+    expect(useUiStore.getState().seenTutorials).toContain('combat');
+    act(() => useUiStore.getState().showTutorial('combat'));
+    expect(useUiStore.getState().tutorial).toBeNull();
+  });
+});

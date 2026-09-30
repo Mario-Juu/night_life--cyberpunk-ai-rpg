@@ -36,6 +36,20 @@ function hashSeed(seed: string): number {
 
 /** RNG determinístico (mulberry32): a mesma seed reproduz exatamente as mesmas rolagens. */
 export function seededRng(seed: string): Rng {
+  // Sandbox: "force:<n>:<seed>" fixa o PRIMEIRO d10 em n (o resto segue a seed). Continua reproduzível.
+  const forced = /^force:(\d{1,2}):(.*)$/.exec(seed);
+  if (forced) {
+    const inner = seededRng(forced[2]);
+    let pending = Number(forced[1]);
+    return (sides: number) => {
+      if (pending && sides === 10) {
+        const v = Math.min(10, Math.max(1, pending));
+        pending = 0;
+        return v;
+      }
+      return inner(sides);
+    };
+  }
   let a = hashSeed(seed);
   return (sides: number) => {
     a = (a + 0x6d2b79f5) | 0;

@@ -5,6 +5,8 @@ import type { FlagValue, GameState, ScheduledEvent, ThreatLevel } from '../types
 import { advanceGameTime, formatGameTime, gameDay } from '../rules/world';
 import { emit } from './events';
 import { makeId } from './ids';
+import { operatorPerks } from '../rules/roles';
+import { syncWithdrawal } from './withdrawal';
 
 export const FLAG_KEY_RE = /^[a-z0-9_]{2,60}$/;
 
@@ -27,7 +29,7 @@ export function setFlag(state: GameState, key: string, value: FlagValue, visibil
   const prev = state.flags[key];
   if (prev && prev.value === value && prev.visibility === visibility) return state;
   const next: GameState = { ...state, flags: { ...state.flags, [key]: { key, value, visibility, setTurn: state.turn, reason } } };
-  return evaluateQuestFlags(emit(next, 'WORLD_FLAG_CHANGED', `${key} = ${String(value)}${reason ? ` (${reason})` : ''}`, { target: key, value, data: { visibility, previous: prev?.value } }));
+  return evaluateQuestFlags(emit(next, 'WORLD_FLAG_CHANGED', `${key} = ${value === true ? 'sim' : value === false ? 'não' : String(value)}${reason ? ` (${reason})` : ''}`, { target: key, value, data: { visibility, previous: prev?.value } }));
 }
 
 /** Missões com completeFlag/failFlag se resolvem sozinhas quando a flag fica verdadeira. */
@@ -52,8 +54,11 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
   if (status === 'COMPLETED') {
     s = emit(s, 'QUEST_COMPLETED', `Missão concluída: ${quest.title}`, { target: quest.id, value: quest.rewardEddies, data: { reason } });
     if (quest.rewardEddies > 0) {
-      s = { ...s, character: { ...s.character, money: s.character.money + quest.rewardEddies } };
-      s = emit(s, 'MONEY_CHANGED', `+${quest.rewardEddies} €$ (recompensa: ${quest.title})`, { source: quest.giverId ?? quest.id, value: quest.rewardEddies });
+      // Operador (Canal, rank 5+): negocia +20% no pagamento do trabalho.
+      const bonus = s.character.bio.role === 'fixer' ? Math.round(quest.rewardEddies * operatorPerks(s.character.roleRank).jobBonus) : 0;
+      const paid = quest.rewardEddies + bonus;
+      s = { ...s, character: { ...s.character, money: s.character.money + paid } };
+      s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${bonus ? `, +${bonus} negociados pelo Operador` : ''})`, { source: quest.giverId ?? quest.id, value: paid });
     }
   } else {
     s = emit(s, 'QUEST_FAILED', `Missão ${status === 'FAILED' ? 'falhou' : 'abandonada'}: ${quest.title}`, { target: quest.id, data: { reason } });
@@ -117,12 +122,14 @@ export function scheduleEvent(state: GameState, ev: Omit<ScheduledEvent, 'id' | 
 
 export function deliverMessage(state: GameState, npcId: string, text: string): GameState {
   const npc = state.npcs.find(n => n.id === npcId);
-  if (!npc || npc.status === 'dead') return state;
+  // Mortos e animais não mandam mensagem (vale também para eventos agendados).
+  if (!npc || npc.status === 'dead' || npc.kind === 'animal') return state;
   const time = formatGameTime(state.world.time).time;
   const exists = state.phone.some(t => t.npcId === npcId);
   const msg = { id: makeId('pm'), from: 'npc' as const, text, time };
+  // As respostas rápidas antigas eram para a mensagem anterior: descarta para não ficarem fora de contexto.
   const phone = exists
-    ? state.phone.map(t => (t.npcId === npcId ? { ...t, unread: t.unread + 1, messages: [...t.messages, msg].slice(-100) } : t))
+    ? state.phone.map(t => (t.npcId === npcId ? { ...t, unread: t.unread + 1, suggestedReplies: [], messages: [...t.messages, msg].slice(-100) } : t))
     : [...state.phone, { npcId, unread: 1, suggestedReplies: [], messages: [msg] }];
   const npcs = npc.isContact ? state.npcs : state.npcs.map(n => (n.id === npcId ? { ...n, isContact: true } : n));
   return emit({ ...state, phone, npcs }, 'MESSAGE_RECEIVED', `SMS de ${npc.name}: ${text.slice(0, 80)}`, { source: npcId });
@@ -165,6 +172,7 @@ export function advanceTime(state: GameState, minutes: number): GameState {
       s = emit(s, 'EFFECT_EXPIRED', `${eff.name} passou`, { target: eff.id });
     }
   }
+  s = syncWithdrawal(s);
   return processScheduledEvents(s);
 }
 

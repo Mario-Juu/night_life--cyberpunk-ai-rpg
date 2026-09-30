@@ -81,7 +81,7 @@ describe('prompts e schemas', () => {
   });
 
   it('narrador recebe o resultado do motor como verdade absoluta', () => {
-    const prompt = buildNarratePrompt(context(), { kind: 'action', playerInput: 'atiro', engineResult: { intent: null, tools: [{ tool: 'attack', ok: false, summary: 'Pistola está descarregada: só um clique seco.' }], roll: null, offscreen: ['Rafa vendeu o chip'] } }, false);
+    const prompt = buildNarratePrompt(context(), { kind: 'action', playerInput: 'atiro', engineResult: { intent: null, tools: [{ tool: 'attack', ok: false, summary: 'Pistola está descarregada: só um clique seco.' }], roll: null, offscreen: ['Rafa vendeu o chip'] } });
     expect(prompt).toContain('RESULTADO DO MOTOR — VERDADE ABSOLUTA');
     expect(prompt).toContain('✗ attack: Pistola está descarregada');
     expect(prompt).toContain('ACONTECEU FORA DE CENA');
@@ -116,6 +116,24 @@ describe('Game Master', () => {
     expect(env.meta).toMatchObject({ purpose: 'narrate', model: 'fake-1', modelVersion: 'fake-1-001', inputTokens: 100, outputTokens: 20, degraded: false });
     expect(env.meta.errors[0]).toMatch(/consistência/);
     expect(runs).toHaveLength(1);
+  });
+
+  it('JSON inválido do modelo é tentado de novo (não cai direto no modo degradado)', async () => {
+    const prompts: string[] = [];
+    const replies = ['{"narration": "corta', JSON.stringify({ narration: 'O dado rola e a cena segue.', suggestedActions: [], toolCalls: [] })];
+    const provider: LlmProvider = {
+      name: 'fake',
+      async generate(req) {
+        prompts.push(req.prompt);
+        expect(req.deadline).toBeGreaterThan(Date.now()); // todas as tentativas dividem o mesmo prazo
+        return { text: replies.shift()!, model: 'fake-1', usage: {}, attempts: [{ model: 'fake-1', ok: true, latencyMs: 1 }] };
+      },
+    };
+    const env = await createGameMaster(provider, () => {}).narrate(context(), { kind: 'action', playerInput: 'rolo', engineResult: null }, 'flash');
+    expect(env.payload.degraded).toBeFalsy();
+    expect(env.payload.narration).toMatch(/dado rola/);
+    expect(env.meta.attempts.some(a => /JSON inválido/.test(a.error ?? ''))).toBe(true);
+    expect(prompts).toHaveLength(2);
   });
 
   it('falha do provedor vira resposta degradada sem ferramentas, com metadados de erro', async () => {
@@ -166,5 +184,47 @@ describe('rotas HTTP', () => {
   it('/status informa a versão do prompt', async () => {
     const res = await fetch(`${base}/api/gm/status`);
     expect(await res.json()).toMatchObject({ status: 'ok', promptVersion: expect.stringMatching(/^nl-/) });
+  });
+});
+
+describe('resiliência do provedor', () => {
+  it('schema simplificado: args com dezenas de campos vira objeto livre (modelos com limite de complexidade)', async () => {
+    const { simplifySchema } = await import('./gamemaster/llmClient');
+    const simple = simplifySchema(NARRATE_SCHEMA) as { properties: { toolCalls: { items: { properties: { args: object } } } } };
+    expect(simple.properties.toolCalls.items.properties.args).toEqual({ type: 'object', additionalProperties: true, description: expect.any(String) });
+    expect(simplifySchema({ type: 'object', properties: { a: { type: 'string' } } })).toEqual({ type: 'object', properties: { a: { type: 'string' } } });
+  });
+});
+
+describe('gíria de Night City', () => {
+  it('narrador e telefone recebem o glossário (e o intérprete não, para não gastar tokens)', async () => {
+    const { NARRATOR_PROMPT, PHONE_PROMPT, INTERPRETER_PROMPT } = await import('./gamemaster/systemPrompt');
+    for (const p of [NARRATOR_PROMPT, PHONE_PROMPT]) {
+      expect(p).toMatch(/GÍRIA DE NIGHT CITY/);
+      expect(p).toMatch(/Gonk = idiota/);
+      expect(p).toMatch(/Giri = dívida de honra/);
+    }
+    expect(INTERPRETER_PROMPT).not.toMatch(/GÍRIA DE NIGHT CITY/);
+  });
+});
+
+describe('chave do próprio jogador', () => {
+  it('a chave enviada vale só dentro do pedido e tem prioridade sobre a do .env', async () => {
+    const { runWithKey, sanitizeKey } = await import('./gamemaster/requestKey');
+    const { getApiKey } = await import('./gamemaster/llmClient');
+    const key = 'AIzaTesteDoJogador_1234567890';
+    expect(runWithKey(sanitizeKey(key), () => getApiKey())).toBe(key);
+    expect(sanitizeKey('lixo com espaço')).toBeUndefined();
+    expect(getApiKey()).not.toBe(key);
+  });
+
+  it('/status informa que há chave quando o jogador manda a dele', async () => {
+    const app = createApp({ gm: createGameMaster(fakeProvider([]).provider, () => {}), hasKey: () => false, defaultMode: () => 'flash' }).listen(0);
+    const port = (app.address() as { port: number }).port;
+    const without = await (await fetch(`http://127.0.0.1:${port}/api/gm/status`)).json();
+    const withKey = await (await fetch(`http://127.0.0.1:${port}/api/gm/status`, { headers: { 'x-gemini-key': 'AIzaTesteDoJogador_1234567890' } })).json();
+    app.close();
+    expect(without.hasKey).toBe(false);
+    expect(withKey.hasKey).toBe(true);
   });
 });

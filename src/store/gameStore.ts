@@ -4,7 +4,7 @@ import type { GameState } from '@shared/types/game';
 import type { TurnRecord } from '@shared/types/turn';
 import { gameReducer, type GameAction } from '@shared/engine/reducer';
 import { validateSave } from '../services/saves';
-import { backfillNpcsFromChat } from '@shared/engine/npcs';
+import { backfillNpcsFromChat, repairNpcs } from '@shared/engine/npcs';
 
 /** Cada mudança confirmada incrementa session.version (controle de concorrência/auditoria). */
 function bump(prev: GameState, next: GameState): GameState {
@@ -60,7 +60,7 @@ export const useGameStore = create<GameStore>()(
         if (!p?.game) return current;
         try {
           // Recupera personagens que falaram em cena mas nunca foram cadastrados (saves antigos).
-          const game = backfillNpcsFromChat(validateSave(p.game));
+          const game = repairNpcs(backfillNpcsFromChat(validateSave(p.game)));
           return { ...current, game, activeTurn: p.activeTurn?.gameId === game.id ? p.activeTurn : null };
         } catch {
           return current;

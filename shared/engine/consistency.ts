@@ -19,7 +19,18 @@ const MONEY_TOOLS = ['pay_money', 'buy_item', 'transfer_money', 'loot', 'complet
 /** Jogador pagando/transferindo/gastando um valor em eddies. */
 const PLAYER_PAYS = /\b(transfer\w*|pag(a|ou|ando|ar|amento)|quit(a|ou|ar|ação)|deposit\w*|gast(a|ou|ar)|abat(e|eu|er)|desembols\w*)[^.\n]{0,90}?(€\$?\s?\d|\d[\d.]*\s?(eddies|€))/i;
 
-export function checkNarration(result: EngineResult | null, narration: string, dialogues: Dialogue[], npcs: Npc[], narratorTools: ToolCall[] = []): string[] {
+/** Narração declarando a morte do PRÓPRIO jogador (2ª pessoa). */
+const PLAYER_DIES = /(voc[eê] (morre|morreu|est[aá] mort[oa]|n[aã]o sobrevive)|seu (u|ú)ltimo (suspiro|batimento)|seu corpo (tomba|cai|desaba) sem vida|sua vida se apaga|seu cora[cç][aã]o para de bater|flatline)/i;
+const NOT_REALLY = /(quase|se n[aã]o|sen[aã]o|ou |vai |pode |podia|poderia|prestes a|antes que)[^.!?\n]{0,25}$/i;
+
+export function checkNarration(
+  result: EngineResult | null,
+  narration: string,
+  dialogues: Dialogue[],
+  npcs: Npc[],
+  narratorTools: ToolCall[] = [],
+  opts: { playerDead?: boolean } = {},
+): string[] {
   const warnings: string[] = [];
   const text = narration;
 
@@ -50,6 +61,19 @@ export function checkNarration(result: EngineResult | null, narration: string, d
 
   // O DV é segredo do Mestre.
   if (/\b(DV|dificuldade)\s*(de\s*)?\d{1,2}\b/i.test(text)) warnings.push('A narração revelou o DV/dificuldade numérica — isso é segredo do Mestre.');
+
+  // Morte do jogador só acontece pelo motor (Teste de Morte falho ou execute).
+  const engineKills =
+    opts.playerDead ||
+    (result?.roll?.deathSave && !result.roll.deathSave.success) ||
+    (result?.tools ?? []).some(t => t.ok && t.tool === 'execute' && /FLATLINE/.test(t.summary)) ||
+    narratorTools.some(t => t.tool === 'execute' && t.args?.targetId === 'player');
+  const death = PLAYER_DIES.exec(text);
+  if (!engineKills && death && !NOT_REALLY.test(text.slice(0, death.index))) {
+    warnings.push(
+      'A narração declara a MORTE do jogador, mas o motor não o matou. Se ele está indefeso (set_condition) ou sob ameaça letal anunciada (lethal_threat) desde o turno anterior, chame execute com targetId "player" e narre o flatline; caso contrário, NÃO é fatal ainda: descreva o ferimento (ou anuncie a ameaça com lethal_threat) e deixe os PV/Teste de Morte do motor decidirem.',
+    );
+  }
 
   if (result?.roll?.deathSave && !result.roll.deathSave.success && /\b(sobrevive|recupera a consci|levanta)/i.test(text)) warnings.push('O personagem FALHOU no Teste de Morte e morreu.');
   return warnings;

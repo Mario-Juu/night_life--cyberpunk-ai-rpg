@@ -4,18 +4,22 @@
  * - Uma única fila garante que só uma operação do Mestre roda por vez.
  * - O estado só muda por funções puras do motor + commit (sem closures obsoletas).
  */
-import type { Character, GameState, RollOutcome, RollRequest } from '@shared/types/game';
+import { failureHint, failureTitle, isTransientFailure } from '@shared/rules/failures';
+import type { Character, GameState, RollOutcome } from '@shared/types/game';
 import type { TurnRecord } from '@shared/types/turn';
 import type { GmEnvelope } from '@shared/types/gm';
 import { buildGameContext } from '@shared/engine/context';
 import { createInitialState } from '@shared/engine/initialState';
-import { getPlayerWeapon, previewAttackDv } from '@shared/engine/combat';
-import { newSeed, rollDie } from '@shared/engine/dice';
+import { createSandboxState } from '@shared/engine/sandbox';
+import { attackBlocker, buildAttackRequest, getPlayerWeapon, type AttackOptions } from '@shared/engine/combat';
+import { activeOs } from '@shared/engine/cyberBonus';
+import { newSeed, rollDie, seededRng } from '@shared/engine/dice';
 import { makeId } from '@shared/engine/ids';
 import { turnIdOf } from '@shared/engine/events';
+import { canUsePhone } from '@shared/engine/npcs';
+import { humanityBand, isCyberpsycho } from '@shared/rules/humanity';
 import { applyInterpretation, applyNarration, applyPhoneReply, applyRoll, beginTurn, buildEngineResult, finalizeTurn, type Step } from '@shared/engine/turn';
-import { WEAPONS } from '@shared/rules/weapons';
-import { validateToolCalls } from '@shared/engine/tools';
+import { REGISTRY, executeTool, validateToolCalls } from '@shared/engine/tools';
 import { api } from '../services/api';
 import { sound } from '../services/audio';
 import { getRepository } from '../services/repository';
@@ -45,6 +49,9 @@ function exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> {
 
 const model = () => useUiStore.getState().model;
 
+/** Espera antes de tentar a narração de novo sozinho quando o Google está sobrecarregado. */
+export const AUTO_RETRY_DELAY_MS = 8_000;
+
 function reportError(err: unknown, context: string) {
   const message = (err as Error)?.message ?? String(err);
   dispatch({ type: 'systemMessage', text: `⚠ ${context}: ${message}` });
@@ -56,7 +63,7 @@ function recordRun<T>(record: TurnRecord, env: GmEnvelope<T>): T {
   record.llmRuns = [...record.llmRuns, env.meta];
   getRepository().saveLlmRun(env.meta).catch(() => undefined);
   useUiStore.getState().setDegraded(env.meta.degraded);
-  if (env.meta.degraded) toast({ title: 'Mestre em modo degradado', body: 'A IA não respondeu. O motor manteve o mundo consistente; tente de novo.', tone: 'warning' });
+  if (env.meta.degraded) toast({ title: failureTitle(env.meta.failureKind), body: failureHint(env.meta.failureKind), tone: 'warning' });
   return env.payload;
 }
 
@@ -73,6 +80,7 @@ function current(record: TurnRecord): Step {
 }
 
 function feedback(before: GameState, after: GameState) {
+  announceHumanity(before, after);
   if (!before.combat.active && after.combat.active) {
     sound.playCombatStart();
     vfx('combat');
@@ -92,6 +100,17 @@ function feedback(before: GameState, after: GameState) {
   }
   if (after.character.hp.current <= 0 && !after.character.dead) sound.playHeartbeatDanger();
   if (after.pendingRoll && after.pendingRoll.id !== before.pendingRoll?.id) sound.playTurnAlert();
+}
+
+/** Entrada na ciberpsicose: a tela "cai". Faixas baixas de Humanidade: um glitch de aviso. */
+export function announceHumanity(before: GameState, after: GameState) {
+  if (!isCyberpsycho(before.character) && isCyberpsycho(after.character)) {
+    vfx('crash');
+    sound.playFumble();
+    sound.playHeartbeatDanger();
+  } else if (humanityBand(after.character).band !== humanityBand(before.character).band && after.character.humanity.current < before.character.humanity.current) {
+    vfx('glitch');
+  }
 }
 
 async function closeTurn(record: TurnRecord) {
@@ -118,7 +137,16 @@ async function narrateAndFinish(step0: Step, outcome: RollOutcome | null): Promi
   const retrieved = ctx.memories.map(m => m.id);
   const before = step.state;
   try {
-    const env = await api.narrate(ctx, { kind: step.record.kind, playerInput: step.record.playerInput ?? undefined, engineResult }, model());
+    const input = { kind: step.record.kind, playerInput: step.record.playerInput ?? undefined, engineResult };
+    let env = await api.narrate(ctx, input, model());
+    // Sobrecarga do Google costuma passar em segundos: uma nova tentativa automática antes de desistir
+    // (só se a primeira falhou rápido — não dobra uma espera longa).
+    if (env.meta.degraded && isTransientFailure(env.meta.failureKind) && env.meta.latencyMs < 60_000) {
+      step.record.llmRuns = [...step.record.llmRuns, env.meta];
+      useUiStore.getState().setBusy(true, 'O Mestre está reconectando…');
+      await new Promise(r => setTimeout(r, AUTO_RETRY_DELAY_MS));
+      env = await api.narrate(ctx, input, model());
+    }
     const narr = recordRun(step.record, env);
     step = applyNarration(current(step.record), narr);
     step = finalizeTurn(step, retrieved);
@@ -155,6 +183,22 @@ export function requestOpening(): Promise<void> {
   });
 }
 
+/** Seed da próxima rolagem. No Sandbox, o "d10 forçado" entra na seed (continua reproduzível). */
+function takeSeed(): string {
+  const forced = useUiStore.getState().forcedD10;
+  if (forced && getGame()?.sandbox) {
+    useUiStore.getState().setForcedD10(null);
+    return `force:${forced}:${newSeed()}`;
+  }
+  return newSeed();
+}
+
+/** Modo Sandbox: personagem de testes com tudo no máximo, sem prólogo da IA. */
+export function startSandbox(role: Character['bio']['role'] = 'solo') {
+  useGameStore.getState().setGame(createSandboxState(role));
+  useUiStore.setState({ mobileTab: 'story', phoneOpen: false, activeThread: null, lastDegraded: false, modal: 'sandbox' });
+}
+
 export function newCampaign() {
   useGameStore.getState().setGame(null);
   useUiStore.setState({ modal: null, phoneOpen: false, activeThread: null, lastDegraded: false });
@@ -174,6 +218,10 @@ export function sendAction(text: string): Promise<void> {
       return;
     }
     if (game.pendingRoll) dispatch({ type: 'cancelPendingRoll' });
+    if (useGameStore.getState().activeTurn?.phase === 'in_net') {
+      toast({ title: 'Turno na Rede em andamento', body: 'Encerre o turno no painel da Rede antes de agir por texto.', tone: 'warning' });
+      return;
+    }
 
     await takeSnapshot(requireGame(), 'turn_start', clean);
     let step = commitStep(beginTurn(requireGame(), clean));
@@ -198,6 +246,8 @@ export function sendAction(text: string): Promise<void> {
 
     const before = requireGame();
     step = commitStep(applyInterpretation(current(step.record), interp));
+    // Testes resolvidos na hora (Fabricante, Medicina…) só mostram o desfecho junto com a narração.
+    if (requireGame().chat.some(e => e.kind === 'roll' && e.turn === step.state.turn)) useUiStore.getState().setConcealedGame(before);
     feedback(before, requireGame());
 
     if (step.record.phase === 'complete') {
@@ -232,7 +282,7 @@ export function rollPending(luckSpent: number): Promise<RollOutcome | null> {
 
     // O motor decide com uma seed; a animação encena esse resultado; depois ele é aplicado
     // com a MESMA seed sobre o estado atual (os dados são idênticos, nada da UI se perde).
-    const seed = newSeed();
+    const seed = takeSeed();
     const preview = applyRoll(current(active), luckSpent, seed).outcome!;
     useUiStore.getState().setBusy(true, 'Rolando os dados…');
     const animated = await playDice(diceShowFrom(preview));
@@ -259,29 +309,112 @@ export function rollPending(luckSpent: number): Promise<RollOutcome | null> {
   });
 }
 
+// ---------------------------------------------------------------- ações rápidas do motor
+
+/**
+ * Ação de painel resolvida direto pelo motor (sem intérprete): valida no estado atual,
+ * abre o turno, executa com seed e manda o Mestre narrar. Ex.: briga (agarrar, estrangular…).
+ */
+export function quickTool(tool: string, args: Record<string, unknown>, label: string): Promise<void> {
+  return exclusive('Resolvendo…', async () => {
+    const game = requireGame();
+    if (game.character.dead) return;
+    if (game.pendingRoll?.origin === 'gm') {
+      toast({ title: 'Rolagem pendente', body: 'Resolva o teste pendente antes.', tone: 'warning' });
+      return;
+    }
+    // Pré-validação sem efeito (funções puras): nada de turno aberto para uma ação impossível.
+    const dry = executeTool(REGISTRY, game, { tool, args }, { rng: seededRng('dry'), origin: 'player' });
+    if (!dry.record.ok) {
+      toast({ title: 'Ação indisponível', body: dry.record.summary, tone: 'warning' });
+      return;
+    }
+    await takeSnapshot(game, 'turn_start', label);
+    const opened = beginTurn(requireGame(), label);
+    opened.record.parsedIntent = { type: 'attack', summary: label, confidence: 1 };
+    const step0 = commitStep(opened);
+    const before = requireGame();
+    const res = runNetTool(step0, tool, args);
+    if (requireGame().chat.some(e => e.kind === 'roll' && e.turn === requireGame().turn)) useUiStore.getState().setConcealedGame(before);
+    useUiStore.getState().setBusy(true, 'O Mestre narra…');
+    await narrateAndFinish(current({ ...res.step.record, phase: 'narrating' }), null);
+  });
+}
+
+// ---------------------------------------------------------------- Rede (painel)
+
+/** Turno de Rede aberto pelo painel (reaproveita o atual; senão abre um). */
+async function netTurn(): Promise<Step> {
+  const game = requireGame();
+  const active = useGameStore.getState().activeTurn;
+  if (active && active.turn === game.turn && active.phase === 'in_net') return current(active);
+  await takeSnapshot(game, 'turn_start', 'Ações na Rede');
+  const opened = beginTurn(game, null);
+  opened.record.phase = 'in_net';
+  opened.record.parsedIntent = { type: 'netrun', summary: 'Ações na Rede', confidence: 1 };
+  return commitStep(opened);
+}
+
+/** Executa uma ferramenta de Rede com seed registrada e anota no turno. */
+function runNetTool(step: Step, tool: string, args: Record<string, unknown>): { step: Step; ok: boolean; summary: string } {
+  const seed = takeSeed();
+  const res = executeTool(REGISTRY, step.state, { tool, args }, { rng: seededRng(seed), origin: 'player' });
+  const record = { ...step.record, toolCalls: [...step.record.toolCalls, { ...res.record, data: { ...(res.record.data as object), seed } }] };
+  return { step: commitStep({ state: res.state, record }), ok: res.record.ok, summary: res.record.summary };
+}
+
+/** Fecha o turno de Rede: o ICE age e o Mestre narra o lote de ações. */
+async function closeNetTurn(step0: Step) {
+  let step = step0;
+  if (step.state.net.run) step = runNetTool(step, 'net_end_turn', {}).step;
+  useUiStore.getState().setBusy(true, 'O Mestre narra…');
+  await narrateAndFinish(current({ ...step.record, phase: 'narrating' }), null);
+}
+
+/**
+ * Ação de Rede pelo painel (jack_in, net_action). Resolve na hora; quando as Ações de Rede
+ * acabam (ou a conexão cai), o turno fecha sozinho.
+ */
+export function netPanelAction(tool: 'jack_in' | 'net_action', args: Record<string, unknown> = {}): Promise<void> {
+  return exclusive('Na Rede…', async () => {
+    const game = requireGame();
+    if (game.character.dead) return;
+    if (game.pendingRoll?.origin === 'gm') {
+      toast({ title: 'Rolagem pendente', body: 'Resolva o teste pendente antes.', tone: 'warning' });
+      return;
+    }
+    const before = requireGame();
+    const res = runNetTool(await netTurn(), tool, args);
+    if (!res.ok) {
+      toast({ title: 'Ação de Rede recusada', body: res.summary, tone: 'warning' });
+      return;
+    }
+    sound.playDiceRoll();
+    feedback(before, requireGame());
+    const run = requireGame().net.run;
+    if (!run || run.actionsLeft <= 0 || requireGame().character.dead) await closeNetTurn(res.step);
+  });
+}
+
+/** Encerra o turno na Rede pelo painel (o ICE age e o Mestre narra). */
+export function endNetTurnPanel(): Promise<void> {
+  return exclusive('O ICE reage…', async () => {
+    const active = useGameStore.getState().activeTurn;
+    if (!active || active.phase !== 'in_net') return;
+    await closeNetTurn(current(active));
+  });
+}
+
 /** Ataque escolhido no painel de combate: pedido local (cancelável) com DV da balística. */
-export function prepareAttack(targetId: string, weaponId: string | undefined, aimedHead: boolean): string | null {
+export function prepareAttack(targetId: string | null, weaponId: string | undefined, opts: AttackOptions): string | null {
   const game = requireGame();
   if (game.pendingRoll?.origin === 'gm') return 'Resolva primeiro o teste pendente.';
-  const target = game.combat.combatants.find(c => c.id === targetId && c.status === 'active');
-  if (!target) return 'Alvo indisponível.';
+  const target = targetId ? game.combat.combatants.find(c => c.id === targetId && c.status === 'active') : undefined;
+  if (targetId && !target) return 'Alvo indisponível.';
   const weapon = getPlayerWeapon(game.character, weaponId);
-  const profile = WEAPONS[weapon.weapon?.weaponClass ?? 'unarmed'];
-  if (!profile.melee && (weapon.weapon?.loaded ?? 0) <= 0) return 'Arma descarregada. Recarregue primeiro.';
-  const preview = previewAttackDv(weapon, target);
-  const request: RollRequest = {
-    id: makeId('roll'),
-    kind: 'attack',
-    origin: 'player',
-    reason: `${aimedHead ? 'Tiro mirado na cabeça' : 'Ataque'} com ${weapon.name} em ${target.name}`,
-    stat: profile.melee ? 'DEX' : 'REF',
-    skillId: profile.skillId,
-    dv: preview.dv ?? 0,
-    modifier: 0,
-    targetId: target.id,
-    weaponId: weapon.id,
-    aimedHead,
-  };
+  const err = attackBlocker(game.character, weapon, target, opts, activeOs(game));
+  if (err) return err;
+  const request = buildAttackRequest(game.character, weapon, target, opts, 'player');
   dispatch({ type: 'setPendingRoll', request });
   useUiStore.getState().setMobileTab('story');
   return null;
@@ -339,7 +472,10 @@ export function reload(weaponId: string) {
 export function consumeItem(itemId: string) {
   const item = requireGame().character.inventory.find(i => i.id === itemId);
   if (!item) return;
-  dispatch({ type: 'useConsumable', itemId, healed: item.heal ? rollDie(item.heal) : 0 });
+  // Droga de rua tem teste de vício: vira ação narrada.
+  if (item.streetDrug) return void quickTool('use_item', { itemId }, `Uso ${item.name}.`);
+  if (item.drug) dispatch({ type: 'useDrug', itemId });
+  else dispatch({ type: 'useConsumable', itemId, healed: item.heal ? rollDie(item.heal) : 0 });
   sound.playSuccess();
 }
 
@@ -366,7 +502,8 @@ export function sendPhoneMessage(npcId: string, text: string): Promise<void> {
   const clean = text.trim();
   if (!clean) return Promise.resolve();
   const game = requireGame();
-  if (game.npcs.find(n => n.id === npcId)?.status === 'dead') return Promise.resolve();
+  const target = game.npcs.find(n => n.id === npcId);
+  if (target && !canUsePhone(target)) return Promise.resolve();
   const ctx = buildGameContext(game, clean);
   dispatch({ type: 'phoneSend', npcId, text: clean });
   return exclusive('Aguardando resposta no Agent…', async () => {

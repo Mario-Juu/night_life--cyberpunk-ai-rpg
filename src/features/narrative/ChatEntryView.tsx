@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { AlertTriangle, RefreshCw, Search, Swords } from 'lucide-react';
+import { AlertTriangle, Radar, RefreshCw, Search, Swords } from 'lucide-react';
 import type { ChatEntry } from '@shared/types/game';
 import { parseNarration } from '@shared/engine/narration';
 import { cn } from '../../ui';
@@ -79,6 +79,16 @@ export const ChatEntryView = memo(function ChatEntryView({ entry, onRegenerate, 
           <Swords className="w-4 h-4 shrink-0 mt-0.5" />
           {entry.text}
         </p>
+      );
+    case 'net':
+      return (
+        <div className="border border-neon-cyan/30 bg-neon-cyan/5 px-3 py-2 flex gap-2">
+          <Radar className="w-4 h-4 text-neon-cyan shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="eyebrow text-neon-cyan mb-0.5">Rede</p>
+            <p className="tabular text-xs text-muted whitespace-pre-line break-words">{entry.text}</p>
+          </div>
+        </div>
       );
     case 'system':
     default:

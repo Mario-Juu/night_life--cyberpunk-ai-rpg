@@ -23,7 +23,8 @@ function trustLabel(t: number) {
 }
 
 function ContactList({ game }: { game: GameState }) {
-  const contacts = game.npcs.filter(n => n.isContact || game.phone.some(t => t.npcId === n.id));
+  // Animais não usam o Agent (mesmo que um save antigo tenha uma conversa com eles).
+  const contacts = game.npcs.filter(n => n.kind !== 'animal' && (n.isContact || game.phone.some(t => t.npcId === n.id)));
   const sorted = [...contacts].sort((a, b) => {
     const ta = game.phone.find(t => t.npcId === a.id);
     const tb = game.phone.find(t => t.npcId === b.id);

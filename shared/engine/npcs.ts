@@ -116,11 +116,93 @@ export function registerSpeakers(state: GameState, speakers: string[]): { state:
 export function backfillNpcsFromChat(state: GameState): GameState {
   let s = state;
   for (const entry of state.chat) {
-    if (entry.kind !== 'narration') continue;
-    for (const name of speakersOf(entry.text)) {
-      if (isGenericSpeaker(name, s) || findNpcLoose(s, name)) continue;
-      s = ensureNpc(s, name, { lastInteraction: entry.time }).state;
+    if (entry.kind === 'narration') {
+      for (const name of speakersOf(entry.text)) {
+        if (isGenericSpeaker(name, s) || findNpcLoose(s, name)) continue;
+        s = ensureNpc(s, name, { lastInteraction: entry.time }).state;
+      }
+    } else if (entry.kind === 'player') {
+      // Contatos que o jogador disse ter salvo em turnos anteriores.
+      s = applyContactExchange(s, entry.text).state;
     }
   }
   return s;
+}
+
+const HUMAN_TIE = /\b(mae|pai|irma\w*|filh\w*|avo|tia|tio|namorad\w*|espos\w*|marid\w*|amig\w*|prim[oa]s?|companheir\w*|parceir\w*|vizinh\w*|mentor\w*)\b/;
+const ANIMAL = /\b(gat[oa]s?|gatinh\w*|felin\w*|cachorr\w*|cao|caes|cadel\w*|dog|cat|pet|pets|papagai\w*|calopsit\w*|passar\w*|periquit\w*|coelh\w*|hamster|furao|peixe\w*|tartarug\w*|iguana|lagart\w*|cobra|porquinho da india|mascote|animal|animais|bichinho\w*|bicho de estimacao)\b/;
+
+/** O texto descreve um animal (e não uma pessoa)? Ex.: "Mingau, meu gato laranja". */
+export function looksLikeAnimal(text: string): boolean {
+  const t = normalizeName(text);
+  return !HUMAN_TIE.test(t) && ANIMAL.test(t);
+}
+
+/** Animais não usam o Agent: não viram contato, não mandam nem recebem mensagens. */
+export const canUsePhone = (npc: Pick<Npc, 'kind' | 'status'>) => npc.kind !== 'animal' && npc.status !== 'dead';
+
+/**
+ * Conserta saves antigos (idempotente):
+ * - o laço inicial que é um bicho deixa de ser contato do Agent;
+ * - a dívida/pressão é do JOGADOR, não do laço (antes ficava como "pendente" dele).
+ */
+export function repairNpcs(state: GameState): GameState {
+  const debt = state.character.bio.debtReason?.trim();
+  let changed = false;
+  const npcs = state.npcs.map(n => {
+    if (n.id !== 'npc_family') return n; // FAMILY_ID (sem importar initialState: evita ciclo)
+    let next = n;
+    if (n.kind === undefined && looksLikeAnimal(`${n.name} ${n.description}`)) next = { ...next, kind: 'animal', isContact: false, role: 'Bicho de estimação' };
+    if (debt && next.pendingMatters?.trim() === debt) next = { ...next, pendingMatters: undefined };
+    if (next !== n) changed = true;
+    return next;
+  });
+  // A missão inicial era sempre "aluguel", mesmo quando a pressão era outra.
+  const missions = state.missions.map(m => (m.id === 'm_rent' && m.title === 'Sobreviver ao Aluguel' && debt && !/aluguel/i.test(debt) ? { ...m, title: 'Pressão imediata', description: debt } : m));
+  if (missions.some((m, i) => m !== state.missions[i])) changed = true;
+  return changed ? { ...state, npcs, missions } : state;
+}
+
+/** Marca um NPC como contato do Agent (cria o NPC se ainda não existir). */
+export function saveContact(state: GameState, name: string, reason = 'contato salvo'): { state: GameState; npc: Npc; changed: boolean } {
+  const res = ensureNpc(state, name, { isContact: true, role: 'Contato' });
+  if (!canUsePhone(res.npc)) return { state, npc: res.npc, changed: false };
+  if (res.npc.isContact && !res.created) return { state: res.state, npc: res.npc, changed: false };
+  let s = res.state;
+  if (!res.created) s = { ...s, npcs: s.npcs.map(n => (n.id === res.npc.id ? { ...n, isContact: true } : n)) };
+  s = emit(s, 'NPC_UPDATED', `${res.npc.name}: ${reason} no Agent`, { target: res.npc.id, data: { isContact: true } });
+  return { state: s, npc: { ...res.npc, isContact: true }, changed: true };
+}
+
+/** O texto fala em salvar/trocar/passar/pegar contato ou número? */
+const CONTACT_EXCHANGE = /\b(salv\w*|anot\w*|guard\w*|troc\w*|pass\w*|peg\w*|registr\w*|adicion\w*|add)\b[^.!?\n]{0,60}\b(contatos?|n[uú]meros?|telefones?|canal|agent|zap|holo)\b|\b(contatos?|n[uú]meros?)\b[^.!?\n]{0,40}\b(salv\w*|anotad\w*|trocad\w*)\b/i;
+
+const NAME_STOPWORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'the', 'minha', 'meu', 'seu', 'sua', 'senhor', 'senhora', 'dona']);
+
+/** NPCs vivos citados no texto (por qualquer parte do nome, inclusive apelido entre aspas). */
+export function mentionedNpcs(state: Pick<GameState, 'npcs'>, text: string): Npc[] {
+  const words = new Set(normalizeName(text).split(' '));
+  return state.npcs.filter(n => {
+    if (n.status === 'dead') return false;
+    const tokens = normalizeName(n.name)
+      .split(' ')
+      .filter(t => t.length >= 3 && !NAME_STOPWORDS.has(t));
+    return tokens.some(t => words.has(t));
+  });
+}
+
+/**
+ * Rede de segurança: se o JOGADOR diz que salvou/trocou contato com alguém conhecido,
+ * o contato é salvo mesmo que o LLM esqueça de chamar a ferramenta.
+ */
+export function applyContactExchange(state: GameState, playerText: string): { state: GameState; saved: string[] } {
+  if (!CONTACT_EXCHANGE.test(playerText)) return { state, saved: [] };
+  let s = state;
+  const saved: string[] = [];
+  for (const npc of mentionedNpcs(s, playerText)) {
+    const res = saveContact(s, npc.id);
+    s = res.state;
+    if (res.changed) saved.push(npc.id);
+  }
+  return { state: s, saved };
 }

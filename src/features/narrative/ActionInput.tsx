@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { CornerDownLeft } from 'lucide-react';
+import { CornerDownLeft, Skull } from 'lucide-react';
+import { CYBERPSYCHO_ACTIONS, isCyberpsycho } from '@shared/rules/humanity';
 import type { GameState } from '@shared/types/game';
 import { Button, SuggestionStrip, cn } from '../../ui';
 import { sendAction } from '../../store/turnController';
@@ -12,6 +13,8 @@ export function ActionInput({ game }: { game: GameState }) {
   const busy = useUiStore(s => s.gmBusy);
   const gmRollPending = game.pendingRoll?.origin === 'gm' || game.pendingRoll?.kind === 'deathSave';
   const dead = game.character.dead;
+  // Ciberpsicose: o teclado some — só sobram os impulsos.
+  const psycho = isCyberpsycho(game.character);
   const disabled = busy || gmRollPending || dead;
 
   // Altura automática (1 a 5 linhas).
@@ -42,8 +45,30 @@ export function ActionInput({ game }: { game: GameState }) {
       <div className="max-w-3xl mx-auto space-y-2.5">
         {game.pendingRoll && <RollCard key={game.pendingRoll.id} game={game} />}
 
-        {!game.pendingRoll && !dead && <SuggestionStrip items={game.suggestedActions} onPick={submit} disabled={disabled} label="Ações sugeridas" />}
+        {!game.pendingRoll && !dead && !psycho && <SuggestionStrip items={game.suggestedActions} onPick={submit} disabled={disabled} label="Ações sugeridas" />}
 
+        {psycho && !dead && (
+          <div className="psycho-lock border border-danger/60 bg-danger/10 p-3 space-y-2" role="group" aria-label="Ciberpsicose">
+            <p className="flex items-center gap-2 font-display text-[11px] uppercase tracking-[0.3em] text-danger psycho-text">
+              <Skull className="w-4 h-4" /> Controle perdido · ciberpsicose
+            </p>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {(game.suggestedActions.length ? game.suggestedActions : CYBERPSYCHO_ACTIONS).map(a => (
+                <button
+                  key={a}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => submit(a)}
+                  className="text-left text-sm px-3 py-2 border border-danger/50 bg-surface-0/70 text-fg hover:bg-danger/20 hover:border-danger disabled:opacity-40 psycho-option"
+                >
+                  {a}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!psycho && (
         <form
           className="flex items-end gap-2"
           onSubmit={e => {
@@ -73,6 +98,7 @@ export function ActionInput({ game }: { game: GameState }) {
             <span className="hidden sm:inline">Agir</span>
           </Button>
         </form>
+        )}
       </div>
     </div>
   );

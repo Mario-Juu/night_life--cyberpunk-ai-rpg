@@ -21,7 +21,8 @@ import { SKILLS } from '@shared/rules/skills';
 import { WEAPONS } from '@shared/rules/weapons';
 import { Badge, Button, Card, Field, Input, Stepper, Textarea, cn } from '../../ui';
 import { sound } from '../../services/audio';
-import { startCampaign } from '../../store/turnController';
+import { startCampaign, startSandbox } from '../../store/turnController';
+import { fetchStatus } from '../../services/api';
 import { useUiStore } from '../../store/uiStore';
 
 const STEPS = ['Identidade', 'Origem', 'Atributos', 'Equipamento'];
@@ -43,6 +44,8 @@ export function CreationScreen() {
   const [weaponId, setWeaponId] = useState(STARTER_WEAPONS[0].id);
   const [starting, setStarting] = useState(false);
   const model = useUiStore(s => s.model);
+  const hasKey = useUiStore(s => s.hasKey);
+  const [keyDraft, setKeyDraft] = useState('');
 
   const total = statTotal(stats);
   const remaining = POINT_BUDGET - total;
@@ -80,12 +83,40 @@ export function CreationScreen() {
               Registro de ingresso · Night City · 2077 ·{' '}
               <button type="button" className="underline-offset-2 hover:underline hover:text-neon-cyan" onClick={() => useUiStore.getState().setIntroSeen(false)}>
                 rever introdução
+              </button>{' '}
+              ·{' '}
+              <button type="button" className="underline-offset-2 hover:underline hover:text-neon-yellow" onClick={() => startSandbox(role)} title="Personagem de testes com tudo no máximo e painel de depuração">
+                modo sandbox (depuração)
               </button>
             </p>
             <h1 className="font-display text-3xl sm:text-4xl font-black tracking-widest text-neon-cyan drop-shadow-[0_0_12px_rgba(0,240,255,0.5)]">
               NIGHT<span className="text-neon-magenta">//</span>LIFE
             </h1>
           </header>
+
+          {!hasKey && (
+            <div className="border border-neon-yellow/50 bg-neon-yellow/5 p-3 space-y-2">
+              <p className="text-sm text-neon-yellow">Sem chave Gemini: o Mestre (IA) não vai responder.</p>
+              <p className="text-xs text-muted">
+                Crie uma chave grátis no Google AI Studio e cole aqui. Ela fica só neste navegador (dá para trocar depois nas Configurações).
+              </p>
+              <div className="flex gap-1.5">
+                <Input type="password" value={keyDraft} onChange={e => setKeyDraft(e.target.value)} placeholder="Cole sua chave Gemini" autoComplete="off" aria-label="Chave Gemini" />
+                <Button
+                  variant="solid"
+                  tone="yellow"
+                  disabled={!keyDraft.trim()}
+                  onClick={async () => {
+                    useUiStore.getState().setGeminiKey(keyDraft);
+                    setKeyDraft('');
+                    useUiStore.getState().setHasKey((await fetchStatus()).hasKey);
+                  }}
+                >
+                  Salvar
+                </Button>
+              </div>
+            </div>
+          )}
 
           <Stepper steps={STEPS} current={step} className="justify-center" />
 
@@ -164,7 +195,7 @@ export function CreationScreen() {
 
                 <section className="space-y-3 pt-2 border-t border-line-soft">
                   <p className="eyebrow">Laços humanos · estilo Edgerunners</p>
-                  <Field label="Pessoa mais importante">
+                  <Field label="Laço mais importante" hint="Pessoa ou bicho de estimação.">
                     <Input value={familyTie} onChange={e => setFamilyTie(e.target.value)} maxLength={140} />
                   </Field>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -228,7 +259,7 @@ export function CreationScreen() {
                   <div className="flex flex-wrap gap-1.5">
                     {topSkills.map(s => (
                       <Badge key={s.id} tone="muted">
-                        {s.label} {skills[s.id]}
+                        {s.label} <span className="text-dim">({s.stat})</span> {skills[s.id]}
                       </Badge>
                     ))}
                   </div>

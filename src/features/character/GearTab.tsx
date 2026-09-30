@@ -39,9 +39,18 @@ function ItemRow({ item, game }: { item: InventoryItem; game: GameState }) {
             <Badge tone={w.loaded === 0 ? 'danger' : 'muted'}>
               Pente {w.loaded}/{w.magSize}
             </Badge>
-          ) : (
+          ) : profile.thrown ? (
+            <Badge tone="yellow">Arremesso · área · ×{item.quantity}</Badge>
+          ) : profile.halfArmor ? (
             <Badge tone="muted">Ignora ½ SP</Badge>
-          )}
+          ) : null}
+          {profile.rof === 2 && <Badge tone="muted">Cad. 2</Badge>}
+          {profile.autofire && <Badge tone="muted">Rajada ×{profile.autofire.mult}</Badge>}
+          {w.quality === 'poor' && <Badge tone="muted">Ruim (trava num 1)</Badge>}
+          {w.quality === 'excellent' && <Badge tone="purple">Excelente +1</Badge>}
+          {w.jammed && <Badge tone="danger">TRAVADA</Badge>}
+          {w.nonLethal === 'stun' && <Badge tone="cyan">Choque (não letal)</Badge>}
+          {w.nonLethal === 'rubber' && <Badge tone="cyan">Borracha (não letal)</Badge>}
           {w.ammo && <span className="text-dim">Reserva: {stock}</span>}
         </div>
       )}
@@ -53,7 +62,8 @@ function ItemRow({ item, game }: { item: InventoryItem; game: GameState }) {
       )}
 
       <div className="flex flex-wrap gap-1.5">
-        {(w || item.armor) && (
+        {item.implant && <span className="text-[10px] font-display uppercase tracking-wider text-neon-purple border border-neon-purple/40 px-1.5 py-0.5">Implante</span>}
+        {(w || item.armor) && !(item.implant && item.armor) && (
           <Button size="sm" variant="ghost" onClick={() => dispatch({ type: 'equip', itemId: item.id, equipped: !item.equipped })} icon={item.armor ? <Shield className="w-3 h-3" /> : <Crosshair className="w-3 h-3" />}>
             {item.equipped ? 'Desequipar' : 'Equipar'}
           </Button>
@@ -63,12 +73,12 @@ function ItemRow({ item, game }: { item: InventoryItem; game: GameState }) {
             Recarregar
           </Button>
         )}
-        {item.category === 'consumable' && item.heal ? (
-          <Button size="sm" variant="ghost" tone="green" disabled={game.character.hp.current >= game.character.hp.max || busy} onClick={() => consumeItem(item.id)} icon={<Syringe className="w-3 h-3" />}>
+        {item.category === 'consumable' && (item.heal || item.drug || item.streetDrug) ? (
+          <Button size="sm" variant="ghost" tone={item.streetDrug ? 'purple' : 'green'} disabled={(!item.drug && !item.streetDrug && game.character.hp.current >= game.character.hp.max) || busy} onClick={() => consumeItem(item.id)} icon={<Syringe className="w-3 h-3" />}>
             Usar
           </Button>
         ) : null}
-        {!item.equipped && (
+        {!item.equipped && !item.implant && (
           <Button
             size="sm"
             variant="ghost"

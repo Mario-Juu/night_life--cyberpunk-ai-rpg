@@ -15,7 +15,7 @@ export const INTERPRET_SCHEMA = {
     intent: {
       type: 'object',
       properties: {
-        type: { type: 'string', enum: ['attack', 'skill', 'social', 'move', 'trade', 'use_item', 'observe', 'dialogue', 'rest', 'other'] },
+        type: { type: 'string', enum: ['attack', 'skill', 'social', 'move', 'trade', 'use_item', 'observe', 'dialogue', 'rest', 'netrun', 'other'] },
         summary: S,
         targetId: S,
         confidence: N,

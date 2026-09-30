@@ -37,6 +37,12 @@ export interface Scenario {
   context(query?: string): ReturnType<typeof buildGameContext>;
 }
 
+/** Coloca um ripperdoc na cena (nível 5, mercado negro, confia no jogador) — para testes de cromo. */
+export function withRipperdoc(s: GameState, tier: 1 | 2 | 3 | 4 | 5 = 5, blackMarket = true, trust = 60): GameState {
+  const doc = { id: 'npc_doc', name: 'Doc', role: 'Ripperdoc', description: '', trust, respect: 30, fear: 0, anger: 0, knowledge: [], status: 'alive' as const, isContact: false, ripperdoc: { tier, blackMarket } };
+  return { ...s, npcs: [...s.npcs.filter(n => n.id !== doc.id), doc], scene: { ...s.scene, presentNpcIds: [...s.scene.presentNpcIds.filter(id => id !== doc.id), doc.id] } };
+}
+
 export function scenario(overrides: Partial<CreationInput> = {}): Scenario {
   const character = buildCharacter({
     name: 'Matt',

@@ -9,6 +9,7 @@ import type { GameState, RollRequest } from '../../types/game';
 import type { ToolCall, ToolCallRecord, ToolOrigin } from '../../types/turn';
 import type { Rng } from '../dice';
 import { emit } from '../events';
+import { NPC_TEMPLATES } from '../../rules/npcTemplates';
 
 export type ToolKind = 'query' | 'action' | 'mutation';
 
@@ -21,6 +22,10 @@ export type ParamSpec =
 export interface CombatantArg {
   id?: string;
   name: string;
+  /** Ficha pronta (a ficha manda: só nome, distância e cobertura podem mudar). */
+  template?: string;
+  /** Quantos iguais (grupo numerado). */
+  count?: number;
   hp?: number;
   sp?: number;
   headSp?: number;
@@ -73,18 +78,43 @@ export const fail = (state: GameState, error: string): ToolOutcome => ({ state, 
 // Validação gerada a partir dos ParamSpec
 // ---------------------------------------------------------------------------
 
+/**
+ * Formatos que modelos menores mandam para `combatants`: um objeto só, ou {ficha: quantidade}
+ * (ex.: {"maelstrom_ganger": 3}) — tudo vira a lista padrão.
+ */
+function normalizeCombatants(v: unknown): unknown {
+  // Lista com ficha pronta mas sem nome ({template, count}): o nome vem da ficha.
+  if (Array.isArray(v)) return v.map(c => (c && typeof c === 'object' && !(c as { name?: unknown }).name && NPC_TEMPLATES[(c as { template?: string }).template ?? ''] ? { ...c, name: NPC_TEMPLATES[(c as { template: string }).template].name } : c));
+  if (!v || typeof v !== 'object') return v;
+  const o = v as Record<string, unknown>;
+  if (typeof o.name === 'string') return [o];
+  const byTemplate = Object.entries(o).filter(([k]) => NPC_TEMPLATES[k]);
+  if (byTemplate.length) return byTemplate.map(([k, n]) => ({ name: NPC_TEMPLATES[k].name, template: k, count: Number(n) || 1 }));
+  if (typeof o.template === 'string' && NPC_TEMPLATES[o.template]) return [{ ...o, name: NPC_TEMPLATES[o.template].name }];
+  return [o];
+}
+
+/** Número de ficha: fora da faixa é LIMITADO (não derruba a chamada inteira, que perderia a luta). */
+const stat = (min: number, max: number) =>
+  z.coerce
+    .number()
+    .refine(Number.isFinite)
+    .transform(n => Math.min(max, Math.max(min, Math.round(n))));
+
 const combatantZod = z.object({
   id: z.string().trim().max(40).optional(),
   name: z.string().trim().min(1).max(60),
-  hp: z.coerce.number().min(1).max(80).optional(),
-  sp: z.coerce.number().min(0).max(18).optional(),
-  headSp: z.coerce.number().min(0).max(18).optional(),
+  template: z.string().trim().max(40).optional(),
+  count: stat(1, 6).optional(),
+  hp: stat(1, 80).optional(),
+  sp: stat(0, 18).optional(),
+  headSp: stat(0, 18).optional(),
   weaponName: z.string().trim().max(60).optional(),
   weaponClass: z.string().trim().max(30).optional(),
   damage: z.string().trim().max(10).optional(),
-  attackBase: z.coerce.number().min(4).max(20).optional(),
-  evasionBase: z.coerce.number().min(2).max(18).optional(),
-  ref: z.coerce.number().min(2).max(10).optional(),
+  attackBase: stat(4, 22).optional(),
+  evasionBase: stat(2, 20).optional(),
+  ref: stat(2, 10).optional(),
   distance: z.string().trim().max(10).optional(),
   cover: z.string().trim().max(10).optional(),
 });
@@ -114,7 +144,8 @@ function paramZod(spec: ParamSpec): z.ZodType {
       schema = z.union([z.boolean(), z.enum(['true', 'false']).transform(v => v === 'true')]);
       break;
     case 'combatants':
-      schema = z.array(combatantZod).min(1).max(8);
+      // Modelos menores às vezes mandam um objeto só em vez da lista.
+      schema = z.preprocess(normalizeCombatants, z.array(combatantZod).min(1).max(8));
       break;
   }
   return spec.required ? schema : schema.optional();
@@ -130,10 +161,29 @@ export function argsSchema(def: ToolDef): z.ZodType {
   return s;
 }
 
-/** Remove null/"" (o LLM costuma mandá-los para campos ausentes). */
-function cleanArgs(raw: unknown): Record<string, unknown> {
+/**
+ * Nomes que o LLM confunde (o schema de args é a união de todas as ferramentas): se a ferramenta
+ * espera `targetId` e veio `targetNpcId`, o alvo não pode se perder.
+ */
+const ALIASES: Record<string, string[]> = {
+  targetId: ['targetNpcId', 'target', 'targetName', 'npcId', 'id'],
+  npcId: ['targetNpcId', 'targetId', 'target'],
+  target: ['targetId', 'targetNpcId', 'npcId'],
+  itemId: ['weaponId', 'item'],
+};
+
+/** Remove null/"" (o LLM costuma mandá-los para campos ausentes) e resolve apelidos de parâmetros. */
+export function cleanArgs(raw: unknown, def?: ToolDef): Record<string, unknown> {
   if (!raw || typeof raw !== 'object') return {};
-  return Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([, v]) => v !== null && v !== ''));
+  const args = Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([, v]) => v !== null && v !== ''));
+  if (def) {
+    for (const [key, alts] of Object.entries(ALIASES)) {
+      if (!(key in def.params) || args[key] !== undefined) continue;
+      const alt = alts.find(a => !(a in def.params) && typeof args[a] === 'string');
+      if (alt) args[key] = args[alt];
+    }
+  }
+  return args;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +216,7 @@ export function executeTool(registry: ToolRegistry, state: GameState, call: Tool
   if (!def) return reject('ferramenta desconhecida');
   if (!def.origins.includes(ctx.origin)) return reject(`não permitida para ${ctx.origin}`);
 
-  const parsed = argsSchema(def).safeParse(cleanArgs(call.args));
+  const parsed = argsSchema(def).safeParse(cleanArgs(call.args, def));
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     return reject(`argumento inválido: ${issue?.path.join('.') || '?'} — ${issue?.message}`);

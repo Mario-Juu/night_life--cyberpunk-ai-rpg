@@ -2,6 +2,9 @@ import type { Character, InventoryItem, RoleId, StatKey, Stats, WeaponClass } fr
 import { STAT_KEYS, computeMaxHp, computeMaxHumanity } from './stats';
 import { SKILLS } from './skills';
 import { AMMO_LABEL, WEAPONS } from './weapons';
+import { START_ROLE_RANK, familyVehicle } from './roles';
+import { VEHICLE_ITEM_ID, defaultRoleData } from '../engine/roles';
+import { starterDeck } from '../engine/net';
 
 export const POINT_BUDGET = 62;
 export const STAT_MIN = 2;
@@ -29,8 +32,8 @@ export const ROLES: readonly RoleInfo[] = [
     id: 'netrunner',
     label: 'Trilheiro',
     tagline: 'Invasor da Rede. Mente rápida, corpo frágil.',
-    skills: { interface: 6, electronics_security: 5, cybertech: 4, library_search: 4, stealth: 4, handgun: 3, deduction: 3 },
-    gear: { name: 'Ciberdeck Portátil Kirama', category: 'gear', quantity: 1, description: 'Deck de entrada para pontos de acesso físicos.', equipped: true, value: 200 },
+    skills: { electronics_security: 6, cybertech: 5, basic_tech: 4, library_search: 4, conceal_reveal: 4, stealth: 4, handgun: 3, deduction: 3 },
+    gear: { name: 'Óculos de Virtualidade', category: 'gear', quantity: 1, description: 'Sobrepõem a Rede à visão enquanto você está conectado.', equipped: true, value: 100 },
   },
   {
     id: 'tech',
@@ -43,7 +46,7 @@ export const ROLES: readonly RoleInfo[] = [
     id: 'medtech',
     label: 'Medicânico',
     tagline: 'Mantém a equipe viva quando a Equipe de Trauma não vem.',
-    skills: { first_aid: 6, cybertech: 5, human_perception: 4, deduction: 4, conversation: 4, handgun: 3, resist_torture: 3 },
+    skills: { first_aid: 6, paramedic: 5, cybertech: 4, human_perception: 4, deduction: 4, conversation: 4, handgun: 3, resist_torture: 3 },
     gear: { name: 'Estojo Médico de Emergência', category: 'gear', quantity: 1, description: 'Agulhas hemostáticas, biocurativos e bisturi.', equipped: true, value: 150 },
   },
   {
@@ -57,7 +60,7 @@ export const ROLES: readonly RoleInfo[] = [
     id: 'nomad',
     label: 'Nômade',
     tagline: 'Da estrada e do clã. Leal até o fim.',
-    skills: { drive: 6, shoulder_arms: 5, handgun: 4, athletics: 4, endurance: 4, basic_tech: 4, tracking: 3, evasion: 4 },
+    skills: { drive: 6, shoulder_arms: 5, handgun: 4, athletics: 4, endurance: 4, vehicle_tech: 4, tracking: 3, evasion: 4 },
     gear: { name: 'Cantil Filtrante & Óculos de Tempestade', category: 'gear', quantity: 1, description: 'Sobrevivência nos Ermos.', equipped: true, value: 80 },
   },
 ];
@@ -212,7 +215,7 @@ export function buildCharacter(input: CreationInput): Character {
     },
     {
       id: 'item_starter_agent',
-      name: 'Agente de Bolso',
+      name: 'Agent de Bolso',
       category: 'gear',
       quantity: 1,
       description: 'Holo-comunicador com agenda e sinal local.',
@@ -220,6 +223,10 @@ export function buildCharacter(input: CreationInput): Character {
       value: 80,
     },
   );
+
+  if (role.id === 'nomad') {
+    inventory.push({ id: VEHICLE_ITEM_ID, name: familyVehicle(START_ROLE_RANK), category: 'gear', quantity: 1, description: 'Veículo da família (Moto). O clã cuida dele; você cuida do clã.', equipped: true, value: 0 });
+  }
 
   const maxHp = computeMaxHp(input.stats.BODY, input.stats.WILL);
   const maxHumanity = computeMaxHumanity(input.stats.EMP);
@@ -251,5 +258,8 @@ export function buildCharacter(input: CreationInput): Character {
     deathSavePenalty: 0,
     stabilized: false,
     dead: false,
+    roleRank: START_ROLE_RANK,
+    roleData: defaultRoleData(role.id),
+    ...(role.id === 'netrunner' ? { deck: starterDeck() } : {}),
   };
 }

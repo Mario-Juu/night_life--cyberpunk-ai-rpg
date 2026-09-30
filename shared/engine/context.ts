@@ -70,6 +70,8 @@ export function buildGameContext(state: GameState, query = ''): GameContext {
     flags: Object.values(state.flags),
     activeEffects: state.activeEffects,
     combat: state.combat,
+    net: state.net,
+    sandbox: state.sandbox,
     memories,
     summaries: state.history.summaries.slice(-6),
     recentHistory: recentHistory(state),

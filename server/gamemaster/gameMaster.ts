@@ -3,10 +3,10 @@
  * Não aplica NADA ao estado — só devolve intenções, narração e pedidos de ferramentas.
  */
 import { randomUUID } from 'crypto';
-import type { EngineResult, LlmPurpose, LlmRunMeta } from '../../shared/types/turn';
+import type { EngineResult, FailureKind, LlmPurpose, LlmRunMeta } from '../../shared/types/turn';
 import type { GameContext, GmEnvelope, InterpretResponse, ModelMode, NarrateResponse, PhoneResponse, SummarizeResponse } from '../../shared/types/gm';
 import { checkNarration } from '../../shared/engine/consistency';
-import { LlmError, type GenerateResult, type LlmProvider } from './llmClient';
+import { LlmError, gmBudgetMs, type GenerateResult, type LlmProvider } from './llmClient';
 import { INTERPRETER_PROMPT, NARRATOR_PROMPT, PHONE_PROMPT, PROMPT_VERSION, SUMMARIZER_PROMPT } from './systemPrompt';
 import { INTERPRET_SCHEMA, NARRATE_SCHEMA, PHONE_SCHEMA, SUMMARY_SCHEMA } from './schemas';
 import { buildInterpretPrompt, buildNarratePrompt, buildPhonePrompt } from './promptBuilder';
@@ -22,6 +22,11 @@ export interface GameMaster {
 }
 
 export type RunLogger = (meta: LlmRunMeta) => void;
+
+/** Revelar o DV é deslize de estilo; o resto contradiz o motor e merece reescrita. */
+export function isSevereWarning(warning: string): boolean {
+  return !/revelou o DV/i.test(warning);
+}
 
 /** Log estruturado (uma linha JSON por chamada). */
 export const consoleRunLogger: RunLogger = meta => {
@@ -63,16 +68,41 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
     return m;
   }
 
-  /** Chama o provedor e faz o parse; em falha devolve o erro com as tentativas. */
-  async function call(system: string, prompt: string, schema: object, mode: ModelMode) {
-    const result = await provider.generate({ system, prompt, schema, mode });
-    return { result, raw: parseLlmJson(result.text) };
+  /**
+   * Chama o provedor e faz o parse, tudo dentro do prazo da operação.
+   * JSON inválido conta como falha transitória: tenta de novo em OUTRO modelo enquanto houver tempo.
+   */
+  async function call(system: string, prompt: string, schema: object, mode: ModelMode, deadline: number, purpose: LlmPurpose) {
+    const attempts: LlmError['attempts'] = [];
+    const avoid: string[] = [];
+    let lastErr: unknown;
+    for (let i = 0; i < 2; i++) {
+      let result;
+      try {
+        result = await provider.generate({ system, prompt, schema, mode, deadline, purpose, avoid });
+      } catch (err) {
+        if (err instanceof LlmError) throw new LlmError(err.message, [...attempts, ...err.attempts], err.kind);
+        throw err;
+      }
+      try {
+        return { result: { ...result, attempts: [...attempts, ...result.attempts] }, raw: parseLlmJson(result.text) };
+      } catch (err) {
+        lastErr = err;
+        avoid.push(result.model);
+        attempts.push(...result.attempts, { model: result.model, ok: false, latencyMs: 0, error: `JSON inválido: ${(err as Error).message}`.slice(0, 200) });
+        if (deadline - Date.now() < 15_000) break;
+      }
+    }
+    throw new LlmError((lastErr as Error)?.message ?? 'Resposta inválida do modelo.', attempts, 'invalid_json');
   }
 
-  function failure(err: unknown) {
+  const deadlineFrom = (started: number) => started + gmBudgetMs();
+
+  function failure(err: unknown): { attempts: LlmRunMeta['attempts']; errors: string[]; failureKind: FailureKind } {
     return {
       attempts: err instanceof LlmError ? err.attempts : [],
       errors: [(err as Error)?.message ?? String(err)],
+      failureKind: err instanceof LlmError ? err.kind : 'other',
     };
   }
 
@@ -82,7 +112,7 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
       const info: CallInfo = { purpose: 'interpret', sessionId: ctx.sessionId, turnId: ctx.turnId, retrievedMemories: ctx.memories.map(m => m.id) };
       try {
         // Intérprete sempre usa o modo rápido: é classificação, não prosa.
-        const { result, raw } = await call(INTERPRETER_PROMPT, buildInterpretPrompt(ctx, text, feedback), INTERPRET_SCHEMA, 'flash');
+        const { result, raw } = await call(INTERPRETER_PROMPT, buildInterpretPrompt(ctx, text, feedback), INTERPRET_SCHEMA, 'flash', deadlineFrom(started), 'interpret');
         const payload = normalizeInterpret(raw);
         return { payload, meta: meta(info, started, result, { toolsCalled: payload.toolCalls.map(t => t.tool) }) };
       } catch (err) {
@@ -99,15 +129,20 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
         let payload: NarrateResponse | null = null;
         const warningsSeen: string[] = [];
         // Até 2 tentativas: se a narração contradisser o motor, pede reescrita com a correção.
+        const deadline = deadlineFrom(started);
         for (let attempt = 0; attempt < 2; attempt++) {
-          const { result, raw } = await call(NARRATOR_PROMPT, buildNarratePrompt(ctx, input, mode === 'pro', correction), NARRATE_SCHEMA, mode);
+          // A reescrita por consistência só acontece se ainda houver tempo (senão fica a 1ª versão, com o aviso).
+          if (attempt > 0 && deadline - Date.now() < 30_000) break;
+          const { result, raw } = await call(NARRATOR_PROMPT, buildNarratePrompt(ctx, input, correction), NARRATE_SCHEMA, mode, deadline, info.purpose);
           last = result;
           payload = normalizeNarrate(raw);
-          const warnings = checkNarration(input.engineResult, payload.narration, payload.dialogues, ctx.npcs, payload.toolCalls);
+          const warnings = checkNarration(input.engineResult, payload.narration, payload.dialogues, ctx.npcs, payload.toolCalls, { playerDead: ctx.character.dead });
           if (!warnings.length) break;
           warningsSeen.push(...warnings);
           correction = warnings.join(' ');
           payload.consistencyWarnings = warnings;
+          // Reescrever custa outra chamada (e cota): só vale para contradições graves com o motor.
+          if (!warnings.some(isSevereWarning)) break;
         }
         if (input.kind === 'prologue') payload = { ...payload!, enemyActions: [] };
         return {
@@ -115,7 +150,8 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
           meta: meta(info, started, last, { toolsCalled: payload!.toolCalls.map(t => t.tool), errors: warningsSeen.map(w => `consistência: ${w}`) }),
         };
       } catch (err) {
-        return { payload: fallbackNarrate(ctx, input.kind, input.engineResult, input.playerInput), meta: meta(info, started, last, { ...failure(err), degraded: true }) };
+        const f = failure(err);
+        return { payload: fallbackNarrate(ctx, input.kind, input.engineResult, input.playerInput, f.failureKind), meta: meta(info, started, last, { ...f, degraded: true }) };
       }
     },
 
@@ -123,7 +159,7 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
       const started = Date.now();
       const info: CallInfo = { purpose: 'phone', sessionId: ctx.sessionId, turnId: ctx.turnId };
       try {
-        const { result, raw } = await call(PHONE_PROMPT, buildPhonePrompt(ctx, npcId, message), PHONE_SCHEMA, mode);
+        const { result, raw } = await call(PHONE_PROMPT, buildPhonePrompt(ctx, npcId, message), PHONE_SCHEMA, mode, deadlineFrom(started), 'phone');
         const payload = normalizePhone(raw);
         return { payload, meta: meta(info, started, result, { toolsCalled: payload.toolCalls.map(t => t.tool) }) };
       } catch (err) {
@@ -135,7 +171,7 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
       const started = Date.now();
       const info: CallInfo = { purpose: 'summarize', sessionId: req.sessionId, turnId: req.turnId };
       try {
-        const { result, raw } = await call(SUMMARIZER_PROMPT, `TURNOS ${req.fromTurn}–${req.toTurn}:\n${req.transcript}`, SUMMARY_SCHEMA, 'flash');
+        const { result, raw } = await call(SUMMARIZER_PROMPT, `TURNOS ${req.fromTurn}–${req.toTurn}:\n${req.transcript}`, SUMMARY_SCHEMA, 'flash', deadlineFrom(started), 'summarize');
         const summary = typeof raw.summary === 'string' && raw.summary.trim() ? raw.summary.trim().slice(0, 2000) : fallbackSummary(req.transcript);
         return { payload: { summary }, meta: meta(info, started, result, {}) };
       } catch (err) {

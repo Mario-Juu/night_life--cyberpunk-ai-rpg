@@ -1,7 +1,9 @@
 import type { GameState, Modifier, RollOutcome, RollRequest } from '../types/game';
 import { cryptoRng, type Rng } from './dice';
 import { resolveCheck, statValue } from './checks';
-import { resolvePlayerAttack, rollInitiative } from './combat';
+import { applyPlayerAttack, getPlayerWeapon, resolvePlayerAttack, rollInitiative } from './combat';
+import { WEAPONS } from '../rules/weapons';
+import { activeOs } from './cyberBonus';
 import { effectPenalties, resolveDeathSave } from './health';
 
 /** Modificadores do pedido + efeitos ativos (penalidades de ferimento vêm do próprio resolveCheck). */
@@ -13,14 +15,34 @@ export function requestModifiers(state: GameState, request: RollRequest): Modifi
   ].filter(m => m.value !== 0);
 }
 
+/** Cadência 2 (pistolas leves/médias, facas, punhos, artes marciais): dois ataques por Ação — sem tiro mirado nem rajada. */
+export function canRof2(state: GameState, request: RollRequest): boolean {
+  if (!request.rof2 || (request.mode && request.mode !== 'single')) return false;
+  // Sandevistan: o tempo dilatado dá um ataque extra com qualquer arma (o Apogee, até mirado).
+  const os = activeOs(state);
+  if (request.aimedHead && !os?.aimedFollowUp) return false;
+  if (os?.extraAttack) return true;
+  const cls = getPlayerWeapon(state.character, request.weaponId).weapon?.weaponClass ?? 'unarmed';
+  return WEAPONS[cls].rof === 2;
+}
+
 /**
  * Resolve o pendingRoll atual com o motor. Nunca decide nada pelo LLM:
  * o DV do GM vale para testes; ataques usam balística; Teste de Morte usa BODY.
  */
 export function resolveRoll(state: GameState, request: RollRequest, luckSpent: number, rng: Rng = cryptoRng): RollOutcome {
   switch (request.kind) {
-    case 'attack':
-      return resolvePlayerAttack(state, request, luckSpent, rng);
+    case 'attack': {
+      const first = resolvePlayerAttack(state, request, luckSpent, rng);
+      if (!canRof2(state, request) || !first.attack || first.attack.failure || first.attack.jammedNow) return first;
+      // Cadência 2: o segundo golpe/tiro já vê o estado depois do primeiro.
+      const applied = applyPlayerAttack(state, first.attack);
+      const after: GameState = { ...state, character: applied.character, combat: applied.combat };
+      const alive = after.combat.combatants.find(t => t.id === request.targetId && t.status === 'active') ?? after.combat.combatants.find(t => t.status === 'active');
+      if (!alive) return first;
+      const followUp = resolvePlayerAttack(after, { ...request, targetId: alive.id, ambush: false }, 0, rng);
+      return { ...first, followUp };
+    }
 
     case 'deathSave': {
       const ds = resolveDeathSave(state.character, rng);
@@ -54,15 +76,15 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
           statValue: ref,
           skillId: null,
           skillValue: 0,
-          d10: { rolls: [init.player - ref], natural: init.player - ref, total: init.player - ref, crit: false, fumble: false },
-          modifiers: [],
+          d10: { rolls: [init.die], natural: init.die, total: init.die, crit: false, fumble: false },
+          modifiers: init.modifiers,
           luckSpent: 0,
           total: init.player,
           dv: 0,
           success: true,
           margin: init.player,
         },
-        initiative: init,
+        initiative: { player: init.player, enemies: init.enemies },
       };
     }
 

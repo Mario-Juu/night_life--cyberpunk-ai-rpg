@@ -7,6 +7,7 @@ import { newCampaign } from '../../store/turnController';
 export function GameOverOverlay({ game }: { game: GameState }) {
   const modal = useUiStore(s => s.modal);
   if (!game.character.dead || modal) return null;
+  const cause = [...game.events].reverse().find(e => e.type === 'PLAYER_DIED')?.data?.cause as string | undefined;
   return (
     <div className="fixed inset-0 z-30 bg-surface-0/90 backdrop-blur-sm grid place-items-center p-6 animate-fade-in" role="alertdialog" aria-labelledby="flatline-title">
       <div className="text-center space-y-4 max-w-sm">
@@ -17,6 +18,7 @@ export function GameOverOverlay({ game }: { game: GameState }) {
         <p className="text-sm text-muted">
           {game.character.bio.handle} bateu as botas em {game.world.location.district}. Night City nem piscou.
         </p>
+        {cause && <p className="text-xs text-dim italic">{cause}</p>}
         <div className="flex flex-col gap-2">
           <Button variant="solid" tone="yellow" icon={<History className="w-4 h-4" />} onClick={() => useUiStore.getState().openLog('timeline')}>
             Voltar no tempo

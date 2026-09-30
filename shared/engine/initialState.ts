@@ -1,6 +1,8 @@
 import { STATE_VERSION, type Character, type GameState, type Npc } from '../types/game';
 import { CAMPAIGN_START_TIME, advanceGameTime, formatGameTime, getDistrict } from '../rules/world';
 import { makeId } from './ids';
+import { looksLikeAnimal } from './npcs';
+import { installCyberware } from './cyberware';
 
 export const RAFA_ID = 'npc_rafa';
 export const FAMILY_ID = 'npc_family';
@@ -26,9 +28,12 @@ export function createInitialState(character: Character): GameState {
   const time = CAMPAIGN_START_TIME;
   const clock = formatGameTime(time).time;
   const familyName = character.bio.familyTie ? character.bio.familyTie.split(/[,;(]/)[0].trim().slice(0, 60) : '';
+  // O laço pode ser um bicho (gato, cachorro…): existe no mundo, mas não usa o Agent.
+  const familyIsAnimal = looksLikeAnimal(character.bio.familyTie ?? '');
+  const debt = character.bio.debtReason?.trim();
   const id = makeId('camp');
 
-  return {
+  const state: GameState = {
     version: STATE_VERSION,
     id,
     title: `Sombra em ${district.name}`,
@@ -79,13 +84,14 @@ export function createInitialState(character: Character): GameState {
             makeNpc({
               id: FAMILY_ID,
               name: familyName,
-              role: 'Família',
+              role: familyIsAnimal ? 'Bicho de estimação' : 'Família',
               description: character.bio.familyTie,
               trust: 60,
               respect: 50,
-              currentGoal: 'Manter a família de pé.',
-              isContact: true,
-              pendingMatters: character.bio.debtReason || undefined,
+              currentGoal: familyIsAnimal ? undefined : 'Manter a família de pé.',
+              isContact: !familyIsAnimal,
+              kind: familyIsAnimal ? 'animal' : 'person',
+              // A dívida/pressão é do JOGADOR (fica na missão e na memória), não do laço.
               lastInteraction: clock,
             }),
           ]
@@ -94,9 +100,9 @@ export function createInitialState(character: Character): GameState {
     missions: [
       {
         id: 'm_rent',
-        title: 'Sobreviver ao Aluguel',
-        description: 'Manter a cabeça fora d’água antes que o síndico chame a segurança.',
-        objective: character.bio.debtReason || 'Juntar eddies para o aluguel da semana.',
+        title: debt && !/aluguel/i.test(debt) ? 'Pressão imediata' : 'Sobreviver ao Aluguel',
+        description: debt || 'Manter a cabeça fora d’água antes que o síndico chame a segurança.',
+        objective: debt || 'Juntar eddies para o aluguel da semana.',
         status: 'ACTIVE',
         reward: 'Teto sobre a cabeça',
         rewardEddies: 0,
@@ -110,6 +116,7 @@ export function createInitialState(character: Character): GameState {
       { id: 'fac_trauma', name: 'Equipe de Trauma', category: 'Megacorp', standing: 0, description: 'Resgate armado — só para clientes com plano.' },
     ],
     combat: { active: false, round: 0, playerInitiative: null, combatants: [], log: [] },
+    net: { architecture: null, run: null },
     phone: [
       {
         npcId: RAFA_ID,
@@ -135,4 +142,17 @@ export function createInitialState(character: Character): GameState {
     pendingRoll: null,
     suggestedActions: [],
   };
+  return withStarterCyberware(state);
+}
+
+/** Cromo inicial do papel (RED: o Trilheiro já vem com Neural Link + Plugues; perda média de Humanidade). */
+export function withStarterCyberware(state: GameState): GameState {
+  if (state.character.bio.role !== 'netrunner') return state;
+  let s = state;
+  for (const key of ['neural_link', 'interface_plugs']) {
+    if (s.character.cyberware.some(cw => cw.key === key)) continue;
+    const res = installCyberware(s, key, () => 1, { free: true, average: true, noTime: true });
+    if (res.ok) s = res.state;
+  }
+  return s;
 }

@@ -1,4 +1,7 @@
-import { BookOpen, MessageSquare, ScrollText, Swords, User, Users } from 'lucide-react';
+import { BookOpen, MessageSquare, Radar, ScrollText, Swords, User, Users } from 'lucide-react';
+import { NetPanel } from '../net/NetPanel';
+import { useTutorial } from '../tutorial/TutorialModal';
+import { humanityBand } from '@shared/rules/humanity';
 import type { GameState } from '@shared/types/game';
 import { Drawer, Tabs, cn } from '../../ui';
 import { useUiStore, type MobileTab, type SideTab } from '../../store/uiStore';
@@ -14,15 +17,18 @@ import { GameOverOverlay } from './GameOverOverlay';
 function SidePanel({ game }: { game: GameState }) {
   const tab = useUiStore(s => s.sideTab);
   const setTab = useUiStore(s => s.setSideTab);
-  const effective: SideTab = game.combat.active && tab === 'contacts' ? 'combat' : tab;
+  const showNet = game.character.bio.role === 'netrunner' || !!game.net.architecture;
+  const effective: SideTab = game.net.run ? 'net' : game.combat.active && tab === 'contacts' ? 'combat' : tab === 'net' && !showNet ? 'journal' : tab;
   return (
     <div className="h-full flex flex-col min-h-0">
       <Tabs<SideTab>
+        compact={showNet}
         value={effective}
         onChange={setTab}
         items={[
           { id: 'journal', label: 'Diário', icon: <BookOpen className="w-3.5 h-3.5" /> },
           { id: 'combat', label: 'Combate', icon: <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.combat.active ? game.combat.combatants.filter(c => c.status === 'active').length : undefined },
+          ...(showNet ? [{ id: 'net' as const, label: 'Rede', icon: <Radar className={cn('w-3.5 h-3.5', game.net.run && 'text-neon-cyan')} />, badge: game.net.architecture && !game.net.run ? 1 : undefined }] : []),
           { id: 'contacts', label: 'Contatos', icon: <Users className="w-3.5 h-3.5" /> },
         ]}
       />
@@ -32,7 +38,7 @@ function SidePanel({ game }: { game: GameState }) {
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {effective === 'journal' ? <JournalPanel game={game} /> : <CombatPanel game={game} />}
+          {effective === 'journal' ? <JournalPanel game={game} /> : effective === 'net' ? <NetPanel game={game} /> : <CombatPanel game={game} />}
         </div>
       )}
     </div>
@@ -72,6 +78,12 @@ export function GameLayout({ game }: { game: GameState }) {
   const phoneOpen = useUiStore(s => s.phoneOpen);
   const closePhone = useUiStore(s => s.closePhone);
   const unread = game.phone.reduce((s, t) => s + t.unread, 0);
+  // Tutoriais de primeira vez (cada sistema se apresenta quando aparece). Esperam a narração terminar.
+  const idle = !concealed;
+  useTutorial('sandbox', idle && !!game.sandbox);
+  useTutorial('combat', idle && game.combat.active);
+  useTutorial('net', idle && !!game.net.architecture && game.character.bio.role === 'netrunner');
+  useTutorial('humanity', idle && humanityBand(game.character).band !== 'stable');
 
   return (
     <div className="h-dvh flex flex-col overflow-hidden">
@@ -102,6 +114,7 @@ export function GameLayout({ game }: { game: GameState }) {
         )}
         {mobileTab === 'journal' && (
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-6">
+            {view.net.architecture && <NetPanel game={view} />}
             {view.combat.active && <CombatPanel game={view} />}
             <JournalPanel game={view} />
           </div>

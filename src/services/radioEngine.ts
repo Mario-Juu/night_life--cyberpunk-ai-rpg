@@ -36,7 +36,7 @@ export const STATIONS: RadioStation[] = [
     frequency: '88.3 MHz',
     name: 'NETWATCH DARKSYNTH',
     genre: 'Darksynth / Industrial',
-    description: 'Sintetizadores distorcidos para operações na Net profunda.',
+    description: 'Sintetizadores distorcidos para operações na Rede profunda.',
     streams: ['https://stream.nightride.fm/darksynth.mp3'],
     accentColor: '#06b6d4',
   },

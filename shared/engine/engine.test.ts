@@ -104,7 +104,8 @@ describe('perícias e atributos', () => {
     expect(resolveSkillId('Pistolas (Handgun)')).toBe('handgun');
     expect(resolveSkillId('Armas de Fogo de Mão')).toBe('handgun');
     expect(resolveSkillId('Cibertecnologia (Cybertech)')).toBe('cybertech');
-    expect(resolveSkillId('dança do ventre')).toBeNull();
+    expect(resolveSkillId('dança do ventre')).toBe('dance'); // Dança é perícia no RED
+    expect(resolveSkillId('culinária molecular')).toBeNull();
   });
 
   it('stat só aceita correspondência exata', () => {
@@ -176,10 +177,13 @@ describe('combate', () => {
     expect(next.events.some(e => e.type === 'DAMAGE_TAKEN' && e.source === 'foe_ganger')).toBe(true);
   });
 
-  it('iniciativa = REF + 1d10', () => {
+  it('iniciativa = REF + 1d10 (+ Reação de Iniciativa do Solo)', () => {
     const s = withEnemy(newState());
-    const outcome = resolveRoll(s, { id: 'i', kind: 'initiative', origin: 'player', reason: 'Iniciativa', stat: 'REF', skillId: null, dv: 0, modifier: 0 }, 0, sequenceRng([5, 3]));
-    expect(outcome.initiative).toEqual({ player: 12, enemies: [{ id: 'foe_ganger', value: 8 }] });
+    const req = { id: 'i', kind: 'initiative' as const, origin: 'player' as const, reason: 'Iniciativa', stat: 'REF' as const, skillId: null, dv: 0, modifier: 0 };
+    // Solo padrão: 1 ponto em Reação de Iniciativa.
+    expect(resolveRoll(s, req, 0, sequenceRng([5, 3])).initiative).toEqual({ player: 13, enemies: [{ id: 'foe_ganger', value: 8 }] });
+    const noReaction = { ...s, character: { ...s.character, roleData: {} } };
+    expect(resolveRoll(noReaction, req, 0, sequenceRng([5, 3])).initiative).toEqual({ player: 12, enemies: [{ id: 'foe_ganger', value: 8 }] });
   });
 
   it('Teste de Morte é forçado a 0 PV e mata ao falhar', () => {

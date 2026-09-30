@@ -5,6 +5,9 @@ import { makeCombatantId } from '../combat';
 import { makeId } from '../ids';
 import type { CombatantArg } from './registry';
 import { findNpcLoose } from '../npcs';
+import { NPC_TEMPLATES, guessTemplate } from '../../rules/npcTemplates';
+import type { GrenadeKind, WeaponClass, WeaponQuality } from '../../types/game';
+import { STREET_DRUGS, guessStreetDrug } from '../../rules/streetDrugs';
 
 export const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 export const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -44,6 +47,21 @@ export interface ItemArgs {
   armorSP?: number;
   armorSlot?: string;
   heal?: number;
+  quality?: string;
+}
+
+/** Tipo de granada pelo nome. */
+export function guessGrenadeKind(name: string): GrenadeKind {
+  const n = name.toLowerCase();
+  if (/perfurante|armor.?piercing|\bap\b/.test(n)) return 'armor_piercing';
+  if (/luz|flash|atordoa/.test(n)) return 'flashbang';
+  if (/incendi|napalm|fogo/.test(n)) return 'incendiary';
+  if (/sono|sonífer|sleep|tranquil/.test(n)) return 'sleep';
+  if (/fumaça|smoke/.test(n)) return 'smoke';
+  if (/lacrimo|tear|gás/.test(n)) return 'teargas';
+  if (/veneno|tóxic|toxic|poison|biotox/.test(n)) return 'poison';
+  if (/emp|pulso/.test(n)) return 'emp';
+  return 'basic';
 }
 
 /** Constrói um item coerente com as regras (arma/armadura/munição completas). */
@@ -55,7 +73,16 @@ export function buildItem(a: ItemArgs): InventoryItem {
     const profile = WEAPONS[cls];
     const mag = profile.melee ? null : a.magSize ?? profile.defaultMag;
     item.weapon = { weaponClass: cls, damage: isValidNotation(a.damage) ? a.damage : profile.defaultDamage, magSize: mag, loaded: mag ?? 0, ammo: profile.ammo };
-    item.quantity = 1;
+    const quality = a.quality === 'poor' || a.quality === 'excellent' ? a.quality : weaponQualityFromName(a.name);
+    if (quality) item.weapon.quality = quality;
+    // Armas de choque (taser, bastão de choque) apagam em vez de matar.
+    if (/choque|taser|stun/i.test(a.name)) item.weapon.nonLethal = 'stun';
+    if (profile.thrown) {
+      // Granadas empilham (cada arremesso gasta uma).
+      item.weapon.grenade = guessGrenadeKind(a.name);
+    } else {
+      item.quantity = 1;
+    }
   }
   if (category === 'armor') {
     const sp = a.armorSP ?? 7;
@@ -64,41 +91,95 @@ export function buildItem(a: ItemArgs): InventoryItem {
   }
   if (category === 'ammo') {
     item.ammoKind = (Object.keys(AMMO_LABEL) as AmmoKind[]).find(k => k === a.ammoKind) ?? guessAmmoKind(a.name);
+    if (/borracha|rubber/i.test(a.name)) item.ammoVariant = 'rubber';
   }
   if (category === 'consumable' && a.heal) item.heal = a.heal;
+  if (category === 'consumable') {
+    const street = guessStreetDrug(a.name);
+    if (street) {
+      item.streetDrug = street;
+      item.description = item.description || STREET_DRUGS[street].description;
+    }
+  }
   return item;
 }
 
 /** Adiciona ao inventário, empilhando munição/consumíveis de mesmo tipo. */
 export function addToInventory(state: GameState, item: InventoryItem): GameState {
   const c = state.character;
-  const stackable = item.category === 'ammo' || item.category === 'consumable';
+  const grenade = !!item.weapon?.grenade;
+  const stackable = item.category === 'ammo' || item.category === 'consumable' || grenade;
   const existing = stackable
-    ? c.inventory.find(i => i.category === item.category && (item.ammoKind ? i.ammoKind === item.ammoKind : sameName(i.name, item.name)))
+    ? c.inventory.find(i =>
+        grenade
+          ? i.weapon?.grenade === item.weapon!.grenade && i.weapon?.weaponClass === item.weapon!.weaponClass
+          : i.category === item.category && (item.ammoKind ? i.ammoKind === item.ammoKind && i.ammoVariant === item.ammoVariant : sameName(i.name, item.name)),
+      )
     : undefined;
   const inventory = existing ? c.inventory.map(i => (i.id === existing.id ? { ...i, quantity: i.quantity + item.quantity } : i)) : [...c.inventory, item];
   return { ...state, character: { ...c, inventory } };
 }
 
+/**
+ * Monta um combatente.
+ * - Com `template`: a FICHA PRONTA manda (PV, SP, armas, bases). Só nome, distância e cobertura vêm do pedido.
+ * - Sem template (NPC com nome, único): usa a ficha que o narrador mandou; o que faltar vem do
+ *   Boosterganger (ficha oficial mais básica) — nunca de números inventados.
+ */
 export function buildCombatant(spec: CombatantArg, existing: Combatant[]): Combatant {
-  const cls = isWeaponClass(spec.weaponClass) ? spec.weaponClass : guessWeaponClass(spec.weaponName ?? '', spec.damage);
+  // Genérico SEM nenhum número ("Ganger da Maelstrom", "Segurança") → a ficha pronta que combina com o nome.
+  // Se a IA mandou qualquer valor de ficha, ela está montando um NPC próprio: respeita o que veio.
+  const noStats = [spec.hp, spec.sp, spec.headSp, spec.weaponClass, spec.damage, spec.attackBase, spec.evasionBase, spec.ref, spec.weaponName].every(v => v === undefined);
+  const key = spec.template && NPC_TEMPLATES[spec.template] ? spec.template : noStats ? guessTemplate(spec.name) : null;
+  const tpl = key ? NPC_TEMPLATES[key] : undefined;
+  const base = tpl ?? NPC_TEMPLATES.boosterganger;
+  const custom = !tpl;
+  const tplWeapon = base.weapons[0];
+  const cls: WeaponClass = custom
+    ? isWeaponClass(spec.weaponClass)
+      ? spec.weaponClass
+      : spec.weaponName || spec.damage
+        ? guessWeaponClass(spec.weaponName ?? '', spec.damage)
+        : tplWeapon.weaponClass
+    : tplWeapon.weaponClass;
   const profile = WEAPONS[cls];
-  const hp = spec.hp ?? 20;
+  const hp = custom ? spec.hp ?? base.hp : base.hp;
+  const bodySp = custom ? spec.sp ?? base.sp.body : base.sp.body;
   const id = spec.id && /^[a-z0-9_]+$/.test(spec.id) && !existing.some(c => c.id === spec.id) ? spec.id : makeCombatantId(spec.name, existing);
+  const weaponName = custom ? spec.weaponName ?? (spec.weaponClass || spec.damage ? profile.label : tplWeapon.name) : tplWeapon.name;
+  const damage = custom ? (isValidNotation(spec.damage) ? spec.damage : spec.weaponClass ? profile.defaultDamage : tplWeapon.damage) : tplWeapon.damage;
+  const cover = spec.cover === 'partial' || spec.cover === 'full' ? spec.cover : 'none';
   return {
     id,
     name: spec.name,
     hp: { current: hp, max: hp },
-    sp: { body: spec.sp ?? 7, head: spec.headSp ?? Math.min(spec.sp ?? 7, 7) },
-    weapon: { name: spec.weaponName ?? profile.label, weaponClass: cls, damage: isValidNotation(spec.damage) ? spec.damage : profile.defaultDamage },
-    attackBase: spec.attackBase ?? 10,
-    evasionBase: spec.evasionBase ?? 8,
-    ref: spec.ref ?? 6,
+    sp: { body: bodySp, head: custom ? spec.headSp ?? Math.min(bodySp, base.sp.head) : base.sp.head },
+    weapon: { name: weaponName, weaponClass: cls, damage, quality: weaponQualityFromName(weaponName) },
+    attackBase: custom ? spec.attackBase ?? tplWeapon.base : tplWeapon.base,
+    evasionBase: custom ? spec.evasionBase ?? base.skills.evasion ?? 8 : base.skills.evasion ?? 8,
+    ref: custom ? spec.ref ?? base.stats.REF ?? 6 : base.stats.REF ?? 6,
     initiative: null,
     distance: isDistanceBracket(spec.distance) ? spec.distance : profile.melee ? 'melee' : '7-12m',
-    cover: spec.cover === 'partial' || spec.cover === 'full' ? spec.cover : 'none',
+    cover,
+    coverHp: cover === 'full' ? DEFAULT_COVER_HP : undefined,
     status: 'active',
+    template: tpl?.key,
+    body: base.stats.BODY,
+    brawlingBase: base.skills.brawling ?? (base.stats.DEX ?? 5) + 2,
+    cool: base.stats.COOL,
+    will: base.stats.WILL,
   };
+}
+
+/** PV padrão de uma cobertura total quando ninguém disse do que ela é feita. */
+export const DEFAULT_COVER_HP = 20;
+
+/** "Pistola (ruim)", "Katana (excelente)" → qualidade da arma. */
+export function weaponQualityFromName(name: string): WeaponQuality | undefined {
+  const n = name.toLowerCase();
+  if (/\b(ruim|poor|vagabund|improvisad)/.test(n)) return 'poor';
+  if (/\b(excelente|excellent|premium)/.test(n)) return 'excellent';
+  return undefined;
 }
 
 /** A relação com o NPC altera testes sociais contra ele. */

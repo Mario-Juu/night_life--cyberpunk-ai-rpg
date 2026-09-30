@@ -15,7 +15,8 @@ import { resolveEnemyAttack } from './combat';
 import { REGISTRY, runToolCalls } from './tools';
 import { acknowledgeOffscreen, pendingOffscreen } from './world';
 import { memoriesFromEvents, pruneMemories, touchMemories } from './memory';
-import { registerSpeakers, speakersOf } from './npcs';
+import { applyContactExchange, registerSpeakers, speakersOf } from './npcs';
+import { CYBERPSYCHO_ACTIONS, isCyberpsycho } from '../rules/humanity';
 
 export interface Step {
   state: GameState;
@@ -61,10 +62,23 @@ export function applyInterpretation(step: Step, interp: InterpretResponse, rng: 
 
   const run = runToolCalls(REGISTRY, s, interp.toolCalls, { rng, origin: 'interpreter' });
   s = run.state;
+  // Rede de segurança: "salvei teu contato", "anoto o número do Kettle"… vira contato no Agent.
+  const records = [...run.records];
+  if (step.record.playerInput) {
+    const exchange = applyContactExchange(s, step.record.playerInput);
+    s = exchange.state;
+    for (const npcId of exchange.saved) records.push({ tool: 'save_contact', args: { npcId }, origin: 'engine', ok: true, summary: `Contato de ${s.npcs.find(n => n.id === npcId)?.name} salvo no Agent.` });
+  }
+  // Ações de Rede por texto: o turno do jogador na Rede termina aqui (o ICE age antes da narração).
+  if (s.net.run && records.some(r => r.ok && (r.tool === 'net_action' || r.tool === 'jack_in'))) {
+    const end = runToolCalls(REGISTRY, s, [{ tool: 'net_end_turn', args: {} }], { rng, origin: 'engine' });
+    s = end.state;
+    records.push(...end.records);
+  }
   if (interp.framing && run.pendingRoll) s = appendChat(s, { kind: 'narration', text: interp.framing });
   return {
     state: s,
-    record: { ...record, toolCalls: [...record.toolCalls, ...run.records], phase: run.pendingRoll ? 'awaiting_roll' : 'narrating' },
+    record: { ...record, toolCalls: [...record.toolCalls, ...records], phase: run.pendingRoll ? 'awaiting_roll' : 'narrating' },
   };
 }
 
@@ -106,7 +120,8 @@ export function applyRoll(step: Step, luckSpent: number, seed: string): Step & {
 export function buildEngineResult(step: Step, outcome: RollOutcome | null): EngineResult {
   return {
     intent: step.record.parsedIntent,
-    tools: step.record.toolCalls.filter(t => t.origin === 'interpreter').map(t => ({ tool: t.tool, ok: t.ok, summary: t.summary, error: t.error, data: REGISTRY.get(t.tool)?.kind === 'query' ? t.data : undefined })),
+    // Tudo que o jogador (texto ou painel) e o motor resolveram neste turno; nada do narrador/telefone.
+    tools: step.record.toolCalls.filter(t => t.origin === 'interpreter' || t.origin === 'player' || t.origin === 'engine').map(t => ({ tool: t.tool, ok: t.ok, summary: t.summary, error: t.error, data: REGISTRY.get(t.tool)?.kind === 'query' ? t.data : undefined })),
     roll: outcome,
     offscreen: pendingOffscreen(step.state),
   };
@@ -130,7 +145,9 @@ export function applyNarration(step: Step, narr: NarrateResponse, rng: Rng = cry
     const res = resolveEnemyAttack(s, action.attackerId, rng);
     if (res) s = gameReducer(s, { type: 'enemyAttack', result: res.result });
   }
-  s = acknowledgeOffscreen({ ...s, suggestedActions: narr.suggestedActions.slice(0, 4) });
+  // Ciberpsicose: o jogador só escolhe impulsos — nunca fica sem opções.
+  const suggestions = isCyberpsycho(s.character) && narr.suggestedActions.length < 2 ? CYBERPSYCHO_ACTIONS : narr.suggestedActions;
+  s = acknowledgeOffscreen({ ...s, suggestedActions: suggestions.slice(0, 4) });
   s = ensureDeathSave(s);
   return { state: s, record: { ...step.record, narration: narr.narration, toolCalls: [...step.record.toolCalls, ...run.records] } };
 }

@@ -5,6 +5,7 @@ import type { EngineResult } from '../shared/types/turn';
 import type { GameMaster } from './gamemaster/gameMaster';
 import { PROMPT_VERSION } from './gamemaster/systemPrompt';
 import { InterpretBody, NarrateBody, PhoneBody, SummarizeBody } from './validation';
+import { requestKey, runWithKey, sanitizeKey } from './gamemaster/requestKey';
 
 export interface AppOptions {
   gm: GameMaster;
@@ -27,13 +28,15 @@ const asContext = (c: unknown) => c as GameContext;
 export function createApp({ gm, hasKey, defaultMode }: AppOptions) {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+  // Chave Gemini do próprio jogador (cabeçalho), válida só para este pedido.
+  app.use('/api/gm', (req, _res, next) => runWithKey(sanitizeKey(req.header('x-gemini-key')), next));
 
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', game: 'NIGHT//LIFE', timestamp: new Date().toISOString() });
   });
 
   app.get('/api/gm/status', (_req, res) => {
-    const status: GMStatus = { status: 'ok', hasKey: hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION };
+    const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION };
     res.json(status);
   });
 

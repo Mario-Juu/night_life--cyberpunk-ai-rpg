@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, CloudRain, History, Menu, MessageSquare, PanelLeft, PanelRight, Save, Settings, Siren, Swords } from 'lucide-react';
+import { BookOpen, Bug, CloudRain, History, Menu, MessageSquare, PanelLeft, PanelRight, Save, Settings, Siren, Swords } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
 import { formatGameTime } from '@shared/rules/world';
 import { THREAT_LABEL, computeThreat } from '@shared/engine/world';
@@ -8,7 +8,7 @@ import { useUiStore, type ModalId } from '../../store/uiStore';
 import { openPhoneThread } from '../../store/turnController';
 import { RadioControl } from '../radio/RadioControl';
 
-function MenuButton() {
+function MenuButton({ sandbox }: { sandbox?: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const openModal = useUiStore(s => s.openModal);
@@ -29,9 +29,10 @@ function MenuButton() {
 
   const items: Array<{ id: ModalId; label: string; icon: React.ReactNode }> = [
     { id: 'saves', label: 'Salvar / Carregar', icon: <Save className="w-4 h-4" /> },
-    { id: 'log', label: 'Registro e rewind', icon: <History className="w-4 h-4" /> },
+    { id: 'log', label: 'Registro e linha do tempo', icon: <History className="w-4 h-4" /> },
     { id: 'rules', label: 'Regras', icon: <BookOpen className="w-4 h-4" /> },
     { id: 'settings', label: 'Configurações', icon: <Settings className="w-4 h-4" /> },
+    ...(sandbox ? [{ id: 'sandbox' as const, label: 'Sandbox (depuração)', icon: <Bug className="w-4 h-4" /> }] : []),
   ];
 
   return (
@@ -124,7 +125,7 @@ export function TopBar({ game }: { game: GameState }) {
           </Badge>
         )}
         <Badge tone={degraded ? 'yellow' : 'muted'} className="hidden md:inline-flex" title={degraded ? 'A última resposta do Mestre foi de contingência' : 'Modelo do Mestre'}>
-          GM {model}
+          Mestre {model}
           {degraded && ' ⚠'}
         </Badge>
         <div className="hidden md:flex border-l border-line pl-1.5 ml-0.5">
@@ -144,7 +145,7 @@ export function TopBar({ game }: { game: GameState }) {
           aria-pressed={sideOpen}
           className="hidden lg:inline-flex"
         />
-        <MenuButton />
+        <MenuButton sandbox={game.sandbox} />
       </div>
     </header>
   );

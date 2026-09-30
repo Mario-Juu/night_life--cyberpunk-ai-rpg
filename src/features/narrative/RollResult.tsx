@@ -7,7 +7,8 @@ import { useUiStore } from '../../store/uiStore';
 
 const FAILURE_TEXT = {
   no_ammo: 'Clique seco — arma sem munição.',
-  out_of_range: 'Alvo fora do alcance desta arma.',
+  out_of_range: 'Alvo fora do alcance (longe demais para esta arma ou para chegar neste turno).',
+  jammed: 'Arma travada — destrave (recarregar) antes de atirar.',
   in_cover: 'Alvo protegido por cobertura total.',
   no_target: 'Alvo indisponível.',
 } as const;
@@ -115,19 +116,74 @@ export function RollResult({ outcome, defaultOpen = false, concealed = false }: 
             </p>
             {attack.damage && attack.application && (
               <p>
-                Dano {attack.damage.notation} [{attack.damage.rolls.join(', ')}] = {attack.application.raw}
-                {attack.application.location === 'head' && ' ×2 cabeça'} − SP {attack.application.spBefore} →{' '}
+                {/* Ordem das regras RED: dano − SP; só o que passa da armadura é dobrado na cabeça. */}
+                Dano {attack.damage.notation} [{attack.damage.rolls.join(', ')}] = {attack.application.raw} − SP {attack.application.spBefore}
+                {attack.application.location === 'head' ? (
+                  <>
+                    {' '}= {attack.application.throughArmor} ×2 cabeça
+                  </>
+                ) : null}
+                {attack.application.critBonus > 0 && ` + ${attack.application.critBonus} crítico`} →{' '}
                 <span className="text-danger">{attack.application.hpDamage} PV</span>
+                {attack.application.throughArmor === 0 && <span className="text-dim"> · não atravessou a armadura</span>}
                 {attack.application.ablated && <span className="text-neon-yellow"> · SP {attack.application.spAfter}</span>}
                 {attack.application.criticalInjury && <span className="text-neon-magenta"> · {attack.application.criticalInjury.name}</span>}
-                {attack.targetStatusAfter === 'down' && (
+                {attack.targetStatusAfter === 'down' && !attack.knockedOut && (
                   <span className="text-neon-green">
                     {' '}
                     · <Skull className="inline w-3 h-3" /> abatido
                   </span>
                 )}
+                {attack.knockedOut && <span className="text-neon-green"> · nocauteado (vivo)</span>}
+                {attack.nonLethal === 'rubber' && <span className="text-dim"> · borracha: não mata</span>}
               </p>
             )}
+            {attack.autofireMult && <p className="text-neon-yellow">Rajada: 10 tiros · multiplicador ×{attack.autofireMult}</p>}
+            {attack.ambush && <p className="text-neon-cyan">Emboscada: o alvo não esquivou e os inimigos perdem a próxima ação.</p>}
+            {attack.jammedNow && <p className="text-danger">A arma ruim TRAVOU (1 natural) — destrave antes de atirar de novo.</p>}
+            {attack.coverDamage && (
+              <p>
+                Tiro na cobertura: {attack.coverDamage.before} → {attack.coverDamage.after} PV
+                {attack.coverDamage.after <= 0 && <span className="text-neon-green"> · cobertura destruída, alvo exposto</span>}
+              </p>
+            )}
+            {attack.areaHits && attack.areaHits.length > 0 && (
+              <ul className="space-y-0.5">
+                <li className="text-neon-yellow">Explosão{attack.grenade && attack.grenade !== 'basic' ? ` (${attack.grenade})` : ''}:</li>
+                {attack.areaHits.map(h => (
+                  <li key={h.targetId}>
+                    · {h.name}:{' '}
+                    {h.dodged ? (
+                      <span className="text-dim">pulou para fora da área</span>
+                    ) : (
+                      <>
+                        {h.application && <span className="text-danger">−{h.application.hpDamage} PV</span>}
+                        {h.effect && <span className="text-neon-magenta"> {h.effect}</span>}
+                        {h.statusAfter === 'down' && <span className="text-neon-green"> · fora de combate</span>}
+                        {!h.application && !h.effect && <span className="text-dim">sem efeito</span>}
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {attack.suppression && (
+              <ul className="space-y-0.5">
+                <li className="text-neon-yellow">Fogo de supressão (10 tiros):</li>
+                {attack.suppression.length === 0 && <li className="text-dim">ninguém ao alcance (25 m, fora de cobertura total)</li>}
+                {attack.suppression.map(x => (
+                  <li key={x.id}>
+                    · {x.name}: {x.held ? <span className="text-dim">segurou os nervos</span> : <span className="text-neon-green">mergulhou na cobertura e perde o ataque</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+        {outcome.followUp && (
+          <div className="border-t border-line-soft pt-2">
+            <p className="eyebrow mb-1">Segundo ataque (Cadência 2)</p>
+            <RollResult outcome={outcome.followUp} defaultOpen concealed={concealed} />
           </div>
         )}
         </div>

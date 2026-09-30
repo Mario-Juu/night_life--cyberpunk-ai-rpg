@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { scenario } from './harness';
-import { applyNarration, beginTurn } from '../shared/engine/turn';
+import { applyInterpretation, applyNarration, beginTurn } from '../shared/engine/turn';
 import { backfillNpcsFromChat, findNpcLoose, isGenericSpeaker } from '../shared/engine/npcs';
 import { appendChat } from '../shared/engine/reducer';
 import type { NarrateResponse } from '../shared/types/gm';
@@ -77,5 +77,43 @@ describe('Registro automático de personagens', () => {
     expect(findNpcLoose(fixed, 'Lina')).toBeDefined();
     expect(findNpcLoose(fixed, 'Jax')).toBeDefined();
     expect(backfillNpcsFromChat(fixed).npcs).toHaveLength(fixed.npcs.length); // idempotente
+  });
+});
+
+describe('Salvar contato', () => {
+  const FALA = 'Valeu pelo toque, Lina. De verdade. Salvei teu contato direto aqui e o do Kettle também. Se o bicho pegar ou pintar ensaio novo, me dá um toque.';
+
+  it('a fala do jogador salva Lina e Jax "Kettle" nos contatos, mesmo sem o LLM chamar a ferramenta', () => {
+    const sc = scenario();
+    let step = applyNarration(beginTurn(sc.state, 'Entro no Sub-Level 03'), narr(SUB_LEVEL));
+    expect(step.state.npcs.filter(n => n.isContact).map(n => n.name)).not.toContain('Lina');
+
+    step = applyInterpretation(beginTurn(step.state, FALA), { intent: { type: 'dialogue', summary: 'despedida', confidence: 1 }, toolCalls: [] });
+    const contacts = step.state.npcs.filter(n => n.isContact).map(n => n.name);
+    expect(contacts).toEqual(expect.arrayContaining(['Lina', "Jax 'Kettle'"]));
+    expect(step.record.toolCalls.filter(t => t.tool === 'save_contact' && t.origin === 'engine')).toHaveLength(2);
+  });
+
+  it('a ferramenta save_contact também funciona pelo intérprete (e cria quem ainda não existe)', () => {
+    const sc = scenario().tool('interpreter', 'save_contact', { npcId: 'Kenji' });
+    expect(sc.last().ok).toBe(true);
+    expect(sc.npc('Kenji')?.isContact).toBe(true);
+  });
+
+  it('não confunde conversa comum com troca de contato', () => {
+    const sc = scenario();
+    let step = applyNarration(beginTurn(sc.state, 'a'), narr(SUB_LEVEL));
+    step = applyInterpretation(beginTurn(step.state, 'Pergunto pra Lina se o som tá bom.'), { intent: { type: 'dialogue', summary: 'x', confidence: 1 }, toolCalls: [] });
+    expect(step.state.npcs.find(n => n.name === 'Lina')?.isContact).toBe(false);
+  });
+});
+
+describe('Salvar contato — saves antigos', () => {
+  it('ao carregar, contatos que o jogador disse ter salvo são recuperados', () => {
+    const sc = scenario();
+    let s = appendChat(sc.state, { kind: 'narration', text: SUB_LEVEL });
+    s = appendChat(s, { kind: 'player', text: 'Salvei teu contato, Lina, e o do Kettle também.' });
+    const fixed = backfillNpcsFromChat(s);
+    expect(fixed.npcs.filter(n => n.isContact).map(n => n.name)).toEqual(expect.arrayContaining(['Lina', "Jax 'Kettle'"]));
   });
 });

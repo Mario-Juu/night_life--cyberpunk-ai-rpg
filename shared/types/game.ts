@@ -15,19 +15,31 @@ export type CoverLevel = 'none' | 'partial' | 'full';
 
 export type WeaponClass =
   | 'unarmed'
+  | 'martial_arts'
   | 'melee_light'
   | 'melee_medium'
   | 'melee_heavy'
+  | 'melee_vheavy'
   | 'pistol_medium'
   | 'pistol_heavy'
   | 'pistol_vheavy'
   | 'smg'
+  | 'heavy_smg'
   | 'shotgun'
   | 'assault_rifle'
   | 'sniper_rifle'
-  | 'bow';
+  | 'bow'
+  | 'grenade'
+  | 'grenade_launcher'
+  | 'rocket_launcher';
 
-export type AmmoKind = 'M_PISTOL' | 'H_PISTOL' | 'VH_PISTOL' | 'SLUG' | 'RIFLE' | 'ARROW';
+/** Qualidade da arma (RED): ruim trava num 1 natural; excelente dá +1 para acertar. */
+export type WeaponQuality = 'poor' | 'standard' | 'excellent';
+
+/** Granadas (RED p.345–347). */
+export type GrenadeKind = 'basic' | 'armor_piercing' | 'flashbang' | 'incendiary' | 'sleep' | 'smoke' | 'teargas' | 'poison' | 'emp';
+
+export type AmmoKind = 'M_PISTOL' | 'H_PISTOL' | 'VH_PISTOL' | 'SLUG' | 'RIFLE' | 'ARROW' | 'GRENADE' | 'ROCKET';
 
 export interface WeaponStats {
   weaponClass: WeaponClass;
@@ -35,6 +47,13 @@ export interface WeaponStats {
   magSize: number | null; // null = corpo a corpo
   loaded: number;
   ammo: AmmoKind | null;
+  quality?: WeaponQuality;
+  /** Arma ruim travou: gaste uma Ação destravando (recarregar destrava). */
+  jammed?: boolean;
+  /** Não letal (RED): 'stun' = bastão/pistola de choque (apaga em vez de matar); 'rubber' = munição de borracha (deixa com 1 PV, sem crítico nem ablação). */
+  nonLethal?: 'stun' | 'rubber';
+  /** Granada (arremessada): o tipo. */
+  grenade?: GrenadeKind;
 }
 
 export interface ArmorStats {
@@ -56,17 +75,30 @@ export interface InventoryItem {
   weapon?: WeaponStats;
   armor?: ArmorStats;
   ammoKind?: AmmoKind; // para itens de munição
+  /** Munição especial (borracha: não mata, sem crítico nem ablação). */
+  ammoVariant?: 'rubber';
   heal?: number; // consumíveis de cura
+  /** Droga médica (Medicânico): efeito aplicado pelo motor ao usar. */
+  drug?: DrugKey;
+  /** Peça de cromo solta (achada, recebida): um ripperdoc instala cobrando só a cirurgia. */
+  cyberKey?: string;
+  /** Droga de rua (Black Lace, Boost…): efeito + teste de vício. */
+  streetDrug?: StreetDrugKey;
+  /** Aprimoramento feito por um Técnico (Fabricante). */
+  upgrade?: string;
+  /** Item "embutido" por um implante (lâmina, arma popup, pele blindada): não se larga nem se desequipa. */
+  implant?: string;
 }
 
 export type CyberwareCategory =
   | 'Neuralware'
-  | 'Cyberóptico'
-  | 'Cyberáudio'
+  | 'Ciberóptico'
+  | 'Ciberáudio'
   | 'Membro Cibernético'
   | 'Implante Interno'
   | 'Implante Dérmico'
-  | 'Borgware';
+  | 'Borgware'
+  | 'Estético';
 
 export interface CyberwareItem {
   id: string;
@@ -74,6 +106,12 @@ export interface CyberwareItem {
   category: CyberwareCategory;
   humanityLoss: number;
   description: string;
+  /** Chave do catálogo (shared/rules/cyberware.ts). Ausente = implante narrativo/antigo. */
+  key?: string;
+  /** Fundação onde a opção está instalada (olho, braço, Neural Link…). */
+  parentId?: string;
+  /** Opção de chip: perícia ajustada pelo Skill Chip. */
+  skillId?: string;
 }
 
 export interface CriticalInjury {
@@ -86,6 +124,8 @@ export interface CriticalInjury {
   penalties: Partial<Record<StatKey | 'all', number>>;
   quickFixDv: number;
   treatmentDv: number;
+  /** Remendo de campo feito: penalidades suspensas até o tratamento (a penalidade do Teste de Morte continua). */
+  quickFixed?: boolean;
 }
 
 export interface CharacterBio {
@@ -120,6 +160,154 @@ export interface Character {
   deathSavePenalty: number;
   stabilized: boolean;
   dead: boolean;
+  /** Condições (imobilizado, agarrado, inconsciente). Ausente = nenhuma. */
+  conditions?: Condition[];
+  /** Vícios em drogas de rua (abstinência quando sóbrio). */
+  addictions?: StreetDrugKey[];
+  /** Habilidade de Papel (Cyberpunk RED): rank 1..10, começa em 4. */
+  roleRank: number;
+  /** Alocações da habilidade de papel (Solo, Técnico, Medicânico). */
+  roleData: RoleData;
+  /** Ciberdeck (Trilheiro). */
+  deck?: Cyberdeck;
+  /** Briga: id do combatente que o personagem está agarrando. */
+  grappling?: string;
+  /** Escudo humano: o agarrado recebe os tiros; morto, vira escudo-cadáver com PV = CORPO. */
+  humanShield?: { id: string; corpseHp?: number };
+}
+
+// ---------------------------------------------------------------------------
+// Habilidades de Papel
+// ---------------------------------------------------------------------------
+
+export type CombatAwarenessKey = 'deflection' | 'fumbleRecovery' | 'initiative' | 'precision' | 'spotWeakness' | 'threatDetection';
+export type MakerKey = 'field' | 'upgrade' | 'fabrication' | 'invention';
+export type MedicineKey = 'surgery' | 'pharma' | 'cryo';
+export type DrugKey = 'antibiotic' | 'rapidetox' | 'speedheal' | 'stim' | 'surge';
+export type StreetDrugKey = 'black_lace' | 'blue_glass' | 'boost' | 'smash' | 'synthcoke';
+
+export interface RoleData {
+  combatAwareness?: Partial<Record<CombatAwarenessKey, number>>;
+  maker?: Partial<Record<MakerKey, number>>;
+  medicine?: Partial<Record<MedicineKey, number>>;
+}
+
+// ---------------------------------------------------------------------------
+// Netrunning
+// ---------------------------------------------------------------------------
+
+export type NetDifficulty = 'basic' | 'standard' | 'uncommon' | 'advanced';
+export type IceKey = 'asp' | 'giant' | 'hellhound' | 'kraken' | 'liche' | 'raven' | 'scorpion' | 'skunk' | 'wisp' | 'dragon' | 'killer' | 'sabertooth';
+export type ProgramKey =
+  | 'sword'
+  | 'banhammer'
+  | 'deckkrash'
+  | 'hellbolt'
+  | 'nervescrub'
+  | 'poison_flatline'
+  | 'superglue'
+  | 'vrizzbolt'
+  | 'eraser'
+  | 'see_ya'
+  | 'speedy_gonzalvez'
+  | 'worm'
+  | 'armor'
+  | 'flak'
+  | 'shield';
+
+export interface DeckProgram {
+  id: string;
+  key: ProgramKey;
+  rez: number;
+  maxRez: number;
+  /** Destruído por ICE (some do deck). Derrezado só volta na próxima conexão. */
+  destroyed?: boolean;
+  /** Booster/defensor ligado nesta conexão. */
+  active?: boolean;
+  /** Defensores: cada cópia funciona uma vez por conexão. */
+  spent?: boolean;
+}
+
+export interface Cyberdeck {
+  name: string;
+  quality: 'poor' | 'standard' | 'excellent';
+  slots: number;
+  programs: DeckProgram[];
+}
+
+export type NetNodeKind = 'password' | 'file' | 'control' | 'ice' | 'empty';
+
+export interface NetFloor {
+  index: number;
+  kind: NetNodeKind;
+  dv?: number;
+  ice?: IceKey[];
+  /** O que é (arquivo/nó de controle), definido pelo narrador ou genérico. */
+  label?: string;
+  /** Senha aberta, arquivo identificado, nó controlado ou ICE derrotado. */
+  cleared: boolean;
+  /** Revelado por Pathfinder ou visitado. */
+  revealed: boolean;
+  downloaded?: boolean;
+}
+
+export interface NetArchitecture {
+  id: string;
+  name: string;
+  accessPoint: string;
+  difficulty: NetDifficulty;
+  dv: number;
+  floors: NetFloor[];
+  createdTurn: number;
+  /** Vírus plantado no último andar (efeito duradouro). */
+  virus?: string;
+}
+
+export interface IceInstance {
+  id: string;
+  key: IceKey;
+  floor: number;
+  rez: number;
+  maxRez: number;
+  /** Está perseguindo o runner (segue de andar em andar). */
+  following: boolean;
+  /** Já atingiu o runner (Skunk: a penalidade de Slide vale enquanto ele existir). */
+  hitPlayer?: boolean;
+}
+
+export interface NetRun {
+  architectureId: string;
+  /** Índice do andar atual (0 = primeiro). */
+  position: number;
+  actionsLeft: number;
+  /** Turno de Rede (conta as rodadas dentro da arquitetura). */
+  netTurn: number;
+  /** ICE rezzado encontrado nesta conexão (os derrotados ficam com rez 0). */
+  ice: IceInstance[];
+  slideUsed: boolean;
+  /** Kraken/Superglue: não desce nem sai com segurança até este turno de Rede. */
+  lockedUntil?: number;
+  skunkPenalty: number;
+  /** Wisp/Vrizzbolt: −1 Ação de Rede no próximo turno. */
+  actionPenalty: number;
+  cloaked: boolean;
+  /** Ações deste turno de Rede (o narrador descreve o lote). */
+  log: string[];
+}
+
+export interface NetState {
+  /** Arquitetura acessível no ponto de acesso da cena. */
+  architecture: NetArchitecture | null;
+  run: NetRun | null;
+}
+
+export type ConditionKey = 'restrained' | 'grappled' | 'unconscious' | 'prone';
+
+export interface Condition {
+  key: ConditionKey;
+  /** Turno em que começou (execução exige indefeso desde um turno ANTERIOR). */
+  sinceTurn: number;
+  source?: string;
 }
 
 export type MissionStatus = 'ACTIVE' | 'COMPLETED' | 'FAILED' | 'ABANDONED';
@@ -169,6 +357,11 @@ export interface Npc {
   lastInteraction?: string;
   /** Aparece nos contatos do telefone. */
   isContact: boolean;
+  /** 'animal' = bicho de estimação etc.: não fala, não usa o Agent. Ausente = pessoa. */
+  kind?: 'person' | 'animal';
+  conditions?: Condition[];
+  /** É ripperdoc: nível da clínica (1–5) e se mexe com hardware militar do mercado negro. */
+  ripperdoc?: { tier: 1 | 2 | 3 | 4 | 5; blackMarket?: boolean };
 }
 
 export interface Faction {
@@ -186,7 +379,7 @@ export interface Combatant {
   name: string;
   hp: { current: number; max: number };
   sp: { head: number; body: number };
-  weapon: { name: string; weaponClass: WeaponClass; damage: string };
+  weapon: { name: string; weaponClass: WeaponClass; damage: string; quality?: WeaponQuality };
   /** STAT + perícia de ataque (sem o d10). */
   attackBase: number;
   /** DEX + Evasão (sem o d10). */
@@ -197,6 +390,23 @@ export interface Combatant {
   cover: CoverLevel;
   status: CombatantStatus;
   looted?: boolean;
+  conditions?: Condition[];
+  /** Ficha pronta usada (shared/rules/npcTemplates.ts). */
+  template?: string;
+  /** CORPO (dano de estrangular/arremessar) e base de Briga (DEX + Briga, para agarrões). */
+  body?: number;
+  brawlingBase?: number;
+  /** Rodadas seguidas sendo estrangulado (3 = apaga). */
+  chokeRounds?: number;
+  /** Perde o próximo ataque (arma travada, suprimido, ofuscado, emboscado) — o motivo vai no texto. */
+  skipNextAttack?: string;
+  /** COOL e VONTADE da ficha (Encarada, supressão, testes contra granadas). */
+  cool?: number;
+  will?: number;
+  /** Resultado da Encarada com o jogador (−2 nas ações contra o vencedor). */
+  facedown?: 'player' | 'npc';
+  /** PV da cobertura total atrás da qual está (atirar nela a destrói). */
+  coverHp?: number;
 }
 
 export interface CombatState {
@@ -205,6 +415,10 @@ export interface CombatState {
   playerInitiative: number | null;
   combatants: Combatant[];
   log: string[];
+  /** Rodada em que o Solo já usou Desvio de Dano / Ponto Fraco. */
+  roleUsage?: { deflectionRound?: number; spotWeaknessRound?: number };
+  /** Sistema operacional ativo (Sandevistan/Berserk): chave do cromo e rodadas. */
+  os?: { key: string; startRound: number; rounds: number };
 }
 
 export interface PhoneMessage {
@@ -232,7 +446,7 @@ export interface Discovery {
   category?: string;
 }
 
-export type ChatKind = 'narration' | 'player' | 'roll' | 'system' | 'discovery' | 'combat';
+export type ChatKind = 'narration' | 'player' | 'roll' | 'system' | 'discovery' | 'combat' | 'net';
 
 export interface ChatEntry {
   id: string;
@@ -277,6 +491,8 @@ export const GAME_EVENT_TYPES = [
   'NPC_MET',
   'NPC_UPDATED',
   'NPC_DIED',
+  'PLAYER_DIED',
+  'CONDITION_CHANGED',
   'QUEST_STARTED',
   'QUEST_UPDATED',
   'QUEST_COMPLETED',
@@ -303,6 +519,11 @@ export const GAME_EVENT_TYPES = [
   'EVENT_TRIGGERED',
   'EVENT_CANCELLED',
   'SKILL_IMPROVED',
+  'CYBERPSYCHOSIS',
+  'ROLE_IMPROVED',
+  'NET_ACTION',
+  'NET_JACK_IN',
+  'NET_JACK_OUT',
   'IP_AWARDED',
   'TOOL_REJECTED',
   'SYSTEM',
@@ -374,6 +595,8 @@ export interface SceneState {
   presentNpcIds: string[];
   threat: ThreatLevel;
   startedTurn: number;
+  /** Ameaça letal ANUNCIADA (bomba, Soulkiller, desabamento): sem rolagem que salve se o jogador não escapar. */
+  lethalThreat?: { description: string; sinceTurn: number };
 }
 
 export interface SessionInfo {
@@ -413,6 +636,12 @@ export interface RollRequest {
   aimedHead?: boolean;
   /** NPC alvo de um teste social (a relação com ele modifica o teste). */
   targetNpcId?: string;
+  /** Ataque: tiro normal, rajada (10 tiros, 2d6 × margem) ou fogo de supressão. */
+  mode?: 'single' | 'autofire' | 'suppressive';
+  /** Cadência 2: dois ataques na mesma Ação. */
+  rof2?: boolean;
+  /** Primeiro golpe de uma emboscada: o alvo não esquiva e os inimigos perdem a próxima ação. */
+  ambush?: boolean;
   /** Modificadores rotulados calculados pelo motor (relação, cena, flags). */
   modifiers?: Modifier[];
 }
@@ -483,12 +712,46 @@ export interface AttackResult {
   targetId: string;
   targetName: string;
   hit: boolean;
-  failure?: 'no_ammo' | 'out_of_range' | 'in_cover' | 'no_target';
+  failure?: 'no_ammo' | 'out_of_range' | 'in_cover' | 'no_target' | 'jammed';
   ammoBefore: number | null;
   ammoAfter: number | null;
   damage?: DamageRoll;
   application?: DamageApplication;
   targetStatusAfter?: CombatantStatus;
+  /** Dano extra do Ponto Fraco (Solo). */
+  spotWeakness?: number;
+  /** Usou a Ação de Movimento para colar no alvo antes do golpe. */
+  closedIn?: boolean;
+  /** Arma ruim travou neste ataque (1 natural). */
+  jammedNow?: boolean;
+  /** Rajada: multiplicador aplicado (margem, até o máximo da arma). */
+  autofireMult?: number;
+  /** Munição gasta (rajada/supressão = 10). */
+  ammoUsed?: number;
+  /** Granada arremessada: o item é consumido. */
+  thrown?: boolean;
+  grenade?: GrenadeKind;
+  /** Explosivo: todos os atingidos na área (inclui o alvo principal). */
+  areaHits?: AreaHit[];
+  /** Fogo de supressão: quem segurou os nervos e quem mergulhou na cobertura. */
+  suppression?: Array<{ id: string; name: string; held: boolean }>;
+  /** Não letal: o alvo foi nocauteado (vivo) em vez de cair morrendo. */
+  knockedOut?: boolean;
+  nonLethal?: 'stun' | 'rubber';
+  /** Emboscada: o alvo não pôde esquivar e os inimigos perdem a próxima ação. */
+  ambush?: boolean;
+  /** Tiro na cobertura: PV que ela perdeu (0 = destruída). */
+  coverDamage?: { before: number; after: number };
+}
+
+export interface AreaHit {
+  targetId: string;
+  name: string;
+  dodged: boolean;
+  application?: DamageApplication;
+  statusAfter?: CombatantStatus;
+  /** Efeito especial da granada (ofuscado, dormiu, envenenado…). */
+  effect?: string;
 }
 
 export interface EnemyAttackResult {
@@ -500,6 +763,16 @@ export interface EnemyAttackResult {
   hit: boolean;
   damage?: DamageRoll;
   application?: DamageApplication;
+  /** Dano evitado pelo Desvio de Dano (Solo). */
+  deflected?: number;
+  /** Dano absorvido por cromo (Berserk, Editor de Dor Mk.2). */
+  reduced?: number;
+  /** O inimigo não atacou (arma travada, suprimido, ofuscado, emboscado). */
+  skipped?: string;
+  /** Arma ruim do inimigo travou neste ataque. */
+  jammed?: boolean;
+  /** O tiro acertou o escudo humano em vez do jogador. */
+  shield?: { id: string; name: string; hpDamage: number; corpse: boolean; destroyed: boolean };
 }
 
 export interface RollOutcome {
@@ -508,6 +781,8 @@ export interface RollOutcome {
   attack?: AttackResult;
   deathSave?: { roll: number; target: number; success: boolean };
   initiative?: { player: number; enemies: Array<{ id: string; value: number }> };
+  /** Cadência 2: o segundo ataque da mesma Ação. */
+  followUp?: RollOutcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -542,6 +817,7 @@ export interface GameState {
   missions: Mission[];
   factions: Faction[];
   combat: CombatState;
+  net: NetState;
   phone: PhoneThread[];
   chat: ChatEntry[];
   discoveries: Discovery[];
@@ -549,4 +825,6 @@ export interface GameState {
   events: GameEvent[];
   pendingRoll: RollRequest | null;
   suggestedActions: string[];
+  /** Modo Sandbox (debug): estado manipulável pelo painel, sem limitadores de roleplay. */
+  sandbox?: boolean;
 }

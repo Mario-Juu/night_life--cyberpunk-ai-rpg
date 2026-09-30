@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import { useUiStore } from './uiStore';
 
-export type VfxKind = 'damage' | 'crit' | 'fumble' | 'combat' | 'heal' | 'glitch';
+export type VfxKind = 'damage' | 'crit' | 'fumble' | 'combat' | 'heal' | 'glitch' | 'crash';
 
 export interface VfxEvent {
   id: number;
@@ -30,7 +30,7 @@ export const useVfxStore = create<VfxStore>()(set => ({
   remove: id => set(s => ({ events: s.events.filter(e => e.id !== id) })),
 }));
 
-const SHAKE: Partial<Record<VfxKind, string>> = { damage: 'vfx-shake', fumble: 'vfx-shake-hard', combat: 'vfx-shake' };
+const SHAKE: Partial<Record<VfxKind, string>> = { damage: 'vfx-shake', fumble: 'vfx-shake-hard', combat: 'vfx-shake', crash: 'vfx-shake-hard' };
 
 /** Dispara um efeito de tela (no-op se os efeitos estiverem desligados). */
 export function vfx(kind: VfxKind) {

@@ -104,6 +104,14 @@
 }
 
 @layer components {
+  /* Badges da cyberpunk-ui são nowrap: texto dinâmico longo estourava o card. Nunca passam da largura
+     do pai e quebram entre palavras quando não cabem (os curtos continuam numa linha só). */
+  .cp-badge {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+
   /* Ruído de scanlines sutil sobre superfícies de destaque */
   .scanlines {
     background-image: linear-gradient(rgba(255, 255, 255, 0.025) 50%, transparent 50%);
@@ -166,6 +174,22 @@
     text-shadow: 0 0 18px rgba(0, 240, 255, 0.6);
     animation: logo-glitch 3.2s steps(1) infinite;
   }
+  /* Ciberpsicose */
+  .vfx-crash { animation: vfx-crash 2.8s steps(1) both; }
+  .vfx-crash-bar { animation: vfx-crash-bar 0.35s steps(2) infinite; }
+  .psycho-overlay {
+    background:
+      radial-gradient(ellipse at center, transparent 35%, rgba(255, 0, 60, 0.28) 100%),
+      repeating-linear-gradient(0deg, rgba(255, 0, 60, 0.05) 0 2px, transparent 2px 4px);
+    animation: psycho-breathe 3.4s ease-in-out infinite;
+  }
+  .psycho-bars {
+    background: linear-gradient(transparent 0 46%, rgba(0, 240, 255, 0.12) 46% 47%, transparent 47% 71%, rgba(255, 0, 234, 0.12) 71% 72.5%, transparent 72.5%);
+    animation: psycho-bars 1.7s steps(3) infinite;
+  }
+  .psycho-text { animation: psycho-text 1.9s steps(1) infinite; }
+  .psycho-lock { animation: psycho-lock 4s ease-in-out infinite; }
+  .psycho-option { text-shadow: 0 0 6px rgba(255, 0, 60, 0.35); }
   .caret-blink::after {
     content: '▌';
     margin-left: 2px;
@@ -209,6 +233,36 @@
   93% { text-shadow: -3px 0 #ff00ea, 3px 0 #00f0ff; transform: translateX(2px) skewX(-6deg); }
   95% { text-shadow: 3px 0 #ff00ea, -3px 0 #00f0ff; transform: translateX(-2px); }
   97% { text-shadow: 0 0 18px rgba(0, 240, 255, 0.6); transform: none; }
+}
+@keyframes vfx-crash {
+  0% { opacity: 1; filter: none; }
+  8% { opacity: 0.2; }
+  12% { opacity: 1; filter: invert(1) hue-rotate(160deg); }
+  18% { filter: none; }
+  60% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes vfx-crash-bar {
+  0% { transform: translateX(-18px) scaleX(1.1); }
+  50% { transform: translateX(22px) scaleX(0.9); }
+}
+@keyframes psycho-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+@keyframes psycho-bars {
+  0% { transform: translateY(0); opacity: 0.9; }
+  33% { transform: translateY(-9vh); opacity: 0.3; }
+  66% { transform: translateY(14vh); opacity: 1; }
+}
+@keyframes psycho-text {
+  0%, 88%, 100% { text-shadow: 0 0 10px rgba(255, 0, 60, 0.6); transform: none; }
+  90% { text-shadow: -3px 0 #ff00ea, 3px 0 #00f0ff; transform: translateX(3px) skewX(-8deg); }
+  94% { text-shadow: 3px 0 #ff003c, -3px 0 #00f0ff; transform: translateX(-2px); }
+}
+@keyframes psycho-lock {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 0, 60, 0); }
+  50% { box-shadow: 0 0 22px rgba(255, 0, 60, 0.35); }
 }
 @keyframes reveal {
   from { opacity: 0; transform: translateY(8px); filter: blur(4px); }

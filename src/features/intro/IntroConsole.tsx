@@ -22,7 +22,7 @@ export const INTRO_SCRIPT: ScriptLine[] = [
   sys('ZETATECH BIOS v7.7.2 — (c) 2077 Zetatech Corp.'),
   sys('Checando memória neural .......... 64 TB'),
   ok('[ OK ] Interface neural sincronizada'),
-  ok('[ OK ] Agente de bolso pareado'),
+  ok('[ OK ] Agent de bolso pareado'),
   sys('Conectando à Rede Pública de Night City', 200),
   { text: '[ AVISO ] Sinal instável — setor Watson com interferência corporativa', tone: 'warn', speed: 4, pause: 400 },
   ok('[ OK ] Conexão estabelecida'),

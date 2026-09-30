@@ -2,25 +2,45 @@ import type { Dialogue } from '../types/game';
 
 export type NarrationSegment = { kind: 'text'; text: string } | { kind: 'dialogue'; speaker: string; text: string };
 
-const TAG_RE = /\[(?:DIALOGUE|FALA):\s*([^\]]+)\]([\s\S]*?)\[\/(?:DIALOGUE|FALA)\]/gi;
+/** Abertura `[DIALOGUE: Nome]` (grupo 1) ou fechamento `[/DIALOGUE]`. Aceita FALA como sinônimo. */
+const TAG_RE = /\[(?:DIALOGUE|FALA):\s*([^\]]+)\]|\[\/\s*(?:DIALOGUE|FALA)\s*\]/gi;
 
 function stripQuotes(text: string): string {
   return text.trim().replace(/^["“”«]+|["“”»]+$/g, '').trim();
 }
 
-/** Divide a narração em trechos de texto e falas, na ordem em que aparecem. */
+/**
+ * Divide a narração em trechos de texto e falas, na ordem em que aparecem.
+ * Tolerante a erros do modelo: fala aberta dentro de outra (a anterior termina ali),
+ * fala sem fechamento (termina no próximo parágrafo) e fechamento solto (ignorado).
+ */
 export function parseNarration(narration: string): NarrationSegment[] {
   const segments: NarrationSegment[] = [];
+  const pushText = (raw: string) => {
+    const text = raw.trim();
+    if (text) segments.push({ kind: 'text', text });
+  };
+  const pushDialogue = (speaker: string, raw: string, closed: boolean) => {
+    // Sem fechamento: a fala vai até o fim do parágrafo; o resto volta a ser narração.
+    const [body, ...after] = closed ? [raw] : raw.trim().split(/\n\s*\n/);
+    const text = stripQuotes(body);
+    if (text) segments.push({ kind: 'dialogue', speaker, text });
+    if (after.length) pushText(after.join('\n\n'));
+  };
+
+  let speaker: string | null = null;
   let last = 0;
   for (const m of narration.matchAll(TAG_RE)) {
-    const before = narration.slice(last, m.index).trim();
-    if (before) segments.push({ kind: 'text', text: before });
-    const text = stripQuotes(m[2]);
-    if (text) segments.push({ kind: 'dialogue', speaker: m[1].trim(), text });
+    const chunk = narration.slice(last, m.index);
     last = (m.index ?? 0) + m[0].length;
+    const opening = m[1] !== undefined;
+    if (speaker === null) pushText(chunk);
+    else pushDialogue(speaker, chunk, !opening);
+    speaker = opening ? m[1].trim() : null;
   }
-  const rest = narration.slice(last).trim();
-  if (rest) segments.push({ kind: 'text', text: rest });
+  const rest = narration.slice(last);
+  if (speaker === null) pushText(rest);
+  else pushDialogue(speaker, rest, false);
   return segments;
 }
 

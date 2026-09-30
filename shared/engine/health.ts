@@ -13,6 +13,8 @@ import { randomCriticalInjury } from '../rules/criticalInjuries';
 import { armorPenalty } from '../rules/weapons';
 import { cryptoRng, type Rng } from './dice';
 import { makeId } from './ids';
+import { conditionPenalties } from './conditions';
+import { hasPainEditor } from './cyberBonus';
 
 export type WoundState = 'healthy' | 'lightly' | 'seriously' | 'mortally' | 'dead';
 
@@ -47,8 +49,11 @@ export function characterWoundState(c: Character): WoundState {
 export function checkPenalties(c: Character, stat: StatKey): Modifier[] {
   const mods: Modifier[] = [];
   const wp = woundPenalty(characterWoundState(c));
-  if (wp !== 0) mods.push({ label: WOUND_LABEL[characterWoundState(c)], value: wp });
+  // Editor de Dor (chip): ignora a penalidade de Gravemente Ferido.
+  const painEdited = hasPainEditor(c) && characterWoundState(c) === 'seriously';
+  if (wp !== 0 && !painEdited) mods.push({ label: WOUND_LABEL[characterWoundState(c)], value: wp });
   for (const inj of c.criticalInjuries) {
+    if (inj.quickFixed) continue;
     const v = (inj.penalties[stat] ?? 0) + (inj.penalties.all ?? 0);
     if (v !== 0) mods.push({ label: inj.name, value: v });
   }
@@ -59,6 +64,7 @@ export function checkPenalties(c: Character, stat: StatKey): Modifier[] {
   }
   // Mortalmente ferido: além do −4 geral, −6 em MOVE.
   if (stat === 'MOVE' && characterWoundState(c) === 'mortally') mods.push({ label: 'Rastejando', value: -6 });
+  mods.push(...conditionPenalties(c));
   return mods;
 }
 

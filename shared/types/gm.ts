@@ -12,6 +12,7 @@ import type {
   HistorySummary,
   Memory,
   Mission,
+  NetState,
   Npc,
   SceneState,
   ThreatLevel,
@@ -20,7 +21,8 @@ import type {
 } from './game';
 import type { EngineResult, LlmRunMeta, ParsedIntent, ToolCall } from './turn';
 
-export type ModelMode = 'pro' | 'flash';
+/** Só a família flash (com flash-lite de reserva). O "pro" foi removido da plataforma. */
+export type ModelMode = 'flash';
 
 /** Subconjunto relevante do estado, montado por shared/engine/context.ts. */
 export interface GameContext {
@@ -37,6 +39,10 @@ export interface GameContext {
   flags: WorldFlag[];
   activeEffects: ActiveEffect[];
   combat: CombatState;
+  /** Rede: arquitetura do ponto de acesso e conexão atual (opcional para clientes antigos). */
+  net?: NetState;
+  /** Modo Sandbox (debug). */
+  sandbox?: boolean;
   memories: Memory[];
   summaries: HistorySummary[];
   recentHistory: Array<{ turn: number; kind: string; text: string }>;

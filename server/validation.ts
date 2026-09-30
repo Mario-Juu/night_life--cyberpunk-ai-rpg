@@ -41,7 +41,8 @@ export const ContextSchema = z.looseObject({
   offscreen: z.array(z.string()).max(20),
 });
 
-const model = z.enum(['pro', 'flash']).optional();
+// Clientes antigos ainda podem mandar 'pro': vira 'flash' (o pro não existe mais na plataforma).
+const model = z.enum(['pro', 'flash']).optional().transform(() => 'flash' as const);
 
 export const InterpretBody = z.object({ context: ContextSchema, text: z.string().trim().min(1).max(1500), model, feedback: z.string().max(3000).optional() });
 

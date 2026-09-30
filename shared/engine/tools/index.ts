@@ -1,13 +1,16 @@
 import type { ToolCall, ToolOrigin } from '../../types/turn';
+import { NPC_TEMPLATE_KEYS } from '../../rules/npcTemplates';
+import { WEAPONS } from '../../rules/weapons';
 import { ACTION_TOOLS } from './actions';
 import { MUTATION_TOOLS } from './mutations';
 import { QUERY_TOOLS } from './queries';
-import { argsSchema, createRegistry, type ParamSpec, type ToolDef } from './registry';
+import { ROLE_TOOLS } from './roleTools';
+import { argsSchema, cleanArgs, createRegistry, type ParamSpec, type ToolDef } from './registry';
 
 export * from './registry';
 export { findNpc } from './helpers';
 
-export const REGISTRY = createRegistry([...QUERY_TOOLS, ...ACTION_TOOLS, ...MUTATION_TOOLS]);
+export const REGISTRY = createRegistry([...QUERY_TOOLS, ...ACTION_TOOLS, ...ROLE_TOOLS, ...MUTATION_TOOLS]);
 
 /**
  * Validação prévia (sem executar): devolve os erros de formato das chamadas.
@@ -25,8 +28,7 @@ export function validateToolCalls(calls: ToolCall[], origin: ToolOrigin): string
       errors.push(`${call.tool}: não permitida aqui`);
       continue;
     }
-    const clean = Object.fromEntries(Object.entries(call.args ?? {}).filter(([, v]) => v !== null && v !== ''));
-    const parsed = argsSchema(def).safeParse(clean);
+    const parsed = argsSchema(def).safeParse(cleanArgs(call.args, def));
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       const allowed = Object.keys(def.params).join(', ');
@@ -64,11 +66,13 @@ const COMBATANT_JSON = {
   properties: {
     id: { type: 'string' },
     name: { type: 'string' },
+    template: { type: 'string', enum: NPC_TEMPLATE_KEYS, description: 'ficha pronta (preferível para NPCs genéricos)' },
+    count: { type: 'number', description: 'quantos iguais (1–6)' },
     hp: { type: 'number' },
     sp: { type: 'number' },
     headSp: { type: 'number' },
     weaponName: { type: 'string' },
-    weaponClass: { type: 'string', enum: ['unarmed', 'melee_light', 'melee_medium', 'melee_heavy', 'pistol_medium', 'pistol_heavy', 'pistol_vheavy', 'smg', 'shotgun', 'assault_rifle', 'sniper_rifle', 'bow'] },
+    weaponClass: { type: 'string', enum: Object.keys(WEAPONS) },
     damage: { type: 'string' },
     attackBase: { type: 'number' },
     evasionBase: { type: 'number' },

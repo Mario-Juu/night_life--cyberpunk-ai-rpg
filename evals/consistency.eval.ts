@@ -56,7 +56,7 @@ describe('TEST 003 — segredo não vira conhecimento do jogador', () => {
     const sc = scenario().tool('narrator', 'upsert_npc', { name: 'Dex', role: 'Canal', knowledge: 'Dex vai trair o jogador na entrega', secret: true });
     const ctx = sc.context('Dex');
     expect(ctx.playerKnowledge.join(' ')).not.toMatch(/trair/);
-    const prompt = buildNarratePrompt(ctx, { kind: 'action', playerInput: 'falo com o Dex', engineResult: null }, false);
+    const prompt = buildNarratePrompt(ctx, { kind: 'action', playerInput: 'falo com o Dex', engineResult: null });
     expect(prompt).toMatch(/SEGREDOS \(o jogador NÃO sabe\): Dex vai trair/);
     expect(prompt.split('O jogador sabe:')[1].split('\n')[0]).not.toMatch(/trair/);
   });

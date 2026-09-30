@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { HeartPulse, Shield, Skull } from 'lucide-react';
+import { HeartPulse, Shield, Skull, TriangleAlert } from 'lucide-react';
+import { CONDITION_HINT, CONDITION_LABEL } from '@shared/engine/conditions';
 import type { GameState } from '@shared/types/game';
 import { formatGameTime } from '@shared/rules/world';
+import { STREET_DRUGS } from '@shared/rules/streetDrugs';
 import { WOUND_LABEL, characterSp, characterWoundState, deathSavePenalty, woundPenalty } from '@shared/engine/health';
 import { Badge, Button, Meter, Row, cn } from '../../ui';
 import { dispatch } from '../../store/gameStore';
@@ -24,6 +26,16 @@ export function StatusTab({ game }: { game: GameState }) {
           {woundPenalty(wound) !== 0 && <Badge tone="danger">{woundPenalty(wound)} em todas as ações</Badge>}
           {c.hp.current <= 0 && !c.dead && (
             <Badge tone={c.stabilized ? 'green' : 'danger'}>{c.stabilized ? 'Estabilizado' : `Teste de Morte +${deathSavePenalty(c)}`}</Badge>
+          )}
+          {(c.conditions ?? []).map(cond => (
+            <Badge key={cond.key} tone="yellow" title={CONDITION_HINT[cond.key]}>
+              {CONDITION_LABEL[cond.key]}
+            </Badge>
+          ))}
+          {game.scene.lethalThreat && !c.dead && (
+            <Badge tone="danger" solid title={game.scene.lethalThreat.description}>
+              <TriangleAlert className="w-3 h-3" /> Perigo mortal
+            </Badge>
           )}
         </div>
         <button type="button" onClick={() => setAdjust(a => !a)} className="text-[11px] text-dim hover:text-muted underline-offset-2 hover:underline">
@@ -70,6 +82,17 @@ export function StatusTab({ game }: { game: GameState }) {
         <Row label="Pontos de Melhoria">
           <span className="tabular text-neon-cyan">{c.ip} PM</span>
         </Row>
+        {(c.addictions ?? []).length > 0 && (
+          <Row label="Vícios">
+            <span className="flex flex-wrap gap-1 justify-end">
+              {c.addictions!.map(k => (
+                <Badge key={k} tone="danger">
+                  {STREET_DRUGS[k].label}
+                </Badge>
+              ))}
+            </span>
+          </Row>
+        )}
       </section>
 
       {game.activeEffects.length > 0 && (
@@ -80,7 +103,7 @@ export function StatusTab({ game }: { game: GameState }) {
               <p className="text-sm text-neon-purple">{e.name}</p>
               {e.description && <p className="text-xs text-muted">{e.description}</p>}
               <p className="tabular text-[10px] text-dim">
-                {Object.entries(e.penalties).map(([k, v]) => `${k} ${v! > 0 ? '+' : ''}${v}`).join(' · ') || 'sem modificador'}
+                {Object.entries(e.penalties).map(([k, v]) => `${k === 'all' ? 'Tudo' : k} ${v! > 0 ? '+' : ''}${v}`).join(' · ') || 'sem modificador'}
                 {e.expiresAt && ` · até ${formatGameTime(e.expiresAt).time}`}
               </p>
             </div>

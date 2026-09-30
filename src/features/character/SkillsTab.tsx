@@ -30,7 +30,7 @@ export function SkillsTab({ game }: { game: GameState }) {
       </section>
 
       <p className="text-[11px] text-muted">
-        Evolua perícias gastando PM (custo = 20 × novo nível). Você tem <span className="text-neon-cyan tabular">{c.ip} PM</span>.
+        Evolua perícias gastando PM (custo = 20 × novo nível; perícias ×2 custam o dobro). Você tem <span className="text-neon-cyan tabular">{c.ip} PM</span>.
       </p>
 
       {CATEGORIES.map(cat => (
@@ -39,13 +39,13 @@ export function SkillsTab({ game }: { game: GameState }) {
           <ul className="divide-y divide-line-soft">
             {SKILLS.filter(s => s.category === cat).map(s => {
               const level = c.skills[s.id] ?? 0;
-              const cost = skillUpgradeCost(level + 1);
+              const cost = skillUpgradeCost(level + 1, s.difficult);
               const canUp = level < MAX_SKILL_LEVEL && c.ip >= cost;
               const base = statValue(c, s.stat) + level;
               return (
                 <li key={s.id} className="flex items-center gap-2 py-1.5" title={s.description}>
                   <div className="flex-1 min-w-0">
-                    <p className={cn('text-sm truncate', level === 0 ? 'text-dim' : 'text-fg')}>{s.label}</p>
+                    <p className={cn('text-sm truncate', level === 0 ? 'text-dim' : 'text-fg')}>{s.label}{s.difficult && <span className="text-[9px] text-neon-yellow ml-1" title="Perícia ×2: evoluir custa o dobro">×2</span>}</p>
                     <p className="tabular text-[10px] text-dim">
                       {s.stat} {statValue(c, s.stat)} + {level} = base {base}
                     </p>

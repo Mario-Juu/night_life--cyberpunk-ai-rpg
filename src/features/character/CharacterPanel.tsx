@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Activity, Backpack, Cpu, User } from 'lucide-react';
+import { Activity, Backpack, Cpu, Star, User } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
 import { getRole } from '@shared/rules/creation';
 import { Tabs } from '../../ui';
@@ -7,8 +7,9 @@ import { StatusTab } from './StatusTab';
 import { SkillsTab } from './SkillsTab';
 import { GearTab } from './GearTab';
 import { CyberTab } from './CyberTab';
+import { RoleTab } from './RoleTab';
 
-type Tab = 'status' | 'skills' | 'gear' | 'cyber';
+type Tab = 'status' | 'role' | 'skills' | 'gear' | 'cyber';
 
 export function CharacterPanel({ game }: { game: GameState }) {
   const [tab, setTab] = useState<Tab>('status');
@@ -22,10 +23,12 @@ export function CharacterPanel({ game }: { game: GameState }) {
       </header>
       <Tabs<Tab>
         size="sm"
+        compact
         value={tab}
         onChange={setTab}
         items={[
           { id: 'status', label: 'Status', icon: <Activity className="w-3.5 h-3.5" /> },
+          { id: 'role', label: 'Papel', icon: <Star className="w-3.5 h-3.5" /> },
           { id: 'skills', label: 'Perícias', icon: <User className="w-3.5 h-3.5" />, badge: c.ip >= 20 ? 1 : undefined },
           { id: 'gear', label: 'Equip.', icon: <Backpack className="w-3.5 h-3.5" /> },
           { id: 'cyber', label: 'Cromo', icon: <Cpu className="w-3.5 h-3.5" /> },
@@ -33,6 +36,7 @@ export function CharacterPanel({ game }: { game: GameState }) {
       />
       <div className="flex-1 min-h-0 overflow-y-auto p-4">
         {tab === 'status' && <StatusTab game={game} />}
+        {tab === 'role' && <RoleTab game={game} />}
         {tab === 'skills' && <SkillsTab game={game} />}
         {tab === 'gear' && <GearTab game={game} />}
         {tab === 'cyber' && <CyberTab game={game} />}

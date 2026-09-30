@@ -27,7 +27,7 @@ async function start() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[NIGHT//LIFE] Servidor online em http://localhost:${PORT}`);
-    if (!getApiKey()) console.warn('[NIGHT//LIFE] Nenhuma chave Gemini configurada: o Mestre responderá em modo degradado.');
+    if (!getApiKey()) console.warn('[NIGHT//LIFE] Sem chave Gemini no .env: cada jogador precisa colocar a própria nas Configurações do jogo.');
   });
 }
 

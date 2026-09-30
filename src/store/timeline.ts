@@ -9,6 +9,8 @@ import { makeId } from '@shared/engine/ids';
 import { getRepository, snapshotsToPrune, type SnapshotKind, type SnapshotMeta, type SnapshotRecord } from '../services/repository';
 import { requireGame, useGameStore } from './gameStore';
 
+const lineName = (id: string) => (id === 'main' ? 'principal' : id);
+
 export function snapshotId(state: GameState, kind: SnapshotKind, turn: number): string {
   const base = `${state.id}:${state.session.branchId}:t${turn}:${kind}`;
   return kind === 'manual' || kind === 'branch' ? `${base}:${Date.now().toString(36)}` : base;
@@ -53,7 +55,7 @@ export async function pruneSnapshots(state: GameState): Promise<void> {
 export async function rewindTo(snapshotIdToLoad: string): Promise<GameState> {
   const repo = getRepository();
   const snap = await repo.getSnapshot(snapshotIdToLoad);
-  if (!snap) throw new Error('Snapshot não encontrado.');
+  if (!snap) throw new Error('Ponto de retorno não encontrado.');
   const metas = await repo.listSnapshots(snap.gameId);
   const future = metas.filter(m => m.branchId === snap.branchId && m.turn >= snap.turn && m.id !== snap.id).map(m => m.id);
   await repo.deleteSnapshots([...future, snap.id]);
@@ -71,16 +73,16 @@ export async function rewindTo(snapshotIdToLoad: string): Promise<GameState> {
 export async function createBranch(fromSnapshotId: string): Promise<GameState> {
   const repo = getRepository();
   const snap = await repo.getSnapshot(fromSnapshotId);
-  if (!snap) throw new Error('Snapshot não encontrado.');
+  if (!snap) throw new Error('Ponto de retorno não encontrado.');
   const current = requireGame();
-  await takeSnapshot(current, 'branch', `Ponta da linha ${current.session.branchId} (turno ${current.turn})`);
+  await takeSnapshot(current, 'branch', `Ponta da linha ${lineName(current.session.branchId)} (turno ${current.turn})`);
   const branchId = makeId('br');
   const state: GameState = {
     ...snap.state,
     session: { version: current.session.version + 1, branchId, parentBranchId: snap.branchId, branchedFromTurn: snap.turn },
   };
   useGameStore.getState().setGame(state);
-  await takeSnapshot(state, 'branch', `Início da linha ${branchId} (a partir do turno ${snap.turn})`);
+  await takeSnapshot(state, 'branch', `Início de uma nova linha (a partir do turno ${snap.turn})`);
   return state;
 }
 
@@ -89,12 +91,12 @@ export async function switchBranch(branchId: string): Promise<GameState> {
   const repo = getRepository();
   const current = requireGame();
   if (branchId === current.session.branchId) return current;
-  await takeSnapshot(current, 'branch', `Ponta da linha ${current.session.branchId} (turno ${current.turn})`);
+  await takeSnapshot(current, 'branch', `Ponta da linha ${lineName(current.session.branchId)} (turno ${current.turn})`);
   const metas = (await repo.listSnapshots(current.id)).filter(m => m.branchId === branchId);
   const tip = metas.sort((a, b) => b.turn - a.turn || b.createdAt.localeCompare(a.createdAt))[0];
-  if (!tip) throw new Error('Linha do tempo sem snapshots.');
+  if (!tip) throw new Error('Linha do tempo sem pontos de retorno.');
   const snap = await repo.getSnapshot(tip.id);
-  if (!snap) throw new Error('Snapshot não encontrado.');
+  if (!snap) throw new Error('Ponto de retorno não encontrado.');
   const state = { ...snap.state, session: { ...snap.state.session, version: current.session.version + 1 } };
   useGameStore.getState().setGame(state);
   return state;
