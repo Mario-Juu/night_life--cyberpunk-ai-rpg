@@ -14,7 +14,18 @@ import { useUiStore } from '../store/uiStore';
 /** Sempre MAIOR que o orçamento do servidor (GM_BUDGET_MS = 110 s): o servidor responde antes (narração ou fallback). */
 const TIMEOUT_MS = 150_000;
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    /** Status HTTP (502/504 = a hospedagem cortou a Function por tempo). */
+    public status?: number,
+  ) {
+    super(message);
+  }
+}
+
+/** A hospedagem (Netlify) derrubou a resposta no meio: vale tentar de novo. */
+export const isGatewayCut = (err: unknown) => err instanceof ApiError && (err.status === 502 || err.status === 504 || err.status === 503);
 
 /** Chave Gemini do próprio jogador, se ele configurou uma. */
 function keyHeader(): Record<string, string> {
@@ -33,7 +44,10 @@ async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
       signal: controller.signal,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new ApiError(data.error || `Erro do servidor (${res.status})`);
+    if (!res.ok) {
+      const cut = res.status === 502 || res.status === 504 || res.status === 503;
+      throw new ApiError(data.error || (cut ? 'A hospedagem cortou a resposta do Mestre (tempo limite do servidor).' : `Erro do servidor (${res.status})`), res.status);
+    }
     return data as GmEnvelope<T>;
   } catch (err) {
     if (err instanceof ApiError) throw err;

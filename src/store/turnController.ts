@@ -20,7 +20,7 @@ import { canUsePhone } from '@shared/engine/npcs';
 import { humanityBand, isCyberpsycho } from '@shared/rules/humanity';
 import { applyInterpretation, applyNarration, applyPhoneReply, applyRoll, beginTurn, buildEngineResult, finalizeTurn, type Step } from '@shared/engine/turn';
 import { REGISTRY, executeTool, validateToolCalls } from '@shared/engine/tools';
-import { api } from '../services/api';
+import { api, isGatewayCut } from '../services/api';
 import { sound } from '../services/audio';
 import { getRepository } from '../services/repository';
 import { commit, dispatch, getGame, requireGame, useGameStore } from './gameStore';
@@ -137,8 +137,19 @@ async function narrateWithChoice(
 ): Promise<GmEnvelope<NarrateResponse>> {
   const ui = () => useUiStore.getState();
   let allowLite = ui().liteNarration === 'allow';
+  let cuts = 0;
   for (let round = 0; round < 4; round++) {
-    const env = await api.narrate(ctx, { ...input, allowLite }, model());
+    let env: GmEnvelope<NarrateResponse>;
+    try {
+      env = await api.narrate(ctx, { ...input, allowLite }, model());
+    } catch (err) {
+      // A hospedagem derrubou a Function (502/504): uma nova tentativa costuma passar.
+      if (!isGatewayCut(err) || cuts++ >= 1) throw err;
+      ui().setBusy(true, 'O servidor cortou a resposta; tentando de novo…');
+      await sleep(3000);
+      round--;
+      continue;
+    }
     if (!env.meta.degraded) return env;
     // Falha sem opção de Lite (já foi tentado, ou outro motivo): a tentativa automática de antes.
     if (!env.meta.liteOffered) {

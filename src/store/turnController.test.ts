@@ -23,7 +23,11 @@ const meta = (purpose: LlmRunMeta['purpose']): LlmRunMeta => ({
 const env = <T,>(payload: T, purpose: LlmRunMeta['purpose']): GmEnvelope<T> => ({ payload, meta: meta(purpose) });
 const narration = (over: Partial<NarrateResponse> = {}): NarrateResponse => ({ narration: 'Narração.', dialogues: [], toolCalls: [], discoveries: [], suggestedActions: ['a'], enemyActions: [], ...over });
 
+/** Falhas de rede/hospedagem enfileiradas para a narração (ex.: 502 da Netlify). */
+const narrateThrowQueue: Error[] = [];
+
 vi.mock('../services/api', () => ({
+  isGatewayCut: (e: unknown) => [502, 503, 504].includes((e as { status?: number })?.status ?? 0),
   fetchStatus: async () => ({ status: 'ok', hasKey: true, defaultMode: 'flash', promptVersion: 'test' }),
   api: {
     interpret: vi.fn(async (_ctx: unknown, _text: string, _model: unknown, feedback?: string) => {
@@ -35,6 +39,8 @@ vi.mock('../services/api', () => ({
     narrate: vi.fn(async (_ctx, input) => {
       calls.push(`narrate:${input.kind}`);
       narrateInputs.push(input);
+      const boom = narrateThrowQueue.shift();
+      if (boom) throw boom;
       const queued = narrateEnvQueue.shift();
       if (queued) return queued;
       return env(narrateReply ?? narration(), input.kind === 'prologue' ? 'prologue' : 'narrate');
@@ -67,6 +73,7 @@ beforeEach(() => {
   feedbacks.length = 0;
   narrateReply = null;
   narrateEnvQueue.length = 0;
+  narrateThrowQueue.length = 0;
   hold = null;
   setRepository(createMemoryRepository());
 });
@@ -230,4 +237,20 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
     expect(narrateInputs).toHaveLength(1);
     expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && /sinal com o Mestre caiu/.test(e.text))).toBe(true);
   });
+});
+
+describe('Hospedagem cortou a resposta (502)', () => {
+  it('um 502 na narração: tenta de novo sozinho e o turno termina narrado', async () => {
+    narrateThrowQueue.push(Object.assign(new Error('A hospedagem cortou a resposta do Mestre'), { status: 502 }));
+    await startCampaign(character());
+    expect(calls.filter(c => c.startsWith('narrate'))).toHaveLength(2);
+    expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && e.text === 'Narração.')).toBe(true);
+  }, 15_000);
+
+  it('dois 502 seguidos: desiste com a mensagem clara (sem loop)', async () => {
+    for (let i = 0; i < 2; i++) narrateThrowQueue.push(Object.assign(new Error('A hospedagem cortou a resposta do Mestre'), { status: 502 }));
+    await startCampaign(character());
+    expect(calls.filter(c => c.startsWith('narrate'))).toHaveLength(2);
+    expect(useGameStore.getState().game!.chat.some(e => /cortou a resposta/.test(e.text))).toBe(true);
+  }, 15_000);
 });
