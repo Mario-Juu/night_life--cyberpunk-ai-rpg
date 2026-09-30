@@ -11,10 +11,16 @@ import serverless from 'serverless-http';
 import { createApp } from '../../server/app';
 import { createGameMaster } from '../../server/gamemaster/gameMaster';
 import { defaultMode, geminiProvider, getApiKey } from '../../server/gamemaster/llmClient';
+import { createMistralProvider, mistralKey, withNarrationBackup } from '../../server/gamemaster/mistralClient';
 
 process.env.GM_BUDGET_MS ??= '52000';
 
-const app = createApp({ gm: createGameMaster(geminiProvider), hasKey: () => getApiKey() !== null, defaultMode });
+const app = createApp({
+  gm: createGameMaster(withNarrationBackup(geminiProvider, createMistralProvider())),
+  hasKey: () => getApiKey() !== null,
+  defaultMode,
+  backupLabel: () => (mistralKey() ? 'Mistral Medium' : 'Flash-Lite'),
+});
 
 // Pelo redirect, o caminho pode chegar como /.netlify/functions/api/gm/... — o app espera /api/gm/...
 const PREFIX = '/.netlify/functions/api';

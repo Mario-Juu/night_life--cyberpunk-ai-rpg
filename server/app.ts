@@ -12,6 +12,8 @@ export interface AppOptions {
   gm: GameMaster;
   hasKey: () => boolean;
   defaultMode: () => ModelMode;
+  /** Nome da reserva da narração, para o jogador saber o que está autorizando. */
+  backupLabel?: () => string;
   /** Valida a chave do jogador junto ao Google (injetável nos testes). */
   checkKey?: (key: string | undefined) => Promise<KeyCheck>;
 }
@@ -28,7 +30,7 @@ function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.i
 
 const asContext = (c: unknown) => c as GameContext;
 
-export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey }: AppOptions) {
+export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey, backupLabel = () => 'Flash-Lite' }: AppOptions) {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   // Chave Gemini do próprio jogador (cabeçalho), válida só para este pedido.
@@ -39,7 +41,7 @@ export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey }: A
   });
 
   app.get('/api/gm/status', (_req, res) => {
-    const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION };
+    const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION, backup: backupLabel() };
     res.json(status);
   });
 

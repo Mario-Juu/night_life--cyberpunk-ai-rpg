@@ -140,5 +140,7 @@ export interface GMStatus {
   status: 'ok';
   hasKey: boolean;
   defaultMode: ModelMode;
+  /** Reserva da narração quando o Flash cai (ex.: "Mistral Medium" ou "Flash-Lite"). */
+  backup?: string;
   promptVersion: string;
 }

@@ -35,6 +35,8 @@ export interface GenerateRequest {
    * quando todos os flash falharem.
    */
   allowLite?: boolean;
+  /** Só os modelos flash-lite (último recurso da narração, depois do Flash e do Mistral). */
+  liteOnly?: boolean;
 }
 
 export interface GenerateResult {
@@ -305,7 +307,7 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
 
   const full = modelChain(purpose);
   const liteSkipped = NARRATIVE_PURPOSES.has(purpose) && req.allowLite !== true && full.some(isLiteModel) && full.some(m => !isLiteModel(m));
-  const base = liteSkipped ? full.filter(m => !isLiteModel(m)) : full;
+  const base = req.liteOnly ? full.filter(isLiteModel) : liteSkipped ? full.filter(m => !isLiteModel(m)) : full;
   const avoid = new Set(req.avoid ?? []);
   /** Último tipo de falha de cada modelo nesta chamada (decide a segunda volta). */
   const lastKind = new Map<string, FailureKind>();

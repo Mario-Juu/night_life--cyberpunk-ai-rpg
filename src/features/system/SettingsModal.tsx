@@ -36,6 +36,7 @@ export function SettingsModal() {
   const hasKey = useUiStore(s => s.hasKey);
   const geminiKey = useUiStore(s => s.geminiKey);
   const liteNarration = useUiStore(s => s.liteNarration);
+  const backupLabel = useUiStore(s => s.backupLabel);
   const [keyDraft, setKeyDraft] = useState('');
   const close = () => useUiStore.getState().openModal(null);
   const [sfx, setSfx] = useState(sound.isEnabled());
@@ -57,8 +58,8 @@ export function SettingsModal() {
                 aria-pressed={liteNarration === v}
                 className={cn('border p-2 text-left', liteNarration === v ? 'border-neon-cyan bg-neon-cyan/10' : 'border-line hover:border-muted')}
               >
-                <span className="font-display text-xs uppercase tracking-wider">{v === 'ask' ? 'Perguntar' : 'Usar o Lite'}</span>
-                <span className="block text-[11px] text-muted">{v === 'ask' ? 'Esperar o Flash ou seguir com o Lite' : 'Sem perguntar (prosa mais simples)'}</span>
+                <span className="font-display text-xs uppercase tracking-wider">{v === 'ask' ? 'Perguntar' : 'Usar a reserva'}</span>
+                <span className="block text-[11px] text-muted">{v === 'ask' ? `Esperar o Flash ou seguir com o ${backupLabel}` : `${backupLabel}, sem perguntar`}</span>
               </button>
             ))}
           </div>

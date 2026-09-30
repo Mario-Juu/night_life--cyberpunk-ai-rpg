@@ -30,6 +30,7 @@ export default function App() {
   useEffect(() => {
     void fetchStatus().then(status => {
       useUiStore.getState().setHasKey(status.hasKey);
+      if (status.backup) useUiStore.getState().setBackupLabel(status.backup);
       setStatusChecked(true);
     });
   }, []);

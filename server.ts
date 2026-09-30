@@ -4,6 +4,7 @@ import express from 'express';
 import { createApp } from './server/app';
 import { createGameMaster } from './server/gamemaster/gameMaster';
 import { defaultMode, geminiProvider, getApiKey } from './server/gamemaster/llmClient';
+import { createMistralProvider, mistralKey, withNarrationBackup } from './server/gamemaster/mistralClient';
 
 dotenv.config();
 
@@ -11,9 +12,11 @@ const PORT = Number(process.env.PORT) || 3000;
 
 async function start() {
   const app = createApp({
-    gm: createGameMaster(geminiProvider),
+    // Narração: Gemini Flash; com a reserva autorizada, Mistral (se MISTRAL_API_KEY) e por fim Flash-Lite.
+    gm: createGameMaster(withNarrationBackup(geminiProvider, createMistralProvider())),
     hasKey: () => getApiKey() !== null,
     defaultMode,
+    backupLabel: () => (mistralKey() ? 'Mistral Medium' : 'Flash-Lite'),
   });
 
   if (process.env.NODE_ENV === 'production') {

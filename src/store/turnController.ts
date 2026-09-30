@@ -163,7 +163,7 @@ async function narrateWithChoice(
       ui().setBusy(true, 'O Mestre narra…');
       allowLite = false;
     } else {
-      ui().setBusy(true, 'O Mestre narra (Flash-Lite)…');
+      ui().setBusy(true, `O Mestre narra (${ui().backupLabel})…`);
       allowLite = true;
     }
   }

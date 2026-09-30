@@ -3,7 +3,7 @@
  */
 import type { FlagValue, GameState, ScheduledEvent, ThreatLevel } from '../types/game';
 import { advanceGameTime, formatGameTime, gameDay } from '../rules/world';
-import { emit } from './events';
+import { emit, turnIdOf } from './events';
 import { makeId } from './ids';
 import { operatorPerks } from '../rules/roles';
 import { syncWithdrawal } from './withdrawal';
@@ -44,6 +44,25 @@ export function evaluateQuestFlags(state: GameState): GameState {
 }
 
 /** Conclui/falha uma missão. Conclusão paga rewardEddies uma única vez. */
+/** Entradas de dinheiro deste turno, por origem (recompensa de missão × transferência do narrador). */
+export function sameTurnPayments(state: GameState, kind: 'quest_reward' | 'transfer'): Array<{ value: number; source?: string; questId?: string; reward?: number }> {
+  const turnId = turnIdOf(state);
+  return state.events
+    .filter(e => e.turnId === turnId && e.type === 'MONEY_CHANGED' && (e.data as { kind?: string } | undefined)?.kind === kind && typeof e.value === 'number' && e.value > 0)
+    .map(e => ({ value: e.value as number, source: e.source, ...(e.data as { questId?: string; reward?: number }) }));
+}
+
+const norm = (t: string) => t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+/** Uma transferência é o pagamento desta missão? Mesmo valor, ou veio de quem deu o trabalho. */
+export function paymentMatchesQuest(state: GameState, quest: { rewardEddies: number; giverId?: string }, payment: { value: number; source?: string }): boolean {
+  if (payment.value === quest.rewardEddies) return true;
+  const giver = quest.giverId ? state.npcs.find(n => n.id === quest.giverId) : undefined;
+  if (!giver || !payment.source) return false;
+  const first = norm(giver.name).split(/\s+/)[0];
+  return first.length >= 3 && norm(payment.source).includes(first);
+}
+
 export function resolveQuest(state: GameState, questId: string, status: 'COMPLETED' | 'FAILED' | 'ABANDONED', reason?: string): GameState {
   const quest = state.missions.find(m => m.id === questId);
   if (!quest || quest.status !== 'ACTIVE') return state;
@@ -54,11 +73,22 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
   if (status === 'COMPLETED') {
     s = emit(s, 'QUEST_COMPLETED', `Missão concluída: ${quest.title}`, { target: quest.id, value: quest.rewardEddies, data: { reason } });
     if (quest.rewardEddies > 0) {
+      // O narrador às vezes já "pagou" o trabalho na cena (transfer_money) neste mesmo turno:
+      // é o MESMO pagamento — a recompensa só completa o que faltar.
+      const already = Math.min(quest.rewardEddies, sameTurnPayments(s, 'transfer').filter(p => paymentMatchesQuest(s, quest, p)).reduce((n, p) => n + p.value, 0));
       // Operador (Canal, rank 5+): negocia +20% no pagamento do trabalho.
       const bonus = s.character.bio.role === 'fixer' ? Math.round(quest.rewardEddies * operatorPerks(s.character.roleRank).jobBonus) : 0;
-      const paid = quest.rewardEddies + bonus;
-      s = { ...s, character: { ...s.character, money: s.character.money + paid } };
-      s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${bonus ? `, +${bonus} negociados pelo Operador` : ''})`, { source: quest.giverId ?? quest.id, value: paid });
+      const paid = quest.rewardEddies - already + bonus;
+      if (paid > 0) {
+        s = { ...s, character: { ...s.character, money: s.character.money + paid } };
+        s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${bonus ? `, +${bonus} negociados pelo Operador` : ''}${already ? `; €$${already} já pagos na cena` : ''})`, {
+          source: quest.giverId ?? quest.id,
+          value: paid,
+          data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies },
+        });
+      } else {
+        s = emit(s, 'MONEY_CHANGED', `Recompensa de ${quest.title} já paga na cena (€$${already})`, { source: quest.giverId ?? quest.id, value: 0, data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies } });
+      }
     }
   } else {
     s = emit(s, 'QUEST_FAILED', `Missão ${status === 'FAILED' ? 'falhou' : 'abandonada'}: ${quest.title}`, { target: quest.id, data: { reason } });

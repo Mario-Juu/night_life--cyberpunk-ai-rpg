@@ -22,7 +22,7 @@ import { advanceGameTime, formatGameTime } from '../../rules/world';
 import { applyDamageToCharacter, healCharacter } from '../health';
 import { makeId, slugId } from '../ids';
 import { emit } from '../events';
-import { advanceTime, normalizeFlagKey, resolveQuest, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
+import { advanceTime, normalizeFlagKey, paymentMatchesQuest, resolveQuest, sameTurnPayments, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
 import { defineTool, fail, ok } from './registry';
 import { ensureNpc } from '../npcs';
 import { addToInventory, buildCombatant, buildItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, sameName } from './helpers';
@@ -494,7 +494,7 @@ export const MUTATION_TOOLS = [
     name: 'transfer_money',
     kind: 'mutation',
     origins: NARR_PHONE,
-    description: `Pagamento ou cobrança atribuída a alguém. Entradas: máx. €$${MAX_TRANSFER_IN} (pagamento por trabalho usa start_quest/complete_quest). Saídas até €$5000, limitadas ao saldo.`,
+    description: `Pagamento ou cobrança atribuída a alguém. Entradas: máx. €$${MAX_TRANSFER_IN}. NUNCA pague por aqui um trabalho que é missão: complete_quest já paga a recompensa (não chame os dois). Saídas até €$5000, limitadas ao saldo.`,
     params: {
       amount: { type: 'number', desc: 'positivo = jogador recebe; negativo = paga', required: true, min: -5000, max: MAX_TRANSFER_IN },
       counterpart: { type: 'string', desc: 'quem paga/recebe', required: true, max: 80 },
@@ -503,8 +503,22 @@ export const MUTATION_TOOLS = [
     run: (s0, a) => {
       const money = s0.character.money;
       if (a.amount < 0 && money < -a.amount) return fail(s0, `Saldo insuficiente: tem €$${money}, precisa pagar €$${-a.amount}.`);
+      if (a.amount > 0) {
+        // A missão concluída NESTE turno já pagou o trabalho: não pagar de novo pela cena.
+        const reward = sameTurnPayments(s0, 'quest_reward').find(p => {
+          const quest = s0.missions.find(m => m.id === p.questId);
+          return quest && paymentMatchesQuest(s0, quest, { value: a.amount, source: a.counterpart });
+        });
+        if (reward) {
+          const quest = s0.missions.find(m => m.id === reward.questId)!;
+          return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" (€$${reward.reward ?? reward.value}) já foi paga pelo motor ao concluir a missão neste turno. Narre esse pagamento, não pague de novo.`);
+        }
+      }
       const s = { ...s0, character: { ...s0.character, money: money + a.amount } };
-      return ok(emit(s, 'MONEY_CHANGED', `${a.amount > 0 ? '+' : ''}${a.amount} €$ — ${a.reason ?? 'sem motivo informado'} (${a.counterpart})`, { source: a.counterpart, value: a.amount }), `Saldo €$${s.character.money}`);
+      return ok(
+        emit(s, 'MONEY_CHANGED', `${a.amount > 0 ? '+' : ''}${a.amount} €$ — ${a.reason ?? 'sem motivo informado'} (${a.counterpart})`, { source: a.counterpart, value: a.amount, data: { kind: 'transfer' } }),
+        `Saldo €$${s.character.money}`,
+      );
     },
   }),
   defineTool({

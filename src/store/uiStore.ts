@@ -53,6 +53,8 @@ interface UiStore {
   liteNarration: 'ask' | 'allow';
   /** Pergunta pendente ao jogador (Flash indisponível: esperar ou seguir com o Lite?). */
   liteChoice: LiteChoiceRequest | null;
+  /** Nome da reserva da narração informado pelo servidor ("Mistral Medium" ou "Flash-Lite"). */
+  backupLabel: string;
   /** Tutoriais de primeira vez (um por sistema). */
   tutorialsOn: boolean;
   seenTutorials: TutorialId[];
@@ -85,6 +87,7 @@ interface UiStore {
   setGeminiKey: (v: string) => void;
   setLiteNarration: (v: 'ask' | 'allow') => void;
   setLiteChoice: (v: LiteChoiceRequest | null) => void;
+  setBackupLabel: (v: string) => void;
   resetTutorials: () => void;
 }
 
@@ -114,6 +117,7 @@ export const useUiStore = create<UiStore>()(
       geminiKey: '',
       liteNarration: 'ask',
       liteChoice: null,
+      backupLabel: 'Flash-Lite',
       tutorialsOn: true,
       seenTutorials: [],
       tutorial: null,
@@ -149,6 +153,7 @@ export const useUiStore = create<UiStore>()(
       setGeminiKey: geminiKey => set({ geminiKey: geminiKey.trim() }),
       setLiteNarration: liteNarration => set({ liteNarration }),
       setLiteChoice: liteChoice => set({ liteChoice }),
+      setBackupLabel: backupLabel => set({ backupLabel }),
       resetTutorials: () => set({ seenTutorials: [], tutorialsOn: true }),
     }),
     {
