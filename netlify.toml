@@ -1,0 +1,23 @@
+# Deploy na Netlify: front estático (Vite → dist) + o servidor do Mestre como Function.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# API do Mestre → Function (o navegador continua chamando /api/gm/...).
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# SPA: qualquer outra rota abre o jogo.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
