@@ -35,6 +35,7 @@ export function SettingsModal() {
   const [sfxVolume, setSfxVolume] = useState(sound.getVolume());
   const hasKey = useUiStore(s => s.hasKey);
   const geminiKey = useUiStore(s => s.geminiKey);
+  const liteNarration = useUiStore(s => s.liteNarration);
   const [keyDraft, setKeyDraft] = useState('');
   const close = () => useUiStore.getState().openModal(null);
   const [sfx, setSfx] = useState(sound.isEnabled());
@@ -45,7 +46,22 @@ export function SettingsModal() {
       <div className="space-y-5">
         <section className="space-y-1">
           <p className="eyebrow">Modelo do Mestre</p>
-          <p className="text-[11px] text-muted">Gemini Flash. Se uma versão estiver ocupada ou sem cota, o Mestre desce para a anterior (3.8 → 3.7 → 3.6 → 3.5) e, por último, para o Flash-Lite.</p>
+          <p className="text-[11px] text-muted">Gemini Flash. Se uma versão estiver ocupada ou sem cota, o Mestre desce para a anterior (3.8 → 3.7 → 3.6 → 3.5).</p>
+          <p className="text-[11px] text-muted">Se todos os Flash falharem na narração:</p>
+          <div className="grid grid-cols-2 gap-2">
+            {(['ask', 'allow'] as const).map(v => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => useUiStore.getState().setLiteNarration(v)}
+                aria-pressed={liteNarration === v}
+                className={cn('border p-2 text-left', liteNarration === v ? 'border-neon-cyan bg-neon-cyan/10' : 'border-line hover:border-muted')}
+              >
+                <span className="font-display text-xs uppercase tracking-wider">{v === 'ask' ? 'Perguntar' : 'Usar o Lite'}</span>
+                <span className="block text-[11px] text-muted">{v === 'ask' ? 'Esperar o Flash ou seguir com o Lite' : 'Sem perguntar (prosa mais simples)'}</span>
+              </button>
+            ))}
+          </div>
         </section>
 
         <section className="space-y-2">

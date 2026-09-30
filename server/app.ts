@@ -62,7 +62,7 @@ export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey }: A
     res.json(
       await gm.narrate(
         asContext(body.context),
-        { kind: body.kind, playerInput: body.playerInput, engineResult: body.engineResult as EngineResult | null },
+        { kind: body.kind, playerInput: body.playerInput, engineResult: body.engineResult as EngineResult | null, allowLite: body.allowLite },
         body.model ?? defaultMode(),
       ),
     );

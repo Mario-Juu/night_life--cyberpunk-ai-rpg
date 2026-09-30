@@ -46,7 +46,8 @@ async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
 
 export async function fetchStatus(): Promise<GMStatus> {
   try {
-    const res = await fetch('/api/gm/status', { headers: keyHeader() });
+    // Com timeout: a tela inicial espera por isto (a Function fria da Netlify pode demorar).
+    const res = await fetch('/api/gm/status', { headers: keyHeader(), signal: AbortSignal.timeout(8_000) });
     if (res.ok) return await res.json();
   } catch {
     // servidor offline
@@ -67,7 +68,7 @@ export async function checkKey(key: string): Promise<{ valid: boolean | null; re
 
 export const api = {
   interpret: (context: GameContext, text: string, model: ModelMode, feedback?: string) => post<InterpretResponse>('/api/gm/interpret', { context, text, model, feedback }),
-  narrate: (context: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null }, model: ModelMode) =>
+  narrate: (context: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null; allowLite?: boolean }, model: ModelMode) =>
     post<NarrateResponse>('/api/gm/narrate', { context, ...input, model }),
   phone: (context: GameContext, npcId: string, message: string, model: ModelMode) => post<PhoneResponse>('/api/gm/phone', { context, npcId, message, model }),
   summarize: (req: { sessionId: string; turnId: string; fromTurn: number; toTurn: number; transcript: string }) => post<SummarizeResponse>('/api/gm/summarize', req),

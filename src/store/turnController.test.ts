@@ -12,6 +12,8 @@ let interpretReply: InterpretResponse | null = null;
 const interpretQueue: InterpretResponse[] = [];
 const feedbacks: Array<string | undefined> = [];
 let narrateReply: NarrateResponse | null = null;
+/** Envelopes de narração enfileirados (para simular o Flash falhando). */
+const narrateEnvQueue: Array<GmEnvelope<NarrateResponse>> = [];
 let hold: (() => void) | null = null;
 
 const meta = (purpose: LlmRunMeta['purpose']): LlmRunMeta => ({
@@ -33,6 +35,8 @@ vi.mock('../services/api', () => ({
     narrate: vi.fn(async (_ctx, input) => {
       calls.push(`narrate:${input.kind}`);
       narrateInputs.push(input);
+      const queued = narrateEnvQueue.shift();
+      if (queued) return queued;
       return env(narrateReply ?? narration(), input.kind === 'prologue' ? 'prologue' : 'narrate');
     }),
     phone: vi.fn(async () => {
@@ -62,6 +66,7 @@ beforeEach(() => {
   interpretQueue.length = 0;
   feedbacks.length = 0;
   narrateReply = null;
+  narrateEnvQueue.length = 0;
   hold = null;
   setRepository(createMemoryRepository());
 });
@@ -174,5 +179,55 @@ describe('pipeline do turno', () => {
     expect(after.world.location.spot).toBe('Telhado');
     expect(after.world.time).toBe(before.world.time);
     expect(after.turn).toBe(before.turn);
+  });
+});
+
+const { useUiStore } = await import('./uiStore');
+
+describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
+  const flashDown = (): GmEnvelope<NarrateResponse> => ({
+    payload: narration({ narration: '⚠ O sinal com o Mestre caiu.', degraded: true }),
+    meta: { ...meta('prologue'), degraded: true, failureKind: 'overloaded', liteOffered: true, waitMayHelp: true },
+  });
+  const waitForChoice = async () => {
+    for (let i = 0; i < 200 && !useUiStore.getState().liteChoice; i++) await new Promise(r => setTimeout(r, 5));
+    return useUiStore.getState().liteChoice!;
+  };
+
+  it('pergunta; "seguir com o Lite" pede a narração de novo com allowLite', async () => {
+    useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
+    narrateEnvQueue.push(flashDown());
+    const done = startCampaign(character());
+    const choice = await waitForChoice();
+    expect(choice.waitMayHelp).toBe(true);
+    expect((narrateInputs[0] as { allowLite?: boolean }).allowLite).toBe(false);
+    choice.resolve('lite');
+    await done;
+    expect((narrateInputs[1] as { allowLite?: boolean }).allowLite).toBe(true);
+    expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && e.text === 'Narração.')).toBe(true);
+    expect(useUiStore.getState().liteChoice).toBeNull();
+  });
+
+  it('"sempre usar o Lite" vira preferência: a próxima narração já vai com allowLite, sem perguntar', async () => {
+    useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
+    narrateEnvQueue.push(flashDown());
+    const done = startCampaign(character());
+    (await waitForChoice()).resolve('always');
+    await done;
+    expect(useUiStore.getState().liteNarration).toBe('allow');
+    narrateInputs.length = 0;
+    await startCampaign(character());
+    expect((narrateInputs[0] as { allowLite?: boolean }).allowLite).toBe(true);
+    useUiStore.setState({ liteNarration: 'ask' });
+  });
+
+  it('fechar a pergunta mantém o aviso de modo degradado (nada é narrado pelo Lite)', async () => {
+    useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
+    narrateEnvQueue.push(flashDown());
+    const done = startCampaign(character());
+    (await waitForChoice()).resolve('cancel');
+    await done;
+    expect(narrateInputs).toHaveLength(1);
+    expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && /sinal com o Mestre caiu/.test(e.text))).toBe(true);
   });
 });

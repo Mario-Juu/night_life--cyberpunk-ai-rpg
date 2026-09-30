@@ -6,8 +6,8 @@
  */
 import { failureHint, failureTitle, isTransientFailure } from '@shared/rules/failures';
 import type { Character, GameState, RollOutcome } from '@shared/types/game';
-import type { TurnRecord } from '@shared/types/turn';
-import type { GmEnvelope } from '@shared/types/gm';
+import type { EngineResult, TurnRecord } from '@shared/types/turn';
+import type { GameContext, GmEnvelope, NarrateResponse } from '@shared/types/gm';
 import { buildGameContext } from '@shared/engine/context';
 import { createInitialState } from '@shared/engine/initialState';
 import { createSandboxState } from '@shared/engine/sandbox';
@@ -24,7 +24,7 @@ import { api } from '../services/api';
 import { sound } from '../services/audio';
 import { getRepository } from '../services/repository';
 import { commit, dispatch, getGame, requireGame, useGameStore } from './gameStore';
-import { useUiStore } from './uiStore';
+import { useUiStore, type LiteChoice } from './uiStore';
 import { pruneSnapshots, takeSnapshot } from './timeline';
 import { toast } from '../ui/toastStore';
 import { diceShowFrom, playDice } from './diceStore';
@@ -125,6 +125,55 @@ async function closeTurn(record: TurnRecord) {
   }
 }
 
+/**
+ * Narração com o Flash; se todos os Flash falharem, o JOGADOR decide: esperar e tentar o Flash de
+ * novo, seguir com o Flash-Lite (prosa mais simples) ou sempre usar o Lite. Sem pergunta pendente,
+ * cai no aviso de "modo degradado" como antes.
+ */
+async function narrateWithChoice(
+  record: TurnRecord,
+  ctx: GameContext,
+  input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null },
+): Promise<GmEnvelope<NarrateResponse>> {
+  const ui = () => useUiStore.getState();
+  let allowLite = ui().liteNarration === 'allow';
+  for (let round = 0; round < 4; round++) {
+    const env = await api.narrate(ctx, { ...input, allowLite }, model());
+    if (!env.meta.degraded) return env;
+    // Falha sem opção de Lite (já foi tentado, ou outro motivo): a tentativa automática de antes.
+    if (!env.meta.liteOffered) {
+      if (round === 0 && isTransientFailure(env.meta.failureKind) && env.meta.latencyMs < 60_000) {
+        record.llmRuns = [...record.llmRuns, env.meta];
+        ui().setBusy(true, 'O Mestre está reconectando…');
+        await sleep(AUTO_RETRY_DELAY_MS);
+        continue;
+      }
+      return env;
+    }
+    record.llmRuns = [...record.llmRuns, env.meta];
+    const choice = await new Promise<LiteChoice>(resolve => ui().setLiteChoice({ failureKind: env.meta.failureKind, waitMayHelp: !!env.meta.waitMayHelp, resolve }));
+    ui().setLiteChoice(null);
+    if (choice === 'cancel') return env;
+    if (choice === 'always') ui().setLiteNarration('allow');
+    if (choice === 'wait') {
+      for (let s = LITE_WAIT_S; s > 0; s--) {
+        ui().setBusy(true, `Aguardando o Flash… ${s}s`);
+        await sleep(1000);
+      }
+      ui().setBusy(true, 'O Mestre narra…');
+      allowLite = false;
+    } else {
+      ui().setBusy(true, 'O Mestre narra (Flash-Lite)…');
+      allowLite = true;
+    }
+  }
+  return api.narrate(ctx, { ...input, allowLite: true }, model());
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+/** Quanto esperar antes de tentar o Flash de novo quando o jogador escolhe "esperar". */
+const LITE_WAIT_S = 20;
+
 /** Narra o resultado mecânico, aplica consequências e fecha o turno. */
 async function narrateAndFinish(step0: Step, outcome: RollOutcome | null): Promise<void> {
   const engineResult = buildEngineResult(step0, outcome);
@@ -138,15 +187,7 @@ async function narrateAndFinish(step0: Step, outcome: RollOutcome | null): Promi
   const before = step.state;
   try {
     const input = { kind: step.record.kind, playerInput: step.record.playerInput ?? undefined, engineResult };
-    let env = await api.narrate(ctx, input, model());
-    // Sobrecarga do Google costuma passar em segundos: uma nova tentativa automática antes de desistir
-    // (só se a primeira falhou rápido — não dobra uma espera longa).
-    if (env.meta.degraded && isTransientFailure(env.meta.failureKind) && env.meta.latencyMs < 60_000) {
-      step.record.llmRuns = [...step.record.llmRuns, env.meta];
-      useUiStore.getState().setBusy(true, 'O Mestre está reconectando…');
-      await new Promise(r => setTimeout(r, AUTO_RETRY_DELAY_MS));
-      env = await api.narrate(ctx, input, model());
-    }
+    const env = await narrateWithChoice(step.record, ctx, input);
     const narr = recordRun(step.record, env);
     step = applyNarration(current(step.record), narr);
     step = finalizeTurn(step, retrieved);

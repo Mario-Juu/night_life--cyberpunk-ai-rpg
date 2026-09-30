@@ -115,7 +115,20 @@ function TurnCard({ t }: { t: TurnRecord }) {
                     {r.purpose} · {r.model} · {(r.latencyMs / 1000).toFixed(2)}s · {r.inputTokens ?? '?'}/{r.outputTokens ?? '?'} tokens
                     {r.cachedTokens ? ` (${r.cachedTokens} em cache)` : ''} · versão do prompt {r.promptVersion}
                     {r.attempts.length > 1 && ` · ${r.attempts.length} tentativas`}
-                    {r.errors.length > 0 && <span className="text-danger"> · {r.errors.join('; ')}</span>}
+                    {r.liteOffered && <span className="text-neon-yellow"> · Flash indisponível (Lite oferecido)</span>}
+                    {r.errors.length > 0 && <span className="text-danger"> · {r.errors.join('; ').slice(0, 200)}</span>}
+                    {r.attempts.length > 1 && (
+                      <details className="ml-3 mt-0.5">
+                        <summary className="cursor-pointer text-dim hover:text-neon-cyan">ver tentativas</summary>
+                        <ol className="space-y-0.5 mt-0.5">
+                          {r.attempts.map((a, i) => (
+                            <li key={i} className={a.ok ? 'text-neon-green' : 'text-muted'}>
+                              {i + 1}. {a.model} · {(a.latencyMs / 1000).toFixed(1)}s · {a.ok ? 'ok' : attemptReason(a.error)}
+                            </li>
+                          ))}
+                        </ol>
+                      </details>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -239,6 +252,24 @@ function TimelineTab({ game, close }: { game: GameState; close: () => void }) {
   );
 }
 
+
+/** Motivo legível de uma tentativa que falhou (o erro começa com o tipo: quota_day, overloaded…). */
+const ATTEMPT_REASON: Record<string, string> = {
+  quota_day: 'cota diária esgotada',
+  quota_minute: 'limite por minuto',
+  overloaded: 'Google sobrecarregado (503)',
+  timeout: 'demorou demais (cortado)',
+  bad_request: 'recusou o schema (400) → simplificado',
+  auth: 'chave recusada',
+  model_unavailable: 'modelo indisponível',
+  network: 'falha de rede',
+};
+function attemptReason(error?: string): string {
+  if (!error) return 'falhou';
+  if (/^JSON inválido/.test(error)) return 'JSON inválido';
+  const kind = error.split(' ')[0];
+  return ATTEMPT_REASON[kind] ?? error.slice(0, 80);
+}
 export function EventLogModal({ game }: { game: GameState }) {
   const open = useUiStore(s => s.modal === 'log');
   const tab = useUiStore(s => s.logTab);

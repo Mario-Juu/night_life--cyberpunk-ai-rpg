@@ -1,3 +1,4 @@
+import type { FailureKind } from '@shared/types/turn';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { ModelMode } from '@shared/types/gm';
@@ -8,6 +9,14 @@ export type SideTab = 'combat' | 'journal' | 'contacts' | 'net';
 export type ModalId = 'saves' | 'log' | 'rules' | 'settings' | 'newGame' | 'sandbox' | null;
 export type LogTab = 'events' | 'turns' | 'timeline';
 export type TutorialId = 'net' | 'combat' | 'role' | 'humanity' | 'cyber' | 'sandbox';
+
+export type LiteChoice = 'lite' | 'wait' | 'always' | 'cancel';
+export interface LiteChoiceRequest {
+  failureKind?: FailureKind;
+  /** Esperar pode resolver (sobrecarga); com cota diária esgotada, não. */
+  waitMayHelp: boolean;
+  resolve: (choice: LiteChoice) => void;
+}
 
 interface UiStore {
   mobileTab: MobileTab;
@@ -40,6 +49,10 @@ interface UiStore {
   forcedD10: number | null;
   /** Chave Gemini do próprio jogador (fica só neste navegador; vai no cabeçalho dos pedidos). */
   geminiKey: string;
+  /** Quando os flash falham na narração: perguntar antes de usar o flash-lite, ou usar direto. */
+  liteNarration: 'ask' | 'allow';
+  /** Pergunta pendente ao jogador (Flash indisponível: esperar ou seguir com o Lite?). */
+  liteChoice: LiteChoiceRequest | null;
   /** Tutoriais de primeira vez (um por sistema). */
   tutorialsOn: boolean;
   seenTutorials: TutorialId[];
@@ -70,6 +83,8 @@ interface UiStore {
   closeTutorial: () => void;
   setTutorialsOn: (v: boolean) => void;
   setGeminiKey: (v: string) => void;
+  setLiteNarration: (v: 'ask' | 'allow') => void;
+  setLiteChoice: (v: LiteChoiceRequest | null) => void;
   resetTutorials: () => void;
 }
 
@@ -97,6 +112,8 @@ export const useUiStore = create<UiStore>()(
       concealedGame: null,
       forcedD10: null,
       geminiKey: '',
+      liteNarration: 'ask',
+      liteChoice: null,
       tutorialsOn: true,
       seenTutorials: [],
       tutorial: null,
@@ -130,12 +147,14 @@ export const useUiStore = create<UiStore>()(
       closeTutorial: () => set(s => ({ tutorial: null, seenTutorials: s.tutorial && !s.seenTutorials.includes(s.tutorial) ? [...s.seenTutorials, s.tutorial] : s.seenTutorials })),
       setTutorialsOn: tutorialsOn => set({ tutorialsOn }),
       setGeminiKey: geminiKey => set({ geminiKey: geminiKey.trim() }),
+      setLiteNarration: liteNarration => set({ liteNarration }),
+      setLiteChoice: liteChoice => set({ liteChoice }),
       resetTutorials: () => set({ seenTutorials: [], tutorialsOn: true }),
     }),
     {
       name: 'nightlife_ui_v2',
       storage: createJSONStorage(() => localStorage),
-      partialize: s => ({ model: s.model, sheetOpen: s.sheetOpen, sideOpen: s.sideOpen, sideTab: s.sideTab, revealDv: s.revealDv, animateDice: s.animateDice, vfx: s.vfx, introSeen: s.introSeen, tutorialsOn: s.tutorialsOn, seenTutorials: s.seenTutorials, geminiKey: s.geminiKey }),
+      partialize: s => ({ model: s.model, sheetOpen: s.sheetOpen, sideOpen: s.sideOpen, sideTab: s.sideTab, revealDv: s.revealDv, animateDice: s.animateDice, vfx: s.vfx, introSeen: s.introSeen, tutorialsOn: s.tutorialsOn, seenTutorials: s.seenTutorials, geminiKey: s.geminiKey, liteNarration: s.liteNarration }),
     },
   ),
 );

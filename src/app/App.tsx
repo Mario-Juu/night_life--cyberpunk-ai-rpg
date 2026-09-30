@@ -14,6 +14,7 @@ import { DiceOverlay } from '../features/dice/DiceOverlay';
 import { VfxLayer } from '../features/vfx/VfxLayer';
 import { IntroConsole } from '../features/intro/IntroConsole';
 import { KeyGate } from '../features/intro/KeyGate';
+import { LiteChoiceModal } from '../features/system/LiteChoiceModal';
 import { TutorialModal } from '../features/tutorial/TutorialModal';
 
 export default function App() {
@@ -54,12 +55,15 @@ export default function App() {
       ) : (
         <CreationScreen />
       )}
+      {/* Antes de saber se falta a chave, nada de cadastro piscando por baixo: só o fundo do console. */}
+      {!statusChecked && (!geminiKey || !introSeen) && <div className="fixed inset-0 z-[70] bg-surface-0" aria-hidden />}
       {needsKey || gateOpen ? (
         <KeyGate onDone={() => setGateOpen(false)} />
       ) : (
         statusChecked && !introSeen && <IntroConsole onDone={() => useUiStore.getState().setIntroSeen(true)} />
       )}
       <RulesModal />
+      <LiteChoiceModal />
       {game && <TutorialModal />}
       <DiceOverlay />
       <VfxLayer game={concealed ?? game} />

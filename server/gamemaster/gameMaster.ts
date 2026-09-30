@@ -16,7 +16,7 @@ import { fallbackInterpret, fallbackNarrate, fallbackPhone, fallbackSummary } fr
 
 export interface GameMaster {
   interpret(ctx: GameContext, text: string, mode: ModelMode, feedback?: string): Promise<GmEnvelope<InterpretResponse>>;
-  narrate(ctx: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null }, mode: ModelMode): Promise<GmEnvelope<NarrateResponse>>;
+  narrate(ctx: GameContext, input: { kind: 'action' | 'prologue'; playerInput?: string; engineResult: EngineResult | null; allowLite?: boolean }, mode: ModelMode): Promise<GmEnvelope<NarrateResponse>>;
   phone(ctx: GameContext, npcId: string, message: string, mode: ModelMode): Promise<GmEnvelope<PhoneResponse>>;
   summarize(req: { sessionId: string; turnId: string; fromTurn: number; toTurn: number; transcript: string }, mode: ModelMode): Promise<GmEnvelope<SummarizeResponse>>;
 }
@@ -72,16 +72,16 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
    * Chama o provedor e faz o parse, tudo dentro do prazo da operação.
    * JSON inválido conta como falha transitória: tenta de novo em OUTRO modelo enquanto houver tempo.
    */
-  async function call(system: string, prompt: string, schema: object, mode: ModelMode, deadline: number, purpose: LlmPurpose) {
+  async function call(system: string, prompt: string, schema: object, mode: ModelMode, deadline: number, purpose: LlmPurpose, allowLite?: boolean) {
     const attempts: LlmError['attempts'] = [];
     const avoid: string[] = [];
     let lastErr: unknown;
     for (let i = 0; i < 2; i++) {
       let result;
       try {
-        result = await provider.generate({ system, prompt, schema, mode, deadline, purpose, avoid });
+        result = await provider.generate({ system, prompt, schema, mode, deadline, purpose, avoid, allowLite });
       } catch (err) {
-        if (err instanceof LlmError) throw new LlmError(err.message, [...attempts, ...err.attempts], err.kind);
+        if (err instanceof LlmError) throw new LlmError(err.message, [...attempts, ...err.attempts], err.kind, err.liteSkipped, err.waitMayHelp);
         throw err;
       }
       try {
@@ -98,11 +98,14 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
 
   const deadlineFrom = (started: number) => started + gmBudgetMs();
 
-  function failure(err: unknown): { attempts: LlmRunMeta['attempts']; errors: string[]; failureKind: FailureKind } {
+  function failure(err: unknown): Pick<LlmRunMeta, 'attempts' | 'errors' | 'failureKind' | 'liteOffered' | 'waitMayHelp'> {
+    const e = err instanceof LlmError ? err : null;
     return {
-      attempts: err instanceof LlmError ? err.attempts : [],
+      attempts: e?.attempts ?? [],
       errors: [(err as Error)?.message ?? String(err)],
-      failureKind: err instanceof LlmError ? err.kind : 'other',
+      failureKind: e?.kind ?? 'other',
+      liteOffered: e?.liteSkipped || undefined,
+      waitMayHelp: e?.waitMayHelp || undefined,
     };
   }
 
@@ -133,7 +136,7 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
         for (let attempt = 0; attempt < 2; attempt++) {
           // A reescrita por consistência só acontece se ainda houver tempo (senão fica a 1ª versão, com o aviso).
           if (attempt > 0 && deadline - Date.now() < 30_000) break;
-          const { result, raw } = await call(NARRATOR_PROMPT, buildNarratePrompt(ctx, input, correction), NARRATE_SCHEMA, mode, deadline, info.purpose);
+          const { result, raw } = await call(NARRATOR_PROMPT, buildNarratePrompt(ctx, input, correction), NARRATE_SCHEMA, mode, deadline, info.purpose, input.allowLite);
           last = result;
           payload = normalizeNarrate(raw);
           const warnings = checkNarration(input.engineResult, payload.narration, payload.dialogues, ctx.npcs, payload.toolCalls, { playerDead: ctx.character.dead });
@@ -151,7 +154,8 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
         };
       } catch (err) {
         const f = failure(err);
-        return { payload: fallbackNarrate(ctx, input.kind, input.engineResult, input.playerInput, f.failureKind), meta: meta(info, started, last, { ...f, degraded: true }) };
+        const payload = fallbackNarrate(ctx, input.kind, input.engineResult, input.playerInput, f.failureKind);
+        return { payload, meta: meta(info, started, last, { ...f, degraded: true }) };
       }
     },
 

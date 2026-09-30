@@ -73,6 +73,10 @@ export interface LlmRunMeta {
   degraded: boolean;
   /** Causa principal quando degradado. */
   failureKind?: FailureKind;
+  /** Narração: os flash falharam e o flash-lite NÃO foi tentado (o jogador decide). */
+  liteOffered?: boolean;
+  /** Alguma falha foi transitória: esperar e tentar de novo pode resolver. */
+  waitMayHelp?: boolean;
   createdAt: string;
 }
 

@@ -52,6 +52,7 @@ export const NarrateBody = z.object({
   playerInput: z.string().max(1500).optional(),
   engineResult: z.looseObject({ tools: z.array(z.any()), offscreen: z.array(z.string()) }).nullable(),
   model,
+  allowLite: z.boolean().optional(),
 });
 
 export const PhoneBody = z.object({

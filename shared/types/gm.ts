@@ -80,6 +80,8 @@ export interface NarrateRequest {
   playerInput?: string;
   engineResult: EngineResult | null;
   model?: ModelMode;
+  /** O jogador autorizou o flash-lite se os flash falharem. */
+  allowLite?: boolean;
 }
 
 export interface EnemyAction {

@@ -30,6 +30,11 @@ export interface GenerateRequest {
   deadline?: number;
   /** Modelos a evitar (ex.: o que acabou de devolver JSON inválido) — vão para o fim da fila. */
   avoid?: string[];
+  /**
+   * Narração: pode cair no flash-lite? (a prosa dele é mais crua). Padrão: não — o jogador escolhe
+   * quando todos os flash falharem.
+   */
+  allowLite?: boolean;
 }
 
 export interface GenerateResult {
@@ -51,6 +56,10 @@ export class LlmError extends Error {
     message: string,
     public attempts: LlmAttempt[],
     public kind: FailureKind = 'other',
+    /** A narração NÃO tentou o flash-lite (o jogador precisa autorizar). */
+    public liteSkipped = false,
+    /** Alguma falha foi transitória (sobrecarga/timeout): esperar um pouco pode resolver. */
+    public waitMayHelp = false,
   ) {
     super(message);
   }
@@ -66,11 +75,16 @@ export const gmBudgetMs = () => Number(process.env.GM_BUDGET_MS) || 110_000;
 const MIN_ATTEMPT_MS = 4_000;
 
 const FAST_PURPOSES: ReadonlySet<LlmPurpose> = new Set(['interpret', 'summarize']);
+/** Prosa: o lite só entra com a permissão do jogador. */
+const NARRATIVE_PURPOSES: ReadonlySet<LlmPurpose> = new Set(['narrate', 'prologue']);
+export const isLiteModel = (m: string) => /lite/i.test(m);
+const TRANSIENT: ReadonlySet<FailureKind> = new Set(['overloaded', 'timeout', 'quota_minute', 'network']);
 
 /** Tempo máximo de UMA tentativa: classificação é rápida; narração escreve mais. */
 export function attemptTimeoutMs(purpose: LlmPurpose = 'narrate'): number {
   if (process.env.GM_TIMEOUT_MS) return Number(process.env.GM_TIMEOUT_MS);
-  return FAST_PURPOSES.has(purpose) ? Number(process.env.GM_ATTEMPT_MS_FAST) || 20_000 : Number(process.env.GM_ATTEMPT_MS_NARRATE) || 40_000;
+  // Narração normal leva 5–20 s; 30 s por tentativa ainda cabe no limite de 60 s da Netlify.
+  return FAST_PURPOSES.has(purpose) ? Number(process.env.GM_ATTEMPT_MS_FAST) || 20_000 : Number(process.env.GM_ATTEMPT_MS_NARRATE) || 30_000;
 }
 
 export function getApiKey(): string | null {
@@ -289,8 +303,14 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
   // GM_RETRIES: novas tentativas no MESMO modelo em sobrecarga (evals ao vivo usam; o jogo prefere trocar de modelo).
   const retries = Math.max(0, process.env.GM_RETRIES !== undefined ? Number(process.env.GM_RETRIES) || 0 : 0);
 
-  const base = modelChain(purpose);
+  const full = modelChain(purpose);
+  const liteSkipped = NARRATIVE_PURPOSES.has(purpose) && req.allowLite !== true && full.some(isLiteModel) && full.some(m => !isLiteModel(m));
+  const base = liteSkipped ? full.filter(m => !isLiteModel(m)) : full;
   const avoid = new Set(req.avoid ?? []);
+  /** Último tipo de falha de cada modelo nesta chamada (decide a segunda volta). */
+  const lastKind = new Map<string, FailureKind>();
+  const fail = (message: string, kind: FailureKind) =>
+    new LlmError(message, attempts, kind, liteSkipped, kinds.some(k => TRANSIENT.has(k)) || [...lastKind.values()].some(k => TRANSIENT.has(k)));
   const ordered = [...base.filter(m => !avoid.has(m)), ...base.filter(m => avoid.has(m))];
   // Modelos frios (cota/sobrecarga) são pulados sem chamada. Se TODOS estiverem frios, tenta os que
   // esquentam primeiro (menos a cota diária, que não volta hoje).
@@ -303,24 +323,27 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
       const c = cooldownOf(apiKey, m, now);
       if (c) kinds.push(c.kind);
     }
-    if (!chain.length) throw new LlmError('Cota diária esgotada em todos os modelos desta chave.', [{ model: '-', ok: false, latencyMs: 0, error: 'todos os modelos em cooldown (cota diária)' }], 'quota_day');
+    if (!chain.length) {
+      attempts.push({ model: '-', ok: false, latencyMs: 0, error: 'quota_day todos os modelos em cooldown (cota diária)' });
+      throw fail('Cota diária esgotada em todos os modelos desta chave.', 'quota_day');
+    }
   }
 
-  // Duas voltas: se a primeira só achou sobrecarga, espera um pouco (com jitter) e tenta de novo.
+  // Duas voltas: sobrecarga (503) costuma passar em segundos — antes de desistir, espera um pouco
+  // (com jitter) e tenta de novo SÓ os modelos que falharam por motivo transitório. Cota diária não volta hoje.
   for (let lap = 0; lap < 2; lap++) {
     if (lap === 1) {
-      const onlyTransient = kinds.length > 0 && kinds.every(k => k === 'overloaded' || k === 'timeout' || k === 'quota_minute');
-      if (!onlyTransient || deadline - Date.now() < 20_000) break;
-      await sleep(1500 + Math.random() * 1500);
-      // Na segunda volta vale insistir mesmo em quem esfriou por sobrecarga (não por cota diária).
-      chain = ordered.filter(m => cooldownOf(apiKey, m)?.kind !== 'quota_day');
+      const retry = ordered.filter(m => TRANSIENT.has(lastKind.get(m) ?? 'other') && lastKind.get(m) !== 'timeout');
+      if (!retry.length || deadline - Date.now() < 15_000) break;
+      await sleep(2000 + Math.random() * 1500);
+      chain = retry;
     }
     for (const model of chain) {
       for (let i = 0; i <= retries; i++) {
         const remaining = deadline - Date.now();
         if (remaining < MIN_ATTEMPT_MS) {
-          attempts.push({ model, ok: false, latencyMs: 0, error: 'orçamento de tempo esgotado' });
-          throw new LlmError((lastError as Error)?.message ?? 'Tempo esgotado.', attempts, mainFailure([...kinds, 'timeout']));
+          attempts.push({ model, ok: false, latencyMs: 0, error: 'timeout orçamento de tempo esgotado' });
+          throw fail((lastError as Error)?.message ?? 'Tempo esgotado.', mainFailure([...kinds, 'timeout']));
         }
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), Math.min(perAttempt, remaining));
@@ -357,10 +380,12 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
               continue;
             }
             kinds.push('bad_request');
+            lastKind.set(model, 'bad_request');
             break; // próximo modelo
           }
           kinds.push(info.kind);
-          if (info.kind === 'auth') throw new LlmError(message, attempts, 'auth');
+          lastKind.set(model, info.kind);
+          if (info.kind === 'auth') throw fail(message, 'auth');
           const cool = cooldownFor(info);
           if (cool) coolDown(apiKey, model, info.kind, cool);
           // Só insiste no mesmo modelo em sobrecarga/cota por minuto curta, e se houver retries configurados.
@@ -374,7 +399,7 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
       }
     }
   }
-  throw new LlmError((lastError as Error)?.message ?? 'Nenhum modelo respondeu.', attempts, mainFailure(kinds));
+  throw fail((lastError as Error)?.message ?? 'Nenhum modelo respondeu.', mainFailure(kinds));
 }
 
 // ---------------------------------------------------------------- validação de chave

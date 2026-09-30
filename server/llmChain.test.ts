@@ -154,6 +154,55 @@ describe('runChain', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('narração NÃO cai no flash-lite sem permissão; avisa que esperar pode resolver', async () => {
+    const flash = DEFAULT_MODEL_CHAIN.filter(m => !/lite/.test(m));
+    const { transport, calls } = fakeTransport(Object.fromEntries(flash.map(m => [m, overloaded()])));
+    const err = (await runChain('k', { ...req('narrate'), deadline: Date.now() + 60_000 }, transport).catch(e => e)) as LlmError;
+    expect(err).toBeInstanceOf(LlmError);
+    expect(err.liteSkipped).toBe(true);
+    expect(err.waitMayHelp).toBe(true);
+    expect(calls.some(c => /lite/.test(c.model))).toBe(false);
+  }, 15_000);
+
+  it('com permissão (allowLite), a narração usa o flash-lite', async () => {
+    const flash = DEFAULT_MODEL_CHAIN.filter(m => !/lite/.test(m));
+    const { transport } = fakeTransport(Object.fromEntries(flash.map(m => [m, quotaDay()])));
+    const r = await runChain('k', { ...req('narrate'), allowLite: true }, transport);
+    expect(r.model).toMatch(/lite/);
+  });
+
+  it('segunda volta: um 503 passageiro no 3.8 é tentado de novo antes de desistir (mesmo com outros sem cota)', async () => {
+    const plan: Record<string, Array<'ok' | Error>> = { 'gemini-3.8-flash': [overloaded(), 'ok'] };
+    for (const m of ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash']) plan[m] = [quotaDay()];
+    const { transport, calls } = fakeTransport(plan);
+    const r = await runChain('k', { ...req('narrate'), deadline: Date.now() + 60_000 }, transport);
+    expect(r.model).toBe('gemini-3.8-flash');
+    expect(calls.filter(c => c.model === 'gemini-3.8-flash')).toHaveLength(2);
+  }, 15_000);
+
+  it('cota diária em todos os flash: esperar NÃO ajuda (o jogador vê só a opção do Lite)', async () => {
+    const flash = DEFAULT_MODEL_CHAIN.filter(m => !/lite/.test(m));
+    const { transport } = fakeTransport(Object.fromEntries(flash.map(m => [m, quotaDay()])));
+    const err = (await runChain('k', req('narrate'), transport).catch(e => e)) as LlmError;
+    expect(err.kind).toBe('quota_day');
+    expect(err.liteSkipped).toBe(true);
+    expect(err.waitMayHelp).toBe(false);
+  });
+
+  it('o envelope da narração conta ao cliente que o Lite foi oferecido', async () => {
+    const gm = createGameMaster(
+      {
+        name: 'fake',
+        generate: async () => {
+          throw new LlmError('503', [], 'overloaded', true, true);
+        },
+      },
+      () => {},
+    );
+    const env = await gm.narrate(scenario().context('x') as GameContext, { kind: 'action', playerInput: 'olho', engineResult: null }, 'flash');
+    expect(env.meta).toMatchObject({ degraded: true, liteOffered: true, waitMayHelp: true, failureKind: 'overloaded' });
+  });
+
   it('JSON inválido: o Mestre tenta de novo em OUTRO modelo', async () => {
     const seen: string[] = [];
     const gm = createGameMaster(
