@@ -1,6 +1,7 @@
-import { useState } from 'react';
-import { ArrowUp, Cpu, Minus, Plus } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ArrowUp, Cpu, Minus, Plus, ShoppingBag } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
+import { CYBERWARE } from '@shared/rules/cyberware';
 import {
   COMBAT_AWARENESS,
   DRUGS,
@@ -17,8 +18,11 @@ import { PROGRAMS, netActionsFor } from '@shared/rules/net';
 import { useTutorial } from '../tutorial/TutorialModal';
 import { QuickhackStoreModal } from './QuickhackTree';
 import { freePoints, surgeryValue, unlockedDrugs, type RoleSection } from '@shared/engine/roles';
-import { Badge, Button, cn } from '../../ui';
+import { marketCyberPrice } from '@shared/engine/citySystems';
+import { Badge, Button, Modal, cn } from '../../ui';
 import { dispatch } from '../../store/gameStore';
+import { quickTool } from '../../store/turnController';
+import { useUiStore } from '../../store/uiStore';
 import { sound } from '../../services/audio';
 
 function Stepper({ label, value, hint, onMinus, onPlus, disabledMinus, disabledPlus }: { label: string; value: number; hint?: string; onMinus: () => void; onPlus: () => void; disabledMinus?: boolean; disabledPlus?: boolean }) {
@@ -39,9 +43,44 @@ function Stepper({ label, value, hint, onMinus, onPlus, disabledMinus, disabledP
   );
 }
 
+const tierReach = (rank: number) => (rank >= 10 ? 5 : rank >= 9 ? 4 : rank >= 7 ? 3 : rank >= 5 ? 2 : rank >= 3 ? 1 : 0);
+
+function FixerOrderModal({ game, open, onClose }: { game: GameState; open: boolean; onClose: () => void }) {
+  const [tier, setTier] = useState(0);
+  const busy = useUiStore(s => s.gmBusy);
+  const maxTier = tierReach(game.character.roleRank);
+  const list = useMemo(
+    () => Object.values(CYBERWARE).filter(def => def.grade !== 'prototype' && def.tier <= maxTier && (!tier || def.tier === tier)),
+    [maxTier, tier],
+  );
+  return (
+    <Modal open={open} onClose={onClose} size="xl" title="Encomendas do Operador" subtitle={`Seu alcance atual: até T${maxTier}. O pagamento sai agora; a peça chega quando o relógio avançar.`}>
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-1">
+          {[0, 1, 2, 3, 4, 5].map(t => <button key={t} type="button" disabled={!!t && t > maxTier} onClick={() => setTier(t)} className={cn('border px-2 py-1 text-[10px]', tier === t ? 'border-neon-yellow text-neon-yellow' : 'border-line text-muted', !!t && t > maxTier && 'opacity-30')}>
+            {t ? `T${t}` : 'Todos'}
+          </button>)}
+        </div>
+        <ul className="grid gap-2 lg:grid-cols-2">
+          {list.map(def => {
+            const price = marketCyberPrice(game.character, def.key);
+            return <li key={def.key} className="border border-line bg-surface-0/30 p-3 space-y-2">
+              <div className="flex items-start justify-between gap-2"><div><p className="text-sm text-fg">{def.name}</p><p className="text-[10px] text-dim">T{def.tier} · {def.category}{def.brand ? ` · ${def.brand}` : ''}</p></div><span className="tabular text-neon-yellow">€${price}</span></div>
+              <p className="text-[11px] text-muted">{def.effect}</p>
+              <Button size="sm" variant="ghost" tone="yellow" disabled={busy || game.combat.active || game.character.money < price} onClick={() => void quickTool('order_cyberware', { key: def.key }, `Encomendo ${def.name} pelos contatos do Operador.`)}>Encomendar</Button>
+            </li>;
+          })}
+        </ul>
+        {!list.length && <p className="text-sm text-dim">Este rank ainda não alcança nenhuma peça para encomenda.</p>}
+      </div>
+    </Modal>
+  );
+}
+
 export function RoleTab({ game }: { game: GameState }) {
   const c = game.character;
   const [quickhackShopOpen, setQuickhackShopOpen] = useState(false);
+  const [ordersOpen, setOrdersOpen] = useState(false);
   const info = ROLE_ABILITY[c.bio.role];
   const d = c.roleData;
   useTutorial('role', true);
@@ -181,13 +220,15 @@ export function RoleTab({ game }: { game: GameState }) {
       {c.bio.role === 'netrunner' && c.deck && <QuickhackStoreModal c={c} open={quickhackShopOpen} onClose={() => setQuickhackShopOpen(false)} />}
 
       {c.bio.role === 'fixer' && (
-        <section className="space-y-1 text-sm">
+        <section className="space-y-2 text-sm">
           <p className="eyebrow">Operador</p>
           <p>Alcance de mercado: <span className="text-neon-cyan">{operatorPerks(c.roleRank).reach}</span></p>
           <p>Pechincha: −{Math.round(operatorPerks(c.roleRank).discount * 100)}% nas compras{operatorPerks(c.roleRank).bulkBonus ? ' · leve 6, pague 5 em munição/consumíveis' : ''}</p>
           {operatorPerks(c.roleRank).jobBonus > 0 && <p>Trabalhos pagam +{Math.round(operatorPerks(c.roleRank).jobBonus * 100)}%</p>}
+          <Button size="sm" variant="ghost" tone="yellow" block icon={<ShoppingBag className="w-3.5 h-3.5" />} onClick={() => setOrdersOpen(true)}>Abrir encomendas de cromo</Button>
         </section>
       )}
+      {c.bio.role === 'fixer' && <FixerOrderModal game={game} open={ordersOpen} onClose={() => setOrdersOpen(false)} />}
 
       {c.bio.role === 'nomad' && (
         <section className="space-y-1 text-sm">

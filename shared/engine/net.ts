@@ -2,7 +2,7 @@
  * Netrunning (Cyberpunk RED): arquitetura, Ações de Rede, ICE Negro, programas e desconexão.
  * Funções puras com RNG injetável — o motor decide tudo; o narrador só descreve.
  */
-import type { Cyberdeck, DeckProgram, GameState, IceInstance, NetArchitecture, NetDifficulty, NetFloor, NetRun, ProgramKey, StatKey } from '../types/game';
+import type { Cyberdeck, DeckProgram, GameState, IceInstance, NetArchitecture, NetDaemon, NetDifficulty, NetFloor, NetRun, ProgramKey, StatKey } from '../types/game';
 import { ANTI_ICE_PROGRAMS, DECKS, FLOOR_TABLE, ICE, LOBBY_TABLE, NET_DV, PROGRAMS, netActionsFor, type FloorSpec } from '../rules/net';
 import { advanceGameTime } from '../rules/world';
 import { rollD10, rollDamage, type Rng } from './dice';
@@ -25,9 +25,10 @@ export type NetActionKind =
   | 'down'
   | 'up'
   | 'jack_out'
-  | 'extinguish';
+  | 'extinguish'
+  | 'daemon';
 
-export const NET_ACTION_KINDS: NetActionKind[] = ['pathfinder', 'backdoor', 'eye_dee', 'control', 'cloak', 'virus', 'slide', 'zap', 'program', 'activate', 'down', 'up', 'jack_out', 'extinguish'];
+export const NET_ACTION_KINDS: NetActionKind[] = ['pathfinder', 'backdoor', 'eye_dee', 'control', 'cloak', 'virus', 'slide', 'zap', 'program', 'activate', 'down', 'up', 'jack_out', 'extinguish', 'daemon'];
 
 export interface NetActionInput {
   kind: NetActionKind;
@@ -84,6 +85,7 @@ export interface ArchitectureInput {
   floors?: number;
   files?: string[];
   controls?: string[];
+  daemon?: Pick<NetDaemon, 'name' | 'directive'>;
 }
 
 /** Gera uma arquitetura pelas tabelas do RED (3d6 andares; lobby 1d6; demais 3d6 pela dificuldade). */
@@ -102,7 +104,10 @@ export function generateArchitecture(input: ArchitectureInput, turn: number, rng
   };
   for (const label of (input.files ?? []).slice(0, 4)) place('file', label);
   for (const label of (input.controls ?? []).slice(0, 4)) place('control', label);
-  return { id: makeId('arch'), name: input.name, accessPoint: input.accessPoint, difficulty: input.difficulty, dv: NET_DV[input.difficulty], floors, createdTurn: turn };
+  return {
+    id: makeId('arch'), name: input.name, accessPoint: input.accessPoint, difficulty: input.difficulty, dv: NET_DV[input.difficulty], floors, createdTurn: turn,
+    daemon: input.daemon ? { ...input.daemon, alert: 0, controlledNodes: [...(input.controls ?? [])], owner: 'system' } : undefined,
+  };
 }
 
 /** Rótulo curto do andar (o que o runner vê depois de revelado). */
@@ -135,6 +140,25 @@ function withRun(s: GameState, patch: Partial<NetRun>): GameState {
 }
 function withArch(s: GameState, patch: Partial<NetArchitecture>): GameState {
   return { ...s, net: { ...s.net, architecture: { ...arch(s), ...patch } } };
+}
+
+/** Registra uma trilha de rede sem transformar automaticamente todo hack em alerta policial. */
+export function addTrace(s0: GameState, amount: number, source: string): GameState {
+  const prev = s0.net.trace?.level ?? 0;
+  const level = Math.max(0, Math.min(5, prev + amount));
+  if (level === prev) return s0;
+  const s = { ...s0, net: { ...s0.net, trace: level ? { level, source, lastTurn: s0.turn } : undefined } };
+  return emit(s, 'NET_ACTION', `Rastro de rede ${prev} → ${level} (${source})`, { value: level, data: { trace: true, source } });
+}
+
+function daemonReact(s0: GameState, reason: string, lines: string[]): GameState {
+  const d = arch(s0).daemon;
+  if (!d || d.owner !== 'system') return s0;
+  const alert = Math.min(5, d.alert + 1);
+  let s = withArch(s0, { daemon: { ...d, alert } });
+  s = addTrace(s, 1, d.name);
+  lines.push(`${d.name} detecta ${reason}: alerta ${alert}/5, rastro sobe.`);
+  return s;
 }
 function withFloor(s: GameState, index: number, patch: Partial<NetFloor>): GameState {
   return withArch(s, { floors: arch(s).floors.map(f => (f.index === index ? { ...f, ...patch } : f)) });
@@ -418,6 +442,7 @@ export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetRe
       const roll = interfaceRoll(s, activeProgram(s, 'worm') ? 2 : 0, rng);
       const ok = roll.total > (floor.dv ?? a.dv);
       if (ok) s = withFloor(s, floor.index, { cleared: true });
+      if (!ok || arch(s).daemon?.controlledNodes.includes(`senha:${floor.index + 1}`)) s = daemonReact(s, 'a tentativa de Backdoor', lines);
       lines.push(`Backdoor (${roll.text}): ${ok ? 'senha quebrada' : 'a senha resiste'}.`);
       break;
     }
@@ -440,13 +465,17 @@ export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetRe
       const roll = interfaceRoll(s, 0, rng);
       const ok = roll.total > (floor.dv ?? a.dv);
       if (ok) s = withFloor(s, floor.index, { cleared: true });
+      if (!ok || arch(s).daemon?.controlledNodes.includes(floor.label ?? '')) s = daemonReact(s, `a disputa por ${floor.label ?? 'um nó'}`, lines);
       lines.push(`Controle (${roll.text}): ${ok ? `você controla ${floor.label ?? 'os sistemas deste nó'}` : 'o nó rejeita o comando'}.`);
       break;
     }
     case 'cloak': {
       const roll = interfaceRoll(s, activeProgram(s, 'eraser') ? 2 : 0, rng);
       const ok = roll.total > a.dv;
-      if (ok) s = withRun(s, { cloaked: true });
+      if (ok) {
+        s = withRun(s, { cloaked: true });
+        s = addTrace(s, -2, 'Cloak');
+      }
       lines.push(`Cloak (${roll.text}): ${ok ? 'rastros apagados' : 'rastros continuam expostos'}.`);
       break;
     }
@@ -457,6 +486,16 @@ export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetRe
       const ok = roll.total > dv;
       if (ok) s = withArch(s, { virus: input.virus ?? 'vírus plantado' });
       lines.push(`Vírus (${roll.text}): ${ok ? `plantado — ${input.virus ?? 'efeito duradouro'}` : 'o sistema rejeita o vírus'}.`);
+      break;
+    }
+    case 'daemon': {
+      if (r.position !== a.floors.length - 1) return fail('Um daemon persistente só pode ser plantado no andar mais fundo.');
+      const directive = input.virus?.trim();
+      if (!directive) return fail('Diga em uma frase o que o daemon deve proteger, vigiar ou sabotar.');
+      const roll = interfaceRoll(s, 0, rng);
+      const ok = roll.total > Math.max(10, a.dv + 2);
+      if (ok) s = withArch(s, { daemon: { name: 'Daemon do runner', directive, alert: 0, controlledNodes: arch(s).floors.filter(f => f.kind === 'control' && f.cleared).map(f => f.label ?? `nó ${f.index + 1}`), owner: 'player' } });
+      lines.push(`Daemon (${roll.text}): ${ok ? 'agente persistente instalado' : 'o sistema rejeita o agente'}.`);
       break;
     }
     case 'slide': {
@@ -572,6 +611,11 @@ export function endNetTurn(s0: GameState, rng: Rng): { state: GameState; lines: 
   if (!s0.net.run) return { state: s0, lines: [] };
   const lines: string[] = [];
   let s = s0;
+  const daemon = s.net.architecture?.daemon;
+  if (daemon?.owner === 'system' && daemon.alert >= 2) {
+    s = addTrace(s, 1, daemon.name);
+    lines.push(`${daemon.name} varre a intrusão: rastro ${s.net.trace?.level ?? 0}/5.`);
+  }
   if (s.activeEffects.some(e => e.name === FIRE_EFFECT)) {
     const c = s.character;
     const hp = Math.max(0, c.hp.current - 2);
@@ -597,7 +641,7 @@ export function describeNet(s: Pick<GameState, 'net'>): string[] {
   const a = s.net.architecture;
   if (!a) return [];
   const r = s.net.run;
-  const out = [`REDE: ${a.name} (${a.accessPoint}) · dificuldade ${a.difficulty} · ${a.floors.length} andares${a.virus ? ` · vírus: ${a.virus}` : ''}`];
+  const out = [`REDE: ${a.name} (${a.accessPoint}) · dificuldade ${a.difficulty} · ${a.floors.length} andares${a.virus ? ` · vírus: ${a.virus}` : ''}${a.daemon ? ` · daemon ${a.daemon.name} (${a.daemon.owner}, alerta ${a.daemon.alert}/5)` : ''}${s.net.trace ? ` · rastro ${s.net.trace.level}/5` : ''}`];
   if (!r) {
     out.push('  (jogador desconectado)');
     return out;

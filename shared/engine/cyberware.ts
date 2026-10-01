@@ -54,6 +54,23 @@ export function foundations(c: Character): FoundationSlot[] {
     });
 }
 
+/**
+ * Limite fisiológico inspirado na capacidade de cromo de 2077. Humanidade continua sendo a
+ * consequência psicológica do RED; capacidade só limita quantos sistemas o corpo sustenta.
+ */
+export function cyberCapacityMax(c: Character): number {
+  return Math.max(12, (c.stats.BODY + c.stats.TECH) * 2 + (c.cyberCapacityBonus ?? 0));
+}
+
+export function cyberCapacityCost(def: CyberwareDef): number {
+  const grade = def.grade === 'prototype' ? 3 : def.grade === 'military' ? 2 : 0;
+  return Math.max(1, def.tier + grade + (def.borgware ? 2 : 0));
+}
+
+export function cyberCapacityUsed(c: Character): number {
+  return c.cyberware.reduce((total, item) => total + (item.key && CYBERWARE[item.key] ? cyberCapacityCost(CYBERWARE[item.key]) : 1), 0);
+}
+
 /** Quantas fundações daquele tipo já existem (qualquer modelo: braço comum + braço de combate = 2). */
 function foundationCount(c: Character, kind: FoundationKind): number {
   return c.cyberware.filter(cw => defOf(cw)?.foundation?.kind === kind).length;
@@ -99,6 +116,45 @@ export function sceneRipperdoc(s: GameState, idOrName?: string): Npc | undefined
     .sort((a, b) => b.ripperdoc!.tier - a.ripperdoc!.tier)[0];
 }
 
+/**
+ * Estoque real de uma clínica. Saves/NPCs antigos sem lista explícita recebem uma vitrine pequena,
+ * estável e coerente com a clínica — nunca o catálogo global inteiro.
+ */
+export function ripperdocStock(doc: Npc | undefined): CyberwareDef[] {
+  if (!doc?.ripperdoc) return [];
+  const { tier, blackMarket } = doc.ripperdoc;
+  // Fundações são material de trabalho, não "produto raro": um ripperdoc não pode oferecer
+  // chips/opções e esconder o soquete, olho, Neural Link etc. que os tornam utilizáveis.
+  const foundations = Object.values(CYBERWARE).filter(
+    def => !!def.foundation && def.tier <= tier && !(def.install === 'hospital' && tier < 3),
+  );
+  const unique = (defs: CyberwareDef[]) => [...new Map(defs.map(def => [def.key, def])).values()];
+  const explicit = doc.ripperdoc.stock?.map(key => CYBERWARE[key]).filter((def): def is CyberwareDef => !!def);
+  if (explicit?.length) return unique([...foundations, ...explicit]);
+
+  const allowed = Object.values(CYBERWARE).filter(
+    def => def.tier <= tier && def.grade !== 'prototype' && (blackMarket || def.grade !== 'military') && !(def.install === 'hospital' && tier < 3),
+  );
+  const hash = (value: string) => {
+    let n = 0;
+    for (let i = 0; i < value.length; i++) n = (n * 31 + value.charCodeAt(i)) >>> 0;
+    return n;
+  };
+  const ranked = [...allowed].sort((a, b) => hash(`${doc.id}:${a.key}`) - hash(`${doc.id}:${b.key}`));
+  const stock: CyberwareDef[] = [...foundations];
+  // Uma amostra por categoria faz cada clínica parecer uma vitrine, não uma lista aleatória de peças iguais.
+  for (const category of new Set(ranked.map(def => def.category))) {
+    const item = ranked.find(def => def.category === category);
+    if (item) stock.push(item);
+  }
+  const limit = 5 + tier * 2 + (blackMarket ? 2 : 0);
+  for (const def of ranked) if (!stock.some(item => item.key === def.key) && stock.length < limit) stock.push(def);
+  // As fundações podem passar do tamanho estético da vitrine; elas sempre ficam visíveis.
+  return unique(stock).slice(0, Math.max(limit, foundations.length));
+}
+
+export const ripperdocHasStock = (doc: Npc | undefined, key: string) => ripperdocStock(doc).some(def => def.key === key);
+
 export type AccessResult = { ok: true; price: number; owned?: InventoryItem; doc?: Npc } | { ok: false; error: string };
 
 /**
@@ -129,6 +185,7 @@ export function cyberAccess(s: GameState, def: CyberwareDef, opts: Pick<InstallO
         return { ok: false, error: `${doc.name} não vende hardware militar para quem não conhece (confiança ${MILITARY_TRUST}+ com ele ou Reputação ${MILITARY_REPUTATION}+).` };
     }
   }
+  if (!owned && !ripperdocHasStock(doc, def.key)) return { ok: false, error: `${doc.name} não tem ${def.name} no estoque desta clínica.` };
   return { ok: true, price: owned ? surgeryFee(def) : def.price * copies, owned, doc };
 }
 
@@ -171,6 +228,11 @@ export function installCyberware(s0: GameState, key: string, rng: Rng, opts: Ins
     }
     parents.push(...free.slice(0, copies).map(f => f.item.id));
   }
+  const capacity = cyberCapacityCost(def) * copies;
+  const used = cyberCapacityUsed(c);
+  const max = cyberCapacityMax(c);
+  if (used + capacity > max)
+    return { ok: false, error: `Capacidade de cromo insuficiente: ${used}/${max}, mas ${def.name} exige ${capacity}. Remova cromo ou procure uma clínica para ampliar sua capacidade.` };
   const access = cyberAccess(s0, def, opts);
   if (!access.ok) return access;
   const price = access.price;

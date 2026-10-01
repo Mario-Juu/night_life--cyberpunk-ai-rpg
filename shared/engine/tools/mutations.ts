@@ -16,7 +16,7 @@ import { DISTANCE_LABEL } from '../../rules/weapons';
 import { THREAT_LABEL } from '../world';
 import { releaseGrapple } from '../brawl';
 import { installCyberware } from '../cyberware';
-import { findCyberware, implantFromName } from '../../rules/cyberware';
+import { CYBERWARE, findCyberware, implantFromName } from '../../rules/cyberware';
 import { humanityBand, isCyberpsycho } from '../../rules/humanity';
 import { CRITICAL_INJURIES, findCriticalInjuryTemplate } from '../../rules/criticalInjuries';
 import { computeMaxHumanity, humanityAfter, STAT_KEYS } from '../../rules/stats';
@@ -265,14 +265,21 @@ export const MUTATION_TOOLS = [
         int: true,
       },
       blackMarket: { type: 'boolean', desc: 'ripperdoc com contatos no mercado negro (hardware militar)' },
+      ripperdocStock: { type: 'string', desc: 'estoque explícito do ripperdoc: chaves de cromo separadas por vírgula (ex.: neural_link,cybereye,skin_weave). O jogador só vê e compra o que esta clínica tem.', max: 1000 },
     },
     run: (s0, a) => {
       const existing = findNpc(s0, a.id) ?? findNpc(s0, a.name);
+      const stock = a.ripperdocStock
+        ?.split(',')
+        .map(key => key.trim())
+        .filter(key => !!CYBERWARE[key]);
       const ripperdoc: Npc['ripperdoc'] =
         a.ripperdocTier !== undefined
-          ? { tier: a.ripperdocTier as 1 | 2 | 3 | 4 | 5, blackMarket: a.blackMarket ?? existing?.ripperdoc?.blackMarket ?? false }
+          ? { tier: a.ripperdocTier as 1 | 2 | 3 | 4 | 5, blackMarket: a.blackMarket ?? existing?.ripperdoc?.blackMarket ?? false, stock: stock ?? existing?.ripperdoc?.stock }
           : existing?.ripperdoc && a.blackMarket !== undefined
             ? { ...existing.ripperdoc, blackMarket: a.blackMarket }
+            : existing?.ripperdoc && stock
+              ? { ...existing.ripperdoc, stock }
             : existing?.ripperdoc;
       // Virar bicho não é uma atualização: um animal não entra na equipe de combate (recruit recusa).
       if (a.kind === 'animal' && existing && s0.party?.members.some(m => m.npcId === existing.id)) {

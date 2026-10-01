@@ -11,7 +11,7 @@ import { getSkill } from '../../rules/skills';
 import { priceFor } from '../../rules/catalog';
 import { instantCheck } from '../instant';
 import { humanityTransition } from '../humanity';
-import { activateOs, installCyberware, removeCyberware } from '../cyberware';
+import { activateOs, cyberCapacityMax, cyberCapacityUsed, installCyberware, removeCyberware, sceneRipperdoc } from '../cyberware';
 import { CYBERWARE, findCyberware } from '../../rules/cyberware';
 import { isCyberpsycho } from '../../rules/humanity';
 import { appendChat } from '../reducer';
@@ -62,12 +62,22 @@ export const ROLE_TOOLS = [
       floors: { type: 'number', desc: 'andares (vazio = 3d6)', min: 3, max: 18 },
       files: { type: 'string', desc: 'arquivos relevantes, separados por ";"', max: 300 },
       controls: { type: 'string', desc: 'sistemas controláveis (câmeras, portas, torretas), separados por ";"', max: 300 },
+      daemonName: { type: 'string', desc: 'daemon defensivo desta arquitetura (nome; vazio = não há)', max: 80 },
+      daemonDirective: { type: 'string', desc: 'o que o daemon faz (vigiar, caçar, apagar intrusos, proteger torretas)', max: 160 },
     },
     run: (s0, a, ctx) => {
       if (s0.net.run) return fail(s0, 'O jogador está conectado: a arquitetura atual não pode ser trocada agora.');
       const split = (v?: string) => (v ?? '').split(';').map(x => x.trim()).filter(Boolean);
       const architecture = generateArchitecture(
-        { name: a.name, accessPoint: a.accessPoint ?? s0.world.location.spot, difficulty: a.difficulty as 'basic', floors: a.floors, files: split(a.files), controls: split(a.controls) },
+        {
+          name: a.name,
+          accessPoint: a.accessPoint ?? s0.world.location.spot,
+          difficulty: a.difficulty as 'basic',
+          floors: a.floors,
+          files: split(a.files),
+          controls: split(a.controls),
+          daemon: a.daemonName ? { name: a.daemonName, directive: a.daemonDirective ?? 'Proteger a arquitetura e identificar intrusos.' } : undefined,
+        },
         s0.turn,
         ctx.rng,
       );
@@ -121,7 +131,7 @@ export const ROLE_TOOLS = [
     kind: 'action',
     origins: PLAYER,
     description:
-      'Ação de Rede do Trilheiro conectado: pathfinder (mapear), backdoor (senha), eye_dee (arquivo), control (nó), cloak (apagar rastros), virus (último andar), slide (fugir de ICE), zap (1d6 REZ no ICE), program (atacar ICE com Sword/Banhammer), activate (ligar booster/defensor), down/up (andar), jack_out (sair com segurança), extinguish (apagar fogo). Várias por turno, até o limite do rank.',
+      'Ação de Rede do Trilheiro conectado: pathfinder (mapear), backdoor (senha), eye_dee (arquivo), control (nó), cloak (apagar rastros), virus (último andar), daemon (instala agente autônomo persistente no último andar; descreva sua diretriz em virus), slide (fugir de ICE), zap (1d6 REZ no ICE), program (atacar ICE com Sword/Banhammer), activate (ligar booster/defensor), down/up (andar), jack_out (sair com segurança), extinguish (apagar fogo). Várias por turno, até o limite do rank.',
     params: {
       action: { type: 'string', desc: 'a ação', required: true, enum: NET_ACTION_KINDS },
       iceId: { type: 'string', desc: 'alvo (id do ICE)', max: 40 },
@@ -284,6 +294,27 @@ export const ROLE_TOOLS = [
     run: (s0, a) => {
       const res = removeCyberware(s0, a.cyberwareId);
       return res.ok ? ok(res.state, res.summary) : fail(s0, res.error);
+    },
+  }),
+  defineTool({
+    name: 'upgrade_cyber_capacity',
+    kind: 'action',
+    origins: PLAYER,
+    description: 'Ripperdoc amplia a capacidade fisiológica de cromo em +2. Não recupera Humanidade; é uma adaptação cirúrgica de longo prazo.',
+    params: { ripperdocId: { type: 'string', desc: 'id/nome do ripperdoc presente (vazio = o presente)', max: 80 } },
+    run: (s0, a) => {
+      if (s0.combat.active) return fail(s0, 'Não se amplia capacidade de cromo no meio de um combate.');
+      const doc = sceneRipperdoc(s0, a.ripperdocId);
+      if (!doc) return fail(s0, 'Você precisa de um ripperdoc na cena para adaptar seu corpo.');
+      const bonus = s0.character.cyberCapacityBonus ?? 0;
+      if (bonus >= 20) return fail(s0, 'Seu corpo já recebeu o máximo de adaptações de capacidade desta campanha.');
+      const price = 500 + bonus * 100;
+      if (s0.character.money < price) return fail(s0, `A adaptação custa €$${price}; você tem €$${s0.character.money}.`);
+      const character = { ...s0.character, money: s0.character.money - price, cyberCapacityBonus: bonus + 2 };
+      let s: GameState = { ...s0, character };
+      s = emit(s, 'MONEY_CHANGED', `−${price} €$ (ampliação de capacidade de cromo)`, { value: -price, source: doc.id });
+      s = emit(s, 'ROLE_IMPROVED', `Capacidade de cromo ampliada: ${cyberCapacityUsed(character)}/${cyberCapacityMax(character)}`, { target: 'player', data: { cyberCapacity: true } });
+      return ok(s, `${doc.name} recalibra seus limites: capacidade de cromo ${cyberCapacityUsed(character)}/${cyberCapacityMax(character)} (+2).`);
     },
   }),
   defineTool({

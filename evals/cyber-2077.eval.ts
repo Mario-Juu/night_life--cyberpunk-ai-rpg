@@ -14,7 +14,11 @@ import { DEFAULT_MODEL_CHAIN, modelChain } from '../server/gamemaster/llmClient'
 import type { GameState } from '../shared/types/game';
 
 const money = (s: GameState): GameState => ({ ...s, character: { ...s.character, money: 60_000 } });
-const doc = (tier: 1 | 2 | 3 | 4 | 5, blackMarket = false, trust = 60) => (s: GameState) => withRipperdoc(money(s), tier, blackMarket, trust);
+const TEST_STOCK = Object.values(CYBERWARE).filter(def => def.grade !== 'prototype').map(def => def.key);
+const doc = (tier: 1 | 2 | 3 | 4 | 5, blackMarket = false, trust = 60) => (s: GameState) => {
+  const state = withRipperdoc(money(s), tier, blackMarket, trust);
+  return { ...state, npcs: state.npcs.map(n => (n.id === 'npc_doc' ? { ...n, ripperdoc: { ...n.ripperdoc!, stock: TEST_STOCK } } : n)) };
+};
 const install = (sc: Scenario, key: string, dice = [1]) => sc.tool('interpreter', 'install_cyberware', { key }, dice).last();
 
 describe('Catálogo de 2077', () => {
@@ -56,6 +60,21 @@ describe('Quem instala o quê', () => {
     expect(install(sc, 'skin_weave').summary).toMatch(/hospital/);
   });
 
+  it('clínica vende somente o próprio estoque, mas opera peça que o jogador trouxe', () => {
+    const sc = scenario().edit(doc(5, true));
+    sc.edit(s => ({ ...s, npcs: s.npcs.map(n => (n.id === 'npc_doc' ? { ...n, ripperdoc: { ...n.ripperdoc!, stock: ['neural_link'] } } : n)) }));
+    expect(install(sc, 'skin_weave').summary).toMatch(/estoque desta clínica/);
+    sc.tool('narrator', 'give_item', { name: 'Pele Tecida recuperada', category: 'gear', cyberKey: 'skin_weave', source: 'saque' });
+    expect(install(sc, 'skin_weave').ok).toBe(true);
+  });
+
+  it('fundações básicas ficam sempre visíveis, mesmo fora da vitrine explícita', () => {
+    const sc = scenario().edit(doc(5, true));
+    sc.edit(s => ({ ...s, npcs: s.npcs.map(n => (n.id === 'npc_doc' ? { ...n, ripperdoc: { ...n.ripperdoc!, stock: ['skin_weave'] } } : n)) }));
+    expect(install(sc, 'cybereye').ok).toBe(true);
+    expect(install(sc, 'neural_link').ok).toBe(true);
+  });
+
   it('militar: só no mercado negro e para quem o doutor confia', () => {
     const noBm = scenario().edit(doc(5, false));
     install(noBm, 'neural_link');
@@ -86,8 +105,8 @@ describe('Quem instala o quê', () => {
 
   it('upsert_npc define o nível do ripperdoc', () => {
     const sc = scenario().edit(money);
-    sc.tool('narrator', 'upsert_npc', { name: 'Viktor Vektor', role: 'Ripperdoc', ripperdocTier: 3, blackMarket: true, present: true });
-    expect(sc.npc('Viktor Vektor')?.ripperdoc).toEqual({ tier: 3, blackMarket: true });
+    sc.tool('narrator', 'upsert_npc', { name: 'Viktor Vektor', role: 'Ripperdoc', ripperdocTier: 3, blackMarket: true, ripperdocStock: 'neural_link,cybereye', present: true });
+    expect(sc.npc('Viktor Vektor')?.ripperdoc).toEqual({ tier: 3, blackMarket: true, stock: ['neural_link', 'cybereye'] });
     install(sc, 'neural_link');
     expect(sc.last().ok).toBe(true);
   });

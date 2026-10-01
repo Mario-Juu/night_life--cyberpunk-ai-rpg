@@ -1,6 +1,7 @@
 import { unreadNews } from '@shared/engine/fronts';
-import { BookOpen, MessageSquare, Radar, ScrollText, Swords, User, Users } from 'lucide-react';
+import { BookOpen, CarFront, MessageSquare, Radar, ScrollText, Swords, User, Users } from 'lucide-react';
 import { NetPanel } from '../net/NetPanel';
+import { ChasePanel } from '../chase/ChasePanel';
 import { useTutorial } from '../tutorial/TutorialModal';
 import { humanityBand } from '@shared/rules/humanity';
 import type { GameState } from '@shared/types/game';
@@ -19,7 +20,7 @@ function SidePanel({ game }: { game: GameState }) {
   const tab = useUiStore(s => s.sideTab);
   const setTab = useUiStore(s => s.setSideTab);
   const showNet = game.character.bio.role === 'netrunner' || !!game.net.architecture;
-  const effective: SideTab = game.net.run ? 'net' : game.combat.active && tab === 'contacts' ? 'combat' : tab === 'net' && !showNet ? 'journal' : tab;
+  const effective: SideTab = game.net.run ? 'net' : (game.combat.active || !!game.world.chase) && tab === 'contacts' ? 'combat' : tab === 'net' && !showNet ? 'journal' : tab;
   return (
     <div className="h-full flex flex-col min-h-0">
       <Tabs<SideTab>
@@ -28,7 +29,7 @@ function SidePanel({ game }: { game: GameState }) {
         onChange={setTab}
         items={[
           { id: 'journal', label: 'Diário', icon: <BookOpen className="w-3.5 h-3.5" /> },
-          { id: 'combat', label: 'Combate', icon: <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.combat.active ? game.combat.combatants.filter(c => c.status === 'active' && c.side !== 'ally').length : undefined },
+          { id: 'combat', label: game.world.chase ? 'Perseg.' : 'Combate', icon: game.world.chase ? <CarFront className="w-3.5 h-3.5 text-neon-yellow" /> : <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.world.chase ? game.world.chase.pressure : game.combat.active ? game.combat.combatants.filter(c => c.status === 'active' && c.side !== 'ally').length : undefined },
           ...(showNet ? [{ id: 'net' as const, label: 'Rede', icon: <Radar className={cn('w-3.5 h-3.5', game.net.run && 'text-neon-cyan')} />, badge: game.net.architecture && !game.net.run ? 1 : undefined }] : []),
           { id: 'contacts', label: 'Contatos', icon: <Users className="w-3.5 h-3.5" /> },
         ]}
@@ -39,7 +40,7 @@ function SidePanel({ game }: { game: GameState }) {
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {effective === 'journal' ? <JournalPanel game={game} /> : effective === 'net' ? <NetPanel game={game} /> : <CombatPanel game={game} />}
+          {effective === 'journal' ? <JournalPanel game={game} /> : effective === 'net' ? <NetPanel game={game} /> : game.world.chase ? <ChasePanel game={game} /> : <CombatPanel game={game} />}
         </div>
       )}
     </div>
@@ -52,6 +53,11 @@ function StoryColumn({ game }: { game: GameState }) {
       {game.combat.active && (
         <div className="shrink-0 flex items-center justify-center gap-2 py-1.5 bg-danger/10 border-b border-danger/40 text-danger font-display text-[10px] uppercase tracking-[0.3em] lg:hidden">
           <Swords className="w-3.5 h-3.5" /> Combate · rodada {game.combat.round}
+        </div>
+      )}
+      {game.world.chase && (
+        <div className="shrink-0 max-h-72 overflow-y-auto border-b border-neon-yellow/50 bg-surface-1/80 p-3">
+          <ChasePanel game={game} />
         </div>
       )}
       <NarrativeFeed game={game} />
@@ -116,7 +122,7 @@ export function GameLayout({ game }: { game: GameState }) {
         {mobileTab === 'journal' && (
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-6">
             {view.net.architecture && <NetPanel game={view} />}
-            {view.combat.active && <CombatPanel game={view} />}
+            {view.world.chase ? <ChasePanel game={view} /> : view.combat.active && <CombatPanel game={view} />}
             <JournalPanel game={view} />
           </div>
         )}

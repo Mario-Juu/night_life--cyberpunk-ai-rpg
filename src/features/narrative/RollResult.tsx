@@ -67,6 +67,12 @@ export function RollResult({ outcome, defaultOpen = false, concealed = false }: 
         )}
       </div>
 
+      {!concealed && outcome.quickhack?.combo && (
+        <div className="border border-neon-yellow/60 bg-neon-yellow/10 px-2 py-1.5 text-xs text-neon-yellow">
+          <span className="font-display tracking-wider">COMBO ATIVO</span> · {outcome.quickhack.combo.replace(/^Combo:\s*/i, '')}
+        </div>
+      )}
+
       {open && !concealed && (
         <div className="space-y-2 border-t border-line-soft pt-2">
           {attack?.failure ? (

@@ -55,7 +55,7 @@ vi.mock('../services/api', () => ({
   },
 }));
 
-const { startCampaign, sendAction, rollPending, sendPhoneMessage, regenerateNarration, recoverInterruptedTurn, reload, consumeItem } = await import('./turnController');
+const { startCampaign, sendAction, rollPending, sendPhoneMessage, regenerateNarration, recoverInterruptedTurn, reload, consumeItem, INSIST_FLASH_RETRY_MS } = await import('./turnController');
 const { useGameStore } = await import('./gameStore');
 const { getRepository, setRepository, createMemoryRepository } = await import('../services/repository');
 
@@ -226,6 +226,40 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
     narrateInputs.length = 0;
     await startCampaign(character());
     expect((narrateInputs[0] as { allowLite?: boolean }).allowLite).toBe(true);
+    useUiStore.setState({ liteNarration: 'ask' });
+  });
+
+  it('"insistir no Flash": não pergunta nem usa a reserva; tenta só o Flash até responder', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      useUiStore.setState({ liteNarration: 'insist', liteChoice: null });
+      narrateEnvQueue.push(flashDown(), flashDown());
+      let finished = false;
+      const done = startCampaign(character()).then(() => {
+        finished = true;
+      });
+      for (let i = 0; i < 20 && !finished; i++) await vi.advanceTimersByTimeAsync(INSIST_FLASH_RETRY_MS);
+      await done;
+      expect(narrateInputs).toHaveLength(3);
+      expect(narrateInputs.every(i => (i as { allowLite?: boolean }).allowLite === false)).toBe(true);
+      expect(useUiStore.getState().liteChoice).toBeNull();
+      expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && e.text === 'Narração.')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      useUiStore.setState({ liteNarration: 'ask' });
+    }
+  });
+
+  it('"insistir" com cota diária esgotada: esperar não resolve, então pergunta em vez de ficar em polling', async () => {
+    useUiStore.setState({ liteNarration: 'insist', liteChoice: null });
+    const quota = flashDown();
+    narrateEnvQueue.push({ ...quota, meta: { ...quota.meta, failureKind: 'quota_day', waitMayHelp: false } });
+    const done = startCampaign(character());
+    const choice = await waitForChoice();
+    expect(narrateInputs).toHaveLength(1);
+    expect(choice.waitMayHelp).toBe(false);
+    choice.resolve('cancel');
+    await done;
     useUiStore.setState({ liteNarration: 'ask' });
   });
 

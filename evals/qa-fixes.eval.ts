@@ -12,6 +12,8 @@ import { REGISTRY } from '../shared/engine/tools';
 import { runToolCalls } from '../shared/engine/tools/registry';
 import { setCondition } from '../shared/engine/conditions';
 import { humanityAfter } from '../shared/rules/stats';
+import { CYBERWARE } from '../shared/rules/cyberware';
+import { ripperdocHasStock, ripperdocStock } from '../shared/engine/cyberware';
 import { amountsIn, checkNarration, claimedBalances } from '../shared/engine/consistency';
 import type { GameState } from '../shared/types/game';
 
@@ -233,5 +235,26 @@ describe('Verificador de consistência: falsos positivos do corpus (§4)', () =>
     for (const t of ['Você morre de rir da piada.', 'O ICE ameaça dar flatline em quem chegar perto.', '“Você morreu, choom”, rosna o ganger.'])
       expect(checkNarration(none, t, [], [])).toEqual([]);
     expect(checkNarration(none, 'Você morre ali mesmo, no asfalto.', [], [])).toHaveLength(1);
+  });
+});
+
+describe('Vitrine do ripperdoc (estoque sorteado por clínica)', () => {
+  const clinic = (id: string, tier: 1 | 2 | 3 | 4 | 5 = 3) => ({ id, name: 'Doc', role: 'Ripperdoc', description: '', trust: 60, respect: 0, fear: 0, anger: 0, knowledge: [], status: 'alive' as const, isContact: false, ripperdoc: { tier, blackMarket: false } });
+
+  it('é a mesma para a mesma clínica, muda entre clínicas e sempre tem as fundações', () => {
+    const a = ripperdocStock(clinic('npc_a')).map(d => d.key);
+    expect(ripperdocStock(clinic('npc_a')).map(d => d.key)).toEqual(a);
+    expect(ripperdocStock(clinic('npc_b')).map(d => d.key)).not.toEqual(a);
+    const foundations = Object.values(CYBERWARE).filter(d => d.foundation && d.tier <= 3 && d.install !== 'hospital').map(d => d.key);
+    for (const k of foundations) expect(a).toContain(k);
+  });
+
+  it('peça fora da vitrine é recusada com o motivo', () => {
+    const doc = clinic('npc_a');
+    const missing = Object.values(CYBERWARE).find(d => d.tier <= 3 && d.grade === 'civil' && !d.foundation && !ripperdocHasStock(doc, d.key))!;
+    const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 99_999 }, npcs: [...s.npcs, doc], scene: { ...s.scene, presentNpcIds: [...s.scene.presentNpcIds, doc.id] } }));
+    sc.tool('interpreter', 'install_cyberware', { key: missing.key });
+    expect(sc.last().ok).toBe(false);
+    expect(sc.last().summary).toMatch(/no estoque/);
   });
 });

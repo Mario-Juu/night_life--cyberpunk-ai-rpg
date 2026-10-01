@@ -179,13 +179,15 @@ Coberto pelo motor e verificado em `evals/red-rules.eval.ts`:
 - **Armas brancas:** ignoram metade da SP, arredondada para cima.
 - **Briga:** dano pelo BODY (1d6/2d6/3d6/4d6) e não perfura armadura.
 - **Armadura pesada:** −2 (SP 12–13) ou −4 (SP 15+) em REF/DEX/MOVE, inclusive na iniciativa.
-- **Outros:** esquiva com REF 8+, iniciativa REF + 1d10, point-buy de 62 (2–8) e Humanidade/EMP.
+- **Outros:** esquiva com REF 8+, iniciativa REF + 1d10, point-buy de 62 (2–8), Humanidade/EMP, ROF 2, rajada e fogo de supressão.
+- **Habilidades de Papel:** Consciência de Combate, Interface, Fabricante, Medicina, Operador e Moto; com alocação, custo de PM e efeitos mecânicos.
+- **Netrunning:** arquiteturas, andares, senhas, arquivos, nós de controle, programas, ICE Negro, REZ, rastros e desconexão segura/insegura.
 
-Ainda não implementado (recomendado, em ordem de impacto):
-1. **Habilidades de Papel** (Solo: Consciência de Combate; Trilheiro: Interface; Técnico: Criador; Medicânico: Medicina; Canal: Operador; Nômade: Moto).
-2. **ROF 2**: pistolas, SMGs e armas brancas leves/médias atacam duas vezes por ação.
-4. **Fogo automático e fogo de supressão.**
-5. **Netrunning** (arquiteturas, programas, ICE).
+Próximas expansões recomendadas (não são lacunas de implementação básica):
+1. **Economia de disponibilidade:** estoque por loja/Medtech, Mercado Noturno, encomendas por Canal e reabastecimento por tempo.
+2. **Netrunning persistente:** demônios autônomos, contramedidas corporativas, rastreamento e consequências fora da arquitetura.
+3. **Veículos e perseguições:** integridade, manobras, dano e upgrades da Moto.
+4. **Cobertura espacial:** objetos destrutíveis e linha de tiro, além da abstração atual por faixa.
 
 A "meia cobertura" (+2 no DV) é uma regra da casa; no RED, cobertura bloqueia a linha de tiro.
 

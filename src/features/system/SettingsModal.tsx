@@ -50,8 +50,8 @@ export function SettingsModal() {
           <p className="eyebrow">Modelo do Mestre</p>
           <p className="text-[11px] text-muted">Gemini Flash. Se uma versão estiver ocupada ou sem cota, o Mestre desce para a anterior (3.8 → 3.7 → 3.6 → 3.5).</p>
           <p className="text-[11px] text-muted">Se todos os Flash falharem na narração:</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(['ask', 'allow'] as const).map(v => (
+          <div className="grid gap-2">
+            {(['ask', 'insist', 'allow'] as const).map(v => (
               <button
                 key={v}
                 type="button"
@@ -59,8 +59,14 @@ export function SettingsModal() {
                 aria-pressed={liteNarration === v}
                 className={cn('border p-2 text-left', liteNarration === v ? 'border-neon-cyan bg-neon-cyan/10' : 'border-line hover:border-muted')}
               >
-                <span className="font-display text-xs uppercase tracking-wider">{v === 'ask' ? 'Perguntar' : 'Usar a reserva'}</span>
-                <span className="block text-[11px] text-muted">{v === 'ask' ? `Esperar o Flash ou seguir com o ${backupLabel}` : `${backupLabel}, sem perguntar`}</span>
+                <span className="font-display text-xs uppercase tracking-wider">{v === 'ask' ? 'Perguntar' : v === 'insist' ? 'Insistir no Flash' : 'Usar a reserva'}</span>
+                <span className="block text-[11px] text-muted">
+                  {v === 'ask'
+                    ? `Esperar o Flash ou seguir com o ${backupLabel}`
+                    : v === 'insist'
+                      ? 'Nunca desce para a reserva; mantém a narração em polling até um Flash responder.'
+                      : `${backupLabel}, sem perguntar`}
+                </span>
               </button>
             ))}
           </div>

@@ -148,10 +148,16 @@ async function closeTurn(record: TurnRecord) {
   }
 }
 
+/** Intervalo do polling quando a preferência é não descer para o Flash-Lite. */
+export const INSIST_FLASH_RETRY_MS = 12_000;
+/** Teto do polling "insistir": passado isso, o jogador decide (esperar mais, reserva ou desistir). */
+export const INSIST_FLASH_MAX_MS = 10 * 60_000;
+
 /**
- * Narração com o Flash; se todos os Flash falharem, o JOGADOR decide: esperar e tentar o Flash de
- * novo, seguir com o Flash-Lite (prosa mais simples) ou sempre usar o Lite. Sem pergunta pendente,
- * cai no aviso de "modo degradado" como antes.
+ * Narração com o Flash. A preferência "insistir" nunca autoriza o Lite: o turno fica aguardando e
+ * consulta a cadeia Flash novamente até ela responder, preservando a prosa do modelo principal.
+ * Só insiste quando esperar pode resolver (sobrecarga, timeout, cota por minuto): cota diária, chave
+ * inválida ou bloqueio de conteúdo não passam com o tempo — aí volta a perguntar.
  */
 async function narrateWithChoice(
   record: TurnRecord,
@@ -161,7 +167,20 @@ async function narrateWithChoice(
   const ui = () => useUiStore.getState();
   let allowLite = ui().liteNarration === 'allow';
   let cuts = 0;
-  for (let round = 0; round < 4; round++) {
+  let automaticRetries = 0;
+  let insistSince = 0;
+  let insistTries = 0;
+  /** Uma volta do polling "insistir" (só Flash), com contagem visível. */
+  const insistOnce = async () => {
+    insistSince ||= Date.now();
+    insistTries++;
+    const waited = Math.round((Date.now() - insistSince) / 1000);
+    ui().setBusy(true, `Flash indisponível — tentando de novo (tentativa ${insistTries + 1}${waited ? `, ${waited}s` : ''})…`);
+    await sleep(INSIST_FLASH_RETRY_MS);
+    assertSameGame(record);
+    allowLite = false;
+  };
+  for (;;) {
     let env: GmEnvelope<NarrateResponse>;
     try {
       env = await api.narrate(ctx, { ...input, allowLite }, model());
@@ -170,13 +189,12 @@ async function narrateWithChoice(
       if (!isGatewayCut(err) || cuts++ >= 1) throw err;
       ui().setBusy(true, 'O servidor cortou a resposta; tentando de novo…');
       await sleep(3000);
-      round--;
       continue;
     }
     if (!env.meta.degraded) return env;
     // Falha sem opção de Lite (já foi tentado, ou outro motivo): a tentativa automática de antes.
     if (!env.meta.liteOffered) {
-      if (round === 0 && isTransientFailure(env.meta.failureKind) && env.meta.latencyMs < 60_000) {
+      if (automaticRetries++ === 0 && isTransientFailure(env.meta.failureKind) && env.meta.latencyMs < 60_000) {
         record.llmRuns = [...record.llmRuns, env.meta];
         ui().setBusy(true, 'O Mestre está reconectando…');
         await sleep(AUTO_RETRY_DELAY_MS);
@@ -185,10 +203,18 @@ async function narrateWithChoice(
       return env;
     }
     record.llmRuns = [...record.llmRuns, env.meta];
+    // Insistir só vale enquanto esperar pode resolver, e até o teto; depois o jogador decide.
+    const withinCap = !insistSince || Date.now() - insistSince < INSIST_FLASH_MAX_MS;
+    if (ui().liteNarration === 'insist' && env.meta.waitMayHelp && withinCap) {
+      await insistOnce();
+      continue;
+    }
+    insistSince = 0;
     const choice = await new Promise<LiteChoice>(resolve => ui().setLiteChoice({ failureKind: env.meta.failureKind, waitMayHelp: !!env.meta.waitMayHelp, resolve }));
     ui().setLiteChoice(null);
     if (choice === 'cancel') return env;
     if (choice === 'always') ui().setLiteNarration('allow');
+    if (choice === 'insist') ui().setLiteNarration('insist');
     if (choice === 'wait') {
       for (let s = LITE_WAIT_S; s > 0; s--) {
         ui().setBusy(true, `Aguardando o Flash… ${s}s`);
@@ -196,12 +222,14 @@ async function narrateWithChoice(
       }
       ui().setBusy(true, 'O Mestre narra…');
       allowLite = false;
-    } else {
+    } else if (choice === 'lite' || choice === 'always') {
       ui().setBusy(true, `O Mestre narra (${ui().backupLabel})…`);
       allowLite = true;
+    } else {
+      // 'insist' escolhido no aviso: passa a valer como preferência e já tenta de novo.
+      await insistOnce();
     }
   }
-  return api.narrate(ctx, { ...input, allowLite: true }, model());
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

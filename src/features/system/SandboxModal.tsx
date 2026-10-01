@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { Bug, Dices, HeartPulse, Radar, RotateCcw, Skull, Swords, UserCog } from 'lucide-react';
+import { Bug, CarFront, Dices, HeartPulse, Radar, RotateCcw, ShoppingBag, Skull, Swords, UserCog } from 'lucide-react';
 import type { ConditionKey, GameState, NetDifficulty, RoleId, StatKey } from '@shared/types/game';
+import type { ToolOrigin } from '@shared/types/turn';
 import { STAT_KEYS } from '@shared/rules/stats';
 import { ROLES } from '@shared/rules/creation';
 import { NPC_TEMPLATES } from '@shared/rules/npcTemplates';
@@ -31,9 +32,9 @@ function apply(fn: (s: GameState) => GameState, note?: string) {
 }
 
 /** Executa uma ferramenta do motor como 'engine' (mesmas regras do jogo, sem o LLM). */
-function tool(name: string, args: Record<string, unknown>, note: string) {
+function tool(name: string, args: Record<string, unknown>, note: string, origin: ToolOrigin = 'engine') {
   const before = requireGame();
-  const res = executeTool(REGISTRY, before, { tool: name, args }, { rng: seededRng(newSeed()), origin: 'engine' });
+  const res = executeTool(REGISTRY, before, { tool: name, args }, { rng: seededRng(newSeed()), origin });
   if (!res.record.ok) {
     toast({ title: 'O motor recusou', body: res.record.summary, tone: 'warning' });
     return;
@@ -80,6 +81,7 @@ export function SandboxModal({ game }: { game: GameState }) {
   const [count, setCount] = useState(2);
   const [distance, setDistance] = useState('melee');
   const [difficulty, setDifficulty] = useState<NetDifficulty>('standard');
+  const [daemon, setDaemon] = useState(true);
   const [json, setJson] = useState('');
   const band = humanityBand(c);
 
@@ -111,6 +113,7 @@ export function SandboxModal({ game }: { game: GameState }) {
             <NumberField label="Eddies" value={c.money} onCommit={v => apply(s => sbx.money(s, v), `€$ → ${v}`)} />
             <NumberField label="PM" value={c.ip} onCommit={v => apply(s => sbx.ip(s, v), `PM → ${v}`)} />
             <NumberField label="Sorte" value={c.luck.current} onCommit={v => apply(s => sbx.luck(s, v), `Sorte → ${v}`)} />
+            <NumberField label="Bônus de cromo" value={c.cyberCapacityBonus ?? 0} min={0} max={20} onCommit={v => apply(s => ({ ...s, character: { ...s.character, cyberCapacityBonus: v } }), `Capacidade de cromo +${v}`)} />
           </div>
           <div className="grid grid-cols-5 gap-1.5">
             {STAT_KEYS.map(k => (
@@ -231,9 +234,10 @@ export function SandboxModal({ game }: { game: GameState }) {
                 </option>
               ))}
             </Select>
-            <Button size="sm" variant="solid" tone="cyan" onClick={() => tool('net_architecture', { name: 'Servidor de testes', difficulty, files: 'Arquivo alvo', controls: 'Torretas do corredor' }, 'Arquitetura criada')}>
+            <Button size="sm" variant="solid" tone="cyan" onClick={() => tool('net_architecture', { name: 'Servidor de testes', difficulty, files: 'Arquivo alvo', controls: 'Torretas do corredor', ...(daemon ? { daemonName: 'Cão de Guarda', daemonDirective: 'Rastrear intrusos e proteger as torretas' } : {}) }, 'Arquitetura criada')}>
               Criar arquitetura
             </Button>
+            <label className="flex items-center gap-1 text-[10px] text-muted"><input type="checkbox" checked={daemon} onChange={e => setDaemon(e.target.checked)} className="accent-[var(--color-neon-cyan)]" /> Daemon defensor</label>
             <Button size="sm" variant="ghost" disabled={!game.net.run} onClick={() => apply(sbx.refillNetActions, 'Ações de Rede recarregadas')}>
               Recarregar ações
             </Button>
@@ -250,6 +254,29 @@ export function SandboxModal({ game }: { game: GameState }) {
               ))}
             </div>
           )}
+        </Section>
+
+        <Section title="Mercado Noturno / encomendas" icon={<ShoppingBag className="w-3.5 h-3.5" />}>
+          <p className="text-[11px] text-dim">Banca de teste: Neural Link, Ciberolho e Sandevistan Mk.1. Compra cria uma peça solta; para encomendar, troque o papel para Canal e deixe rank 10.</p>
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="solid" tone="purple" onClick={() => tool('open_night_market', { name: 'Mercado de Testes', cyberStock: 'neural_link,cybereye,sandevistan', blackMarket: false }, 'Mercado Noturno aberto', 'narrator')}>Abrir mercado</Button>
+            <Button size="sm" variant="ghost" disabled={!game.world.market} onClick={() => tool('buy_market_cyberware', { key: 'cybereye' }, 'Peça comprada', 'interpreter')}>Comprar Ciberolho</Button>
+            <Button size="sm" variant="ghost" onClick={() => tool('order_cyberware', { key: 'sandevistan' }, 'Encomenda enviada', 'interpreter')}>Encomendar Sandy</Button>
+          </div>
+          <p className="text-[10px] text-muted">{game.world.market ? `${game.world.market.name}: ${game.world.market.cyberStock.length} peças` : 'Nenhum mercado aberto'} · encomendas: {game.world.cyberOrders?.filter(o => o.status === 'ordered').length ?? 0}</p>
+        </Section>
+
+        <Section title="Perseguição / pressão de facção" icon={<CarFront className="w-3.5 h-3.5" />}>
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="solid" tone="danger" disabled={!!game.world.chase} onClick={() => tool('start_chase', { opponent: 'Interceptor NCPD', reason: 'fuga de teste', pressure: 2, vehicleIntegrity: 4, opponentIntegrity: 4 }, 'Perseguição iniciada', 'narrator')}>Iniciar perseguição</Button>
+            {(['drive', 'evade', 'escape', 'ram', 'shoot'] as const).map(action => <Button key={action} size="sm" variant="ghost" disabled={!game.world.chase} onClick={() => tool('chase_action', { action }, `Perseguição: ${action}`, 'interpreter')}>{action}</Button>)}
+            <Button size="sm" variant="ghost" tone="yellow" onClick={() => {
+              tool('modify_faction', { name: 'Maelstrom', delta: 0, category: 'Gang' }, 'Facção Maelstrom registrada', 'narrator');
+              const faction = requireGame().factions.find(f => f.name === 'Maelstrom');
+              if (faction) tool('modify_faction_heat', { factionId: faction.id, delta: 1, reason: 'teste Sandbox' }, 'Heat Maelstrom +1', 'narrator');
+            }}>Heat Maelstrom +1</Button>
+          </div>
+          <p className="text-[10px] text-muted">{game.world.chase ? `${game.world.chase.opponent}: pressão ${game.world.chase.pressure}/5 · seu veículo ${game.world.chase.vehicleIntegrity}/6 · alvo ${game.world.chase.opponentIntegrity}/6` : 'Sem perseguição'} · Maelstrom: {game.factions.find(f => f.name === 'Maelstrom')?.heat ?? 0}/5</p>
         </Section>
 
         <Section title="Dados" icon={<Dices className="w-3.5 h-3.5" />}>

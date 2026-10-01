@@ -156,6 +156,8 @@ export interface Character {
   ip: number; // pontos de melhoria
   inventory: InventoryItem[];
   cyberware: CyberwareItem[];
+  /** Espaço fisiológico para cromo. É separado de Humanidade: ampliar um não recupera o outro. */
+  cyberCapacityBonus?: number;
   criticalInjuries: CriticalInjury[];
   deathSavePenalty: number;
   stabilized: boolean;
@@ -265,6 +267,18 @@ export interface NetArchitecture {
   createdTurn: number;
   /** Vírus plantado no último andar (efeito duradouro). */
   virus?: string;
+  /** Agente autônomo do dono da rede; reage a invasões e protege os nós que controla. */
+  daemon?: NetDaemon;
+}
+
+export interface NetDaemon {
+  name: string;
+  /** comportamento ficcional e operacional: vigia, caça, apaga rastros, controla defesas… */
+  directive: string;
+  alert: number;
+  controlledNodes: string[];
+  /** Daemon plantado pelo runner persiste depois do jack out. */
+  owner: 'system' | 'player';
 }
 
 export interface IceInstance {
@@ -303,6 +317,8 @@ export interface NetState {
   /** Arquitetura acessível no ponto de acesso da cena. */
   architecture: NetArchitecture | null;
   run: NetRun | null;
+  /** Quanto a rede já correlacionou o runner à invasão. 0 = frio, 5 = identidade exposta. */
+  trace?: { level: number; source: string; lastTurn: number };
 }
 
 export type ConditionKey = 'restrained' | 'grappled' | 'unconscious' | 'prone';
@@ -408,8 +424,8 @@ export interface Npc {
   /** 'animal' = bicho de estimação etc.: não fala, não usa o Agent. Ausente = pessoa. */
   kind?: 'person' | 'animal';
   conditions?: Condition[];
-  /** É ripperdoc: nível da clínica (1–5) e se mexe com hardware militar do mercado negro. */
-  ripperdoc?: { tier: 1 | 2 | 3 | 4 | 5; blackMarket?: boolean };
+  /** É ripperdoc: nível, mercado negro e o estoque que esta clínica realmente oferece. */
+  ripperdoc?: { tier: 1 | 2 | 3 | 4 | 5; blackMarket?: boolean; stock?: string[] };
   profile?: NpcProfile;
   goals?: NpcGoal[];
   bonds?: NpcBond[];
@@ -439,6 +455,9 @@ export interface Faction {
   category: 'Megacorp' | 'Gang' | 'Rede de Canais' | 'Polícia' | 'Clã Nômade' | 'Outro';
   standing: number; // -100..100
   description: string;
+  /** Calor específico com esta facção (não substitui o Heat policial global). */
+  heat?: number;
+  territories?: string[];
 }
 
 export type CombatantStatus = 'active' | 'down' | 'fled' | 'dead' | 'surrendered';
@@ -988,12 +1007,42 @@ export interface RollOutcome {
    * Quickhack: o desfecho e os dados do EFEITO (dano etc.), gravados para o reducer repetir o
    * mesmo resultado sobre o estado (o teste de Interface já está em check.d10).
    */
-  quickhack?: { key: string; ok: boolean; summary: string; effectRolls: number[] };
+  quickhack?: { key: string; ok: boolean; summary: string; effectRolls: number[]; combo?: string };
 }
 
 // ---------------------------------------------------------------------------
 // Estado raiz
 // ---------------------------------------------------------------------------
+
+export interface CyberOrder {
+  id: string;
+  cyberKey: string;
+  label: string;
+  paid: number;
+  readyAt: string;
+  fixerId?: string;
+  status: 'ordered' | 'ready' | 'cancelled';
+}
+
+export interface NightMarket {
+  id: string;
+  name: string;
+  district: string;
+  /** Chaves de cyberware à venda como peças soltas. */
+  cyberStock: string[];
+  blackMarket?: boolean;
+  endsAt?: string;
+}
+
+export interface ChaseState {
+  opponent: string;
+  factionId?: string;
+  /** 0 = escapou; 5 = encurralado. */
+  pressure: number;
+  vehicleIntegrity: number;
+  opponentIntegrity: number;
+  reason: string;
+}
 
 export interface WorldState {
   /** Data/hora no jogo em ISO (UTC). */
@@ -1003,6 +1052,9 @@ export interface WorldState {
   heat: number; // 0..5
   situation: string;
   objective: string;
+  market?: NightMarket;
+  cyberOrders?: CyberOrder[];
+  chase?: ChaseState;
 }
 
 export interface GameState {

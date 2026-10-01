@@ -60,6 +60,7 @@ export function LiteChoiceModal() {
         </p>
         <div className="grid gap-2">
           {canWait && <Option primary tone="cyan" icon={<Clock className="w-4 h-4" />} title="Esperar e tentar o Flash" hint="Aguarda ~20 s e tenta de novo." onClick={() => choose('wait')} />}
+          {canWait && <Option tone="cyan" icon={<Clock className="w-4 h-4" />} title="Insistir no Flash" hint="Não usa a reserva; continua tentando o Flash até ele responder." onClick={() => choose('insist')} />}
           <Option primary={!canWait} tone="yellow" icon={<Feather className="w-4 h-4" />} title={`Usar o ${backup} agora`} hint="Só nesta narração." onClick={() => choose('lite')} />
           <Option tone="purple" icon={<Zap className="w-4 h-4" />} title="Sempre usar a reserva" hint="Não perguntar de novo quando o Flash falhar (dá para mudar em Configurações)." onClick={() => choose('always')} />
         </div>

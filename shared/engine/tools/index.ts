@@ -5,12 +5,13 @@ import { ACTION_TOOLS } from './actions';
 import { MUTATION_TOOLS } from './mutations';
 import { QUERY_TOOLS } from './queries';
 import { ROLE_TOOLS } from './roleTools';
+import { URBAN_TOOLS } from './urbanTools';
 import { argsSchema, cleanArgs, createRegistry, type ParamSpec, type ToolDef } from './registry';
 
 export * from './registry';
 export { findNpc } from './helpers';
 
-export const REGISTRY = createRegistry([...QUERY_TOOLS, ...ACTION_TOOLS, ...ROLE_TOOLS, ...MUTATION_TOOLS]);
+export const REGISTRY = createRegistry([...QUERY_TOOLS, ...ACTION_TOOLS, ...ROLE_TOOLS, ...URBAN_TOOLS, ...MUTATION_TOOLS]);
 
 /**
  * Validação prévia (sem executar): devolve os erros de formato das chamadas.

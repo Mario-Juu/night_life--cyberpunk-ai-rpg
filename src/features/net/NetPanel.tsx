@@ -76,6 +76,8 @@ export function NetPanel({ game }: { game: GameState }) {
               ))}
             </span>
             {run.cloaked && <Badge tone="green">Rastros apagados</Badge>}
+            {game.net.trace && <Badge tone={game.net.trace.level >= 3 ? 'danger' : 'yellow'}>Rastro {game.net.trace.level}/5</Badge>}
+            {arch.daemon && <Badge tone={arch.daemon.owner === 'player' ? 'green' : 'purple'}>{arch.daemon.owner === 'player' ? 'Seu daemon' : arch.daemon.name} · alerta {arch.daemon.alert}/5</Badge>}
             {onFire && <Badge tone="danger" solid>Deck em chamas</Badge>}
           </div>
 
@@ -168,6 +170,20 @@ export function NetPanel({ game }: { game: GameState }) {
                   }}
                 >
                   Vírus
+                </Button>
+              )}
+              {run.position === arch.floors.length - 1 && arch.daemon?.owner !== 'player' && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  tone="cyan"
+                  disabled={disabled || noActions}
+                  onClick={() => {
+                    const directive = window.prompt('Diretriz do daemon persistente (o que ele vigia, protege ou sabota)?');
+                    if (directive?.trim()) act('daemon', { virus: directive.trim() });
+                  }}
+                >
+                  Instalar daemon
                 </Button>
               )}
               {onFire && (

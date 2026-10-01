@@ -7,6 +7,7 @@ import { emit, turnIdOf } from './events';
 import { makeId } from './ids';
 import { operatorPerks } from '../rules/roles';
 import { syncWithdrawal } from './withdrawal';
+import { fulfillCyberOrders } from './citySystems';
 
 export const FLAG_KEY_RE = /^[a-z0-9_]{2,60}$/;
 
@@ -262,7 +263,12 @@ export function advanceTime(state: GameState, minutes: number): GameState {
   const ram = s.character.deck?.ram;
   if (ram && !s.combat.active && ram.current < ram.max) s = { ...s, character: { ...s.character, deck: { ...s.character.deck!, ram: { ...ram, current: ram.max } } } };
   s = syncWithdrawal(s);
-  return processScheduledEvents(s);
+  s = fulfillCyberOrders(processScheduledEvents(s));
+  if (s.world.market?.endsAt && new Date(s.world.market.endsAt).getTime() <= new Date(s.world.time).getTime()) {
+    const market = s.world.market;
+    s = emit({ ...s, world: { ...s.world, market: undefined } }, 'SCENE_CHANGED', `Mercado Noturno encerrou: ${market.name}`, { target: market.id, data: { nightMarket: 'closed' } });
+  }
+  return s;
 }
 
 export const THREAT_LABEL: Record<ThreatLevel, string> = { low: 'Baixa', medium: 'Média', high: 'Alta', extreme: 'Extrema' };

@@ -17,6 +17,7 @@ import { resolveRoll } from '../shared/engine/rolls';
 import { gameReducer } from '../shared/engine/reducer';
 import { advanceTime } from '../shared/engine/world';
 import { buildGameContext } from '../shared/engine/context';
+import { CYBERWARE } from '../shared/rules/cyberware';
 
 export interface Scenario {
   state: GameState;
@@ -39,7 +40,10 @@ export interface Scenario {
 
 /** Coloca um ripperdoc na cena (nível 5, mercado negro, confia no jogador) — para testes de cromo. */
 export function withRipperdoc(s: GameState, tier: 1 | 2 | 3 | 4 | 5 = 5, blackMarket = true, trust = 60): GameState {
-  const doc = { id: 'npc_doc', name: 'Doc', role: 'Ripperdoc', description: '', trust, respect: 30, fear: 0, anger: 0, knowledge: [], status: 'alive' as const, isContact: false, ripperdoc: { tier, blackMarket } };
+  // Estoque com o catálogo inteiro: estes testes medem as regras de acesso (nível, mercado negro,
+  // protótipo, confiança), que vêm ANTES do estoque. A vitrine sorteada tem os próprios testes.
+  const stock = Object.keys(CYBERWARE);
+  const doc = { id: 'npc_doc', name: 'Doc', role: 'Ripperdoc', description: '', trust, respect: 30, fear: 0, anger: 0, knowledge: [], status: 'alive' as const, isContact: false, ripperdoc: { tier, blackMarket, stock } };
   return { ...s, npcs: [...s.npcs.filter(n => n.id !== doc.id), doc], scene: { ...s.scene, presentNpcIds: [...s.scene.presentNpcIds.filter(id => id !== doc.id), doc.id] } };
 }
 

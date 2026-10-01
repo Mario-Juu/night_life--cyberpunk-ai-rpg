@@ -17,6 +17,7 @@ import { emit } from './events';
 import { makeId } from './ids';
 import { playerCannotAct, setCondition } from './conditions';
 import { damageCombatant } from './combat';
+import { addTrace } from './net';
 
 /** Dano fixo por rodada do Superaquecimento (fixo: o tick roda no reducer, sem dado). */
 export const OVERHEAT_TICK = 3;
@@ -204,8 +205,18 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
   const total = c.roleRank + d10.total + luck;
   const success = def.target === 'none' || total > dv;
   let s: GameState = { ...s0, character: setRam(c, ram.current - def.ram) };
+  // Hacks de alto nível deixam assinatura; Cloak pode baixar o rastro dentro da arquitetura.
+  if (def.tier >= 3) s = addTrace(s, 1, def.name);
   const rollText = def.target === 'none' ? '' : ` (Interface ${c.roleRank} + d10 ${d10.total}${luck ? ` + Sorte ${luck}` : ''} = ${total} vs ${dv})`;
   const where = foe?.name ?? npc?.name ?? 'a área';
+  const prior = new Set(foe?.hacks?.map(h => h.key) ?? []);
+  const combo = (key === 'short_circuit' && prior.has('cyberware_malfunction'))
+    ? 'Combo: Pane de Cromo expôs os circuitos (+2d6 de dano).'
+    : (key === 'synapse_burnout' && prior.has('overheat'))
+      ? 'Combo: Superaquecimento abriu as sinapses (+1d6 de dano).'
+      : (key === 'memory_wipe' && prior.has('sonic_shock'))
+        ? 'Combo: Choque Sônico deixa a memória vulnerável.'
+        : '';
 
   if (d10.fumble && def.target !== 'none') {
     s = { ...s, character: setRam(s.character, 0) };
@@ -235,8 +246,9 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
     case 'memory_wipe': {
       if (foe) {
         const mook = !foe.template || NPC_TEMPLATES[foe.template]?.tier === 'mook';
-        s = patchCombatant(s, foe.id, t => (mook ? { ...t, status: 'fled' } : { ...t, skipNextAttack: 'memória apagada (confuso)' }));
-        summary = mook ? `${foe.name} esquece o que fazia ali e vai embora.` : `${foe.name} perde o fio da meada: perde o próximo ataque.`;
+        const exposed = combo.length > 0;
+        s = patchCombatant(s, foe.id, t => (mook || exposed ? { ...t, status: 'fled' } : { ...t, skipNextAttack: 'memória apagada (confuso)' }));
+        summary = mook || exposed ? `${foe.name} esquece o que fazia ali e vai embora.` : `${foe.name} perde o fio da meada: perde o próximo ataque.`;
       } else {
         const n = npc!;
         s = { ...s, npcs: s.npcs.map(x => (x.id === n.id ? { ...x, knowsAboutPlayer: undefined, anger: 0, fear: 0 } : x)) };
@@ -269,9 +281,9 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
       break;
     }
     case 'short_circuit': {
-      const dmg = rollDamage('2d6', rng).total;
+      const dmg = rollDamage(combo ? '4d6' : '2d6', rng).total;
       s = patchCombatant(s, foe!.id, t => directDamage(t, dmg));
-      summary = `Curto-circuito em ${foe!.name}: ${dmg} de dano direto.`;
+      summary = `Curto-circuito em ${foe!.name}: ${dmg} de dano direto.${combo ? ` ${combo}` : ''}`;
       break;
     }
     case 'overheat': {
@@ -282,9 +294,9 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
     }
     case 'synapse_burnout': {
       const half = foe!.hp.current <= foe!.hp.max / 2;
-      const dmg = rollDamage(half ? '5d6' : '3d6', rng).total;
+      const dmg = rollDamage(half ? (combo ? '6d6' : '5d6') : (combo ? '4d6' : '3d6'), rng).total;
       s = patchCombatant(s, foe!.id, t => directDamage(t, dmg));
-      summary = `Queima sináptica em ${foe!.name}: ${dmg} de dano direto${half ? ' (já estava ferido: +2d6)' : ''}.`;
+      summary = `Queima sináptica em ${foe!.name}: ${dmg} de dano direto${half ? ' (já estava ferido: +2d6)' : ''}${combo ? `. ${combo}` : ''}.`;
       break;
     }
     case 'system_collapse': {
@@ -301,7 +313,7 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
     }
   }
   const after = foe ? s.combat.combatants.find(t => t.id === foe.id) : undefined;
-  return finish(s, true, `${def.name}${rollText}: ${summary} −${def.ram} RAM.`, { targetStatusAfter: after?.status });
+  return finish(s, true, `${def.name}${rollText}: ${summary} −${def.ram} RAM.`, { targetStatusAfter: after?.status, ...(combo ? { combo } : {}) });
 
   /** Fecha: evento (a rodada vira na fase dos inimigos, depois da Ação do jogador). */
   function finish(state: GameState, ok: boolean, text: string, data: Record<string, unknown>): QuickhackResult {

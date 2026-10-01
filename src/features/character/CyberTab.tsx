@@ -5,7 +5,8 @@ import { effectiveEmp } from '@shared/rules/stats';
 import { humanityBand } from '@shared/rules/humanity';
 import { CYBERWARE, FOUNDATION_LABEL, GRADE_LABEL, INSTALL_LABEL, RIPPERDOC_TIER_LABEL, TIER_LABEL, averageLoss, maxHumanityPenalty, type CyberTier, type CyberwareDef } from '@shared/rules/cyberware';
 import { SKILLS } from '@shared/rules/skills';
-import { activeOs, cyberAccess, foundations, installedOs, osCooldownName, sceneRipperdoc } from '@shared/engine/cyberware';
+import { activeOs, cyberAccess, cyberCapacityMax, cyberCapacityUsed, foundations, installedOs, osCooldownName, ripperdocStock, sceneRipperdoc } from '@shared/engine/cyberware';
+import { marketCyberPrice } from '@shared/engine/citySystems';
 import { Badge, Button, Empty, Input, Meter, Modal, Select, cn } from '../../ui';
 import { quickTool } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
@@ -106,7 +107,7 @@ function Installed({ game, cw, depth = 0 }: { game: GameState; cw: CyberwareItem
   );
 }
 
-function RipperdocCatalog({ game }: { game: GameState }) {
+function RipperdocCatalog({ game, source }: { game: GameState; source: 'clinic' | 'market' }) {
   const busy = useUiStore(s => s.gmBusy);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>('Todos');
   const [q, setQ] = useState('');
@@ -114,24 +115,49 @@ function RipperdocCatalog({ game }: { game: GameState }) {
   const [tier, setTier] = useState<CyberTier | 0>(0);
   const [onlyAvailable, setOnlyAvailable] = useState(false);
   const doc = sceneRipperdoc(game);
+  const market = game.world.market;
+  const marketMode = source === 'market';
+  const clinicStock = useMemo(
+    () =>
+      doc
+        ? ripperdocStock(doc)
+        : Object.values(CYBERWARE).filter(def => def.tier === 1 && def.grade === 'civil' && (def.install === 'mall' || def.install === 'none')),
+    [doc],
+  );
+  const carriedPieces = useMemo(
+    () => game.character.inventory.flatMap(item => (item.cyberKey && CYBERWARE[item.cyberKey] ? [CYBERWARE[item.cyberKey]] : [])),
+    [game.character.inventory],
+  );
+  const marketStock = useMemo(
+    () => (game.world.market ? game.world.market.cyberStock.map(key => CYBERWARE[key]).filter((def): def is CyberwareDef => !!def) : []),
+    [game.world.market],
+  );
+  const catalogue = useMemo(
+    () => (marketMode ? marketStock : [...new Map([...clinicStock, ...carriedPieces].map(def => [def.key, def])).values()]),
+    [marketMode, clinicStock, marketStock, carriedPieces],
+  );
   const list = useMemo(() => {
     const n = q.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    return Object.values(CYBERWARE)
+    return catalogue
       .filter(
         d =>
           (cat === 'Todos' || d.category === cat) &&
           (!tier || d.tier === tier) &&
           (!n || `${d.name} ${d.brand ?? ''} ${d.effect}`.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(n)) &&
-          (!onlyAvailable || cyberAccess(game, d).ok),
+          (!onlyAvailable || marketMode || cyberAccess(game, d).ok),
       )
       .sort((a, b) => a.tier - b.tier);
-  }, [cat, q, tier, onlyAvailable, game]);
+  }, [cat, q, tier, onlyAvailable, game, catalogue, marketMode]);
 
   return (
     <section className="space-y-3">
-      <p className="eyebrow">Ripperdoc · catálogo ({Object.keys(CYBERWARE).length})</p>
-      <div className={cn('border p-3 text-[11px]', doc ? 'border-neon-cyan/40 bg-neon-cyan/5 text-muted' : 'border-line bg-surface-0/30 text-dim')}>
-        {doc ? (
+      <p className={cn('eyebrow break-words', marketMode && 'text-neon-yellow')}>
+        {marketMode ? `Mercado Noturno · ${market?.name ?? 'fechado'} (${marketStock.length})` : doc ? `Estoque da clínica (${clinicStock.length}) · peças trazidas (${carriedPieces.length})` : `Bio-mods básicos (${clinicStock.length}) · peças trazidas (${carriedPieces.length})`}
+      </p>
+      <div className={cn('border p-3 text-[11px]', marketMode ? 'border-neon-yellow/50 bg-neon-yellow/5 text-muted' : doc ? 'border-neon-cyan/40 bg-neon-cyan/5 text-muted' : 'border-line bg-surface-0/30 text-dim')}>
+        {marketMode ? (
+          <>Compre peças de cromo para levar na mochila. Elas só funcionam depois de uma cirurgia.</>
+        ) : doc ? (
           <>
             <span className="text-fg">{doc.name}</span> · nível {doc.ripperdoc!.tier} ({RIPPERDOC_TIER_LABEL[doc.ripperdoc!.tier]}){doc.ripperdoc!.blackMarket ? ' · mercado negro' : ''}
           </>
@@ -145,10 +171,10 @@ function RipperdocCatalog({ game }: { game: GameState }) {
             {t ? `T${t}` : 'Todo tier'}
           </button>
         ))}
-        <label className="flex items-center gap-1 text-[10px] text-muted ml-auto">
+        {!marketMode && <label className="flex items-center gap-1 text-[10px] text-muted ml-auto">
           <input type="checkbox" checked={onlyAvailable} onChange={e => setOnlyAvailable(e.target.checked)} className="accent-[var(--color-neon-cyan)]" />
           Só o que dá para instalar aqui
-        </label>
+        </label>}
       </div>
       <div className="relative">
         <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-dim" />
@@ -165,13 +191,18 @@ function RipperdocCatalog({ game }: { game: GameState }) {
         {list.map(d => {
           const why = blocker(game, d);
           const access = cyberAccess(game, d);
-          const price = access.ok ? access.price : d.price * (d.paired ? 2 : 1);
+          const owned = access.ok ? access.owned : undefined;
+          const accessPrice = access.ok ? access.price : 0;
+          const price = owned ? accessPrice : marketMode ? marketCyberPrice(game.character, d.key) : access.ok ? accessPrice : d.price * (d.paired ? 2 : 1);
+          const actionBlocker = marketMode ? (game.character.money < price ? 'Eddies insuficientes' : null) : why;
           return (
             <li key={d.key} className="border border-line bg-surface-0/20 p-3 space-y-2 transition-colors hover:border-neon-purple/50">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm text-fg">{d.name}</p>
                   <TierTag def={d} />
+                  {marketMode && <Badge tone="yellow">Mercado Noturno · peça solta</Badge>}
+                  {access.ok && access.owned && <Badge tone="yellow">Peça trazida · só cirurgia</Badge>}
                   <p className="tabular text-[10px] text-dim">
                     {d.category} · {INSTALL_LABEL[d.install]}
                     {d.requires ? ` · em ${FOUNDATION_LABEL[d.requires]} (${d.slots ?? 1} slot${(d.slots ?? 1) > 1 ? 's' : ''})` : ''}
@@ -197,17 +228,21 @@ function RipperdocCatalog({ game }: { game: GameState }) {
                 </Select>
               )}
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] text-neon-yellow">{why}</span>
+                <span className="text-[10px] text-neon-yellow">{actionBlocker}</span>
                 <Button
                   size="sm"
                   variant="ghost"
-                  tone="purple"
-                  disabled={busy || !!why || game.combat.active}
+                  tone={marketMode ? 'yellow' : 'purple'}
+                  disabled={busy || !!actionBlocker || game.combat.active}
                   onClick={() =>
-                    void quickTool('install_cyberware', { key: d.key, ...(d.effects.some(e => e.kind === 'skill_chip') ? { skillId: chipSkill } : {}) }, doc ? `Peço para ${doc.name} instalar ${d.name}.` : `Instalo ${d.name}.`)
+                    void quickTool(
+                      marketMode ? 'buy_market_cyberware' : 'install_cyberware',
+                      marketMode ? { key: d.key } : { key: d.key, ...(d.effects.some(e => e.kind === 'skill_chip') ? { skillId: chipSkill } : {}) },
+                      marketMode ? `Compro ${d.name} como peça no Mercado Noturno.` : doc ? `Peço para ${doc.name} instalar ${d.name}.` : `Instalo ${d.name}.`,
+                    )
                   }
                 >
-                  Instalar
+                  {marketMode ? 'Comprar peça' : 'Instalar'}
                 </Button>
               </div>
             </li>
@@ -218,17 +253,18 @@ function RipperdocCatalog({ game }: { game: GameState }) {
   );
 }
 
-function RipperdocCatalogModal({ game, open, onClose }: { game: GameState; open: boolean; onClose: () => void }) {
+function RipperdocCatalogModal({ game, open, onClose, source }: { game: GameState; open: boolean; onClose: () => void; source: 'clinic' | 'market' }) {
   const doc = sceneRipperdoc(game);
+  const market = game.world.market;
   return (
     <Modal
       open={open}
       onClose={onClose}
       size="xl"
-      title="Catálogo do ripperdoc"
-      subtitle={doc ? `${doc.name} · nível ${doc.ripperdoc!.tier} · ${RIPPERDOC_TIER_LABEL[doc.ripperdoc!.tier]}` : 'Terminal remoto: implantes básicos ficam disponíveis sem uma clínica na cena.'}
+      title={source === 'market' ? 'Mercado Noturno' : 'Catálogo do ripperdoc'}
+      subtitle={source === 'market' ? `${market?.name ?? 'Mercado fechado'} · as compras viram peças soltas para cirurgia posterior.` : doc ? `${doc.name} · nível ${doc.ripperdoc!.tier} · ${RIPPERDOC_TIER_LABEL[doc.ripperdoc!.tier]}` : 'Sem clínica na cena: apenas bio-mods básicos; peças recuperadas aparecem aqui, mas exigem cirurgia.'}
     >
-      <RipperdocCatalog game={game} />
+      <RipperdocCatalog game={game} source={source} />
     </Modal>
   );
 }
@@ -238,7 +274,10 @@ export function CyberTab({ game }: { game: GameState }) {
   const c = game.character;
   const emp = Math.min(c.stats.EMP, effectiveEmp(c.humanity.current));
   const band = humanityBand(c);
+  const capacity = cyberCapacityUsed(c);
+  const capacityMax = cyberCapacityMax(c);
   const [ripperdocOpen, setRipperdocOpen] = useState(false);
+  const [catalogSource, setCatalogSource] = useState<'clinic' | 'market'>('clinic');
   const shop = ripperdocOpen;
   const roots = c.cyberware.filter(cw => !cw.parentId || !c.cyberware.some(p => p.id === cw.parentId));
   const loose = c.inventory.filter(i => i.cyberKey);
@@ -246,6 +285,7 @@ export function CyberTab({ game }: { game: GameState }) {
   return (
     <div className="space-y-4">
       <Meter label="Humanidade" value={c.humanity.current} max={c.humanity.max} tone={band.band === 'stable' ? 'purple' : 'danger'} />
+      <Meter label="Capacidade de cromo" value={capacity} max={capacityMax} tone={capacity >= capacityMax ? 'danger' : 'cyan'} />
       {band.band !== 'stable' && (
         <Badge tone="danger" solid={band.band === 'cyberpsycho'}>
           {band.label}
@@ -253,7 +293,7 @@ export function CyberTab({ game }: { game: GameState }) {
       )}
       <p className="text-xs text-muted">
         EMP efetivo: <span className="tabular text-fg">{emp}</span> de {c.stats.EMP}. Cada 10 pontos de Humanidade perdidos reduzem a Empatia. Em 0, ciberpsicose. Cada implante
-        baixa o máximo em 2 (Borgware 4); terapia recupera a perdida (€$500 = 2d6 · €$1000 = 4d6).
+        baixa o máximo em 2 (Borgware 4); terapia recupera a perdida (€$500 = 2d6 · €$1000 = 4d6). Capacidade limita o volume de sistemas que o corpo sustenta; um ripperdoc pode ampliá-la sem recuperar Humanidade.
       </p>
       {roots.length === 0 ? (
         <Empty icon={<Cpu className="w-8 h-8" />} title="Carne e osso">
@@ -288,10 +328,17 @@ export function CyberTab({ game }: { game: GameState }) {
           })}
         </section>
       )}
-      <Button size="sm" variant={shop ? 'solid' : 'ghost'} tone="purple" block onClick={() => setRipperdocOpen(s => !s)} icon={<Cpu className="w-3.5 h-3.5" />}>
-        {shop ? 'Fechar catálogo' : 'Catálogo do ripperdoc'}
-      </Button>
-      <RipperdocCatalogModal game={game} open={ripperdocOpen} onClose={() => setRipperdocOpen(false)} />
+      <div className="flex flex-col gap-2">
+        {game.world.market && (
+          <Button size="sm" variant={shop && catalogSource === 'market' ? 'solid' : 'ghost'} tone="yellow" block onClick={() => { setCatalogSource('market'); setRipperdocOpen(true); }} icon={<Cpu className="w-3.5 h-3.5" />}>
+            Comprar no Mercado Noturno
+          </Button>
+        )}
+        <Button size="sm" variant={shop && catalogSource === 'clinic' ? 'solid' : 'ghost'} tone="purple" block onClick={() => { setCatalogSource('clinic'); setRipperdocOpen(true); }} icon={<Cpu className="w-3.5 h-3.5" />}>
+          Catálogo do ripperdoc
+        </Button>
+      </div>
+      <RipperdocCatalogModal game={game} open={ripperdocOpen} onClose={() => setRipperdocOpen(false)} source={catalogSource} />
     </div>
   );
 }

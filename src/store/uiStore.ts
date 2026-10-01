@@ -10,7 +10,9 @@ export type ModalId = 'saves' | 'log' | 'rules' | 'settings' | 'newGame' | 'sand
 export type LogTab = 'events' | 'turns' | 'timeline';
 export type TutorialId = 'net' | 'combat' | 'role' | 'humanity' | 'cyber' | 'sandbox';
 
-export type LiteChoice = 'lite' | 'wait' | 'always' | 'cancel';
+export type LiteChoice = 'lite' | 'wait' | 'always' | 'insist' | 'cancel';
+/** Como agir quando todos os modelos Flash de narração falharem. */
+export type LiteNarrationPreference = 'ask' | 'allow' | 'insist';
 export interface LiteChoiceRequest {
   failureKind?: FailureKind;
   /** Esperar pode resolver (sobrecarga); com cota diária esgotada, não. */
@@ -49,8 +51,8 @@ interface UiStore {
   forcedD10: number | null;
   /** Chave Gemini do próprio jogador (fica só neste navegador; vai no cabeçalho dos pedidos). */
   geminiKey: string;
-  /** Quando os flash falham na narração: perguntar antes de usar o flash-lite, ou usar direto. */
-  liteNarration: 'ask' | 'allow';
+  /** Quando os Flash falham: perguntar, usar a reserva ou continuar tentando somente Flash. */
+  liteNarration: LiteNarrationPreference;
   /** Pergunta pendente ao jogador (Flash indisponível: esperar ou seguir com o Lite?). */
   liteChoice: LiteChoiceRequest | null;
   /** Nome da reserva da narração informado pelo servidor (hoje, "Flash-Lite"). */
@@ -85,7 +87,7 @@ interface UiStore {
   closeTutorial: () => void;
   setTutorialsOn: (v: boolean) => void;
   setGeminiKey: (v: string) => void;
-  setLiteNarration: (v: 'ask' | 'allow') => void;
+  setLiteNarration: (v: LiteNarrationPreference) => void;
   setLiteChoice: (v: LiteChoiceRequest | null) => void;
   setBackupLabel: (v: string) => void;
   resetTutorials: () => void;

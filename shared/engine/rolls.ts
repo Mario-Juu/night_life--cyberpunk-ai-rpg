@@ -106,7 +106,7 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
       return {
         request,
         check: { stat: 'INT', statValue: rank, skillId: null, skillValue: 0, d10, modifiers: [], luckSpent, total, dv: request.dv, success, margin: total - request.dv },
-        quickhack: { key, ok: res.ok, summary: res.summary, effectRolls: log.map(l => l.face) },
+        quickhack: { key, ok: res.ok, summary: res.summary, effectRolls: log.map(l => l.face), ...(typeof res.data?.combo === 'string' ? { combo: res.data.combo } : {}) },
       };
     }
 
