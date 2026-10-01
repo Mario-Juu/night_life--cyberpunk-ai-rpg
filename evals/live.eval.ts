@@ -9,6 +9,9 @@ import { scenario, withRipperdoc } from './harness';
 import { createGameMaster, type GameMaster } from '../server/gamemaster/gameMaster';
 import { dailyQuotaExhausted, geminiProvider, getApiKey } from '../server/gamemaster/llmClient';
 import { checkNarration } from '../shared/engine/consistency';
+import { applyWorldgen, buildWorldgenRequest, generateFronts } from '../shared/engine/fronts';
+import { applyGeneratedProfile, buildProfileRequest, syncImportance } from '../shared/engine/npcProfile';
+import { appendChat } from '../shared/engine/reducer';
 
 // Testes usam a chave gratuita (TEST_API_KEY) e a mesma cadeia do jogo: flash 3.8 → 3.7 → … → flash-lite.
 if (process.env.TEST_API_KEY?.trim()) {
@@ -34,6 +37,8 @@ function strict(inner: GameMaster): GameMaster {
     narrate: async (...a) => check(await inner.narrate(...a)),
     phone: async (...a) => check(await inner.phone(...a)),
     summarize: async (...a) => check(await inner.summarize(...a)),
+    profile: async (...a) => check(await inner.profile(...a)),
+    worldgen: async (...a) => check(await inner.worldgen(...a)),
   };
 }
 const gm = strict(createGameMaster(geminiProvider, () => {}));
@@ -204,6 +209,42 @@ describe.skipIf(!live)('LIVE — narrador respeita o motor', () => {
         expect(sc.last().ok).toBe(true);
         expect(sc.state.character.dead).toBe(true);
       }
+    },
+    TIMEOUT,
+  );
+});
+
+describe.skipIf(!live)('LIVE — mundo vivo e NPCs', () => {
+  it(
+    'costura do mundo: reescreve as frentes mantendo a estrutura (só texto muda)',
+    async () => {
+      const state = generateFronts(scenario({ debtReason: 'Devo €$9000 ao cassino dos Claws', occupation: 'Entregador noturno', district: 'WESTBROOK' }).state, { seed: 'live' });
+      const env = await gm.worldgen(buildWorldgenRequest(state)!);
+      const after = applyWorldgen(state, env.payload);
+      for (const f of after.fronts!) {
+        expect(f.polished).toBe(true);
+        console.log(`\n[${f.id}] ${f.title}\n  ${f.premise}\n  reviravolta: ${f.twist}`);
+        for (const st of f.stages) console.log(`   · ${st.title} :: ${st.effects.map(e => (e.kind === 'news' ? `[${e.source}] ${e.headline}` : e.kind === 'message' ? `SMS "${e.text}"` : e.kind)).join(' | ')}`);
+      }
+      const before = state.fronts!.map(f => f.stages.map(st => st.effects.map(e => e.kind)));
+      expect(after.fronts!.map(f => f.stages.map(st => st.effects.map(e => e.kind)))).toEqual(before);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    'perfil de NPC central: personalidade coerente com a evidência, objetivo e segredo',
+    async () => {
+      let s = scenario().tool('narrator', 'upsert_npc', { name: 'Kiro', role: 'Químico de rua', description: 'Magro, jaleco manchado, ri de nervoso' }).tool('narrator', 'start_quest', { title: 'Testar o lote dourado', objective: 'Achar quem teste o estimulante', rewardEddies: 4500, giverId: 'Kiro' }).state;
+      s = appendChat({ ...s, turn: 3 }, { kind: 'narration', text: '[DIALOGUE: Kiro]\nDroga de estimulante forte, choom. Os meus testadores injetaram e dizem que os reflexos sobem pelas paredes sem fritar o miolo. Se conseguir mais lote desse lixo dourado, me procura de novo.\n[/DIALOGUE]' });
+      s = syncImportance(s);
+      const env = await gm.profile(buildProfileRequest(s, 'npc_kiro')!);
+      const after = applyGeneratedProfile(s, 'npc_kiro', env.payload);
+      const kiro = after.npcs.find(n => n.id === 'npc_kiro')!;
+      console.log('\nKiro:', JSON.stringify({ profile: kiro.profile, goals: kiro.goals, secret: kiro.knowledge.find(k => k.secret), bonds: kiro.bonds, knowsAboutPlayer: kiro.knowsAboutPlayer }, null, 1));
+      expect(kiro.profile?.traits.length).toBeGreaterThanOrEqual(2);
+      expect(kiro.goals?.length).toBeGreaterThan(0);
+      expect(kiro.knowledge.some(k => k.secret)).toBe(true);
     },
     TIMEOUT,
   );

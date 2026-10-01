@@ -3,7 +3,9 @@
  * (arma, munição, alvo vivo, alcance, dinheiro) e prepara a rolagem quando necessário.
  */
 import { CHROME_WORDS, implantFromName } from '../../rules/cyberware';
-import type { GameState, RollRequest, StatKey } from '../../types/game';
+import { leaveAccessPoint } from '../net';
+import type { AllyStance, GameState, RollRequest, StatKey } from '../../types/game';
+import { askAlly, healParty } from '../party';
 import { SKILLS, getSkill } from '../../rules/skills';
 import { STAT_KEYS } from '../../rules/stats';
 import { BRACKET_NEAR_EDGE, DISTANCE_LABEL, WEAPONS, bracketFor, moveMeters } from '../../rules/weapons';
@@ -95,7 +97,7 @@ export const ACTION_TOOLS = [
       if (early && early !== 'Alvo não identificado.') return fail(s, early);
       if (opts.mode === 'suppressive') {
         if (playerCannotAct(s.character)) return fail(s, playerCannotAct(s.character)!);
-        if (!s.combat.combatants.some(t => t.status === 'active')) return fail(s, 'Não há inimigos para suprimir.');
+        if (!s.combat.combatants.some(t => t.status === 'active' && t.side !== 'ally')) return fail(s, 'Não há inimigos para suprimir.');
         const request = buildAttackRequest(s.character, weapon, undefined, opts, 'gm');
         return { state: s, ok: true, summary: `Fogo de supressão preparado com ${weapon.name}`, pendingRoll: request, data: { weaponId: weapon.id } };
       }
@@ -109,6 +111,8 @@ export const ACTION_TOOLS = [
         findCombatantLoose(s.combat.combatants, a.targetId, { includeDown: true }) ??
         findCombatantLoose(s.combat.combatants, a.targetName, { includeDown: true }) ??
         (npcForTarget ? s.combat.combatants.find(c => c.id === `foe_${npcForTarget.id.replace(/^npc_/, '')}` || c.name === npcForTarget.name) : undefined);
+      // Aliado não é alvo: trair a equipe passa por tirá-lo dela antes (a ficção decide; o motor registra).
+      if (target?.side === 'ally') return fail(s, `${target.name} é seu aliado. Para se voltar contra ele, ele precisa sair da equipe antes (dismiss_npc).`);
       if (target && target.status !== 'active') {
         const hint = target.status === 'down' || target.status === 'surrendered' ? ' Para acabar com ele, execute-o (golpe fatal).' : '';
         return fail(s, `${target.name} já está fora de combate (${COMBATANT_STATUS_LABEL[target.status]}).${hint}`);
@@ -116,6 +120,11 @@ export const ACTION_TOOLS = [
       if (!target) {
         const npc = findNpc(s, a.targetId ?? a.targetName);
         if (npc?.status === 'dead') return fail(s, `${npc.name} já está morto.`);
+        // Fora de combate o aliado ainda não é combatente: sem isto nasceria um foe_ ao lado do ally_
+        // e ele acabaria lutando contra si mesmo.
+        if (npc && s.party?.members.some(m => m.npcId === npc.id)) {
+          return fail(s, `${npc.name} está na sua equipe. Para se voltar contra ele, tire-o dela antes (dismiss_npc).`);
+        }
         const name = npc?.name ?? a.targetName;
         if (!name) return fail(s, 'Alvo não identificado.');
         const combatant = buildCombatant({ id: npc ? `foe_${npc.id.replace(/^npc_/, '')}` : undefined, name, distance: profile.melee ? 'melee' : '0-6m' }, s.combat.combatants);
@@ -130,6 +139,8 @@ export const ACTION_TOOLS = [
         target = combatant;
       }
 
+      // Emboscada é golpe de abertura: depois que a iniciativa rolou, ninguém mais é pego de surpresa.
+      if (opts.ambush && (s.combat.round > 1 || s.combat.playerInitiative !== null)) opts.ambush = false;
       const blocker = attackBlocker(s.character, weapon, target, opts, activeOs(s));
       if (blocker) return fail(s, blocker);
       const preview = previewAttackDv(weapon, target, opts.mode);
@@ -151,6 +162,9 @@ export const ACTION_TOOLS = [
     },
     run: (s0, a, ctx) => {
       const cause = a.cause ?? 'execução';
+      // Aliado não é alvo: para se voltar contra ele, é preciso tirá-lo da equipe primeiro.
+      const ally = s0.combat.combatants.find(t => t.side === 'ally' && (t.id === a.targetId || sameName(t.name, a.targetId)));
+      if (ally) return fail(s0, `${ally.name} está do seu lado — use dismiss_npc antes de atacá-lo.`);
       const byPlayer = ctx.origin === 'interpreter' || ctx.origin === 'player';
 
       if (a.targetId === 'player') {
@@ -266,6 +280,10 @@ export const ACTION_TOOLS = [
       const combatant = findCombatantLoose(s0.combat.combatants, a.targetId);
       const npc = findNpc(s0, a.targetId) ?? (combatant ? findNpc(s0, combatant.name) : undefined);
       if (!combatant && !npc) return fail(s0, `Ninguém chamado "${a.targetId}" para encarar.`);
+      // Encarada é duelo de nervos contra quem está do outro lado: com a equipe é conversa, não regra.
+      if (combatant?.side === 'ally' || (npc && s0.party?.members.some(m => m.npcId === npc.id))) {
+        return fail(s0, `${combatant?.name ?? npc!.name} está do seu lado — para encará-lo, tire-o da equipe antes (dismiss_npc).`);
+      }
       if ((npc?.status === 'dead') || (combatant && combatant.status !== 'active')) return fail(s0, 'O alvo não está em condições de encarar ninguém.');
       if (combatant?.facedown) return fail(s0, `Você já encarou ${combatant.name} neste combate.`);
       const r = facedown(s0, { combatant, npc }, ctx.rng);
@@ -322,6 +340,28 @@ export const ACTION_TOOLS = [
     },
   }),
   defineTool({
+    name: 'ask_ally',
+    kind: 'action',
+    origins: PLAYER,
+    description:
+      'O jogador PEDE algo a um membro da equipe (atacar um alvo, cobrir, segurar posição, recuar). O aliado decide (lealdade, confiança, risco, princípios): topa, faz do jeito dele ou recusa. risky = pedido perigoso para ele; againstPrinciples = vai contra o "nunca" do perfil dele.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome do aliado', required: true, max: 80 },
+      request: { type: 'string', desc: 'aggressive (partir pra cima), focus (atacar targetId), protect (cobrir o jogador), hold (segurar posição), retreat (recuar/sair da luta)', required: true, enum: ['aggressive', 'focus', 'protect', 'hold', 'retreat'] },
+      targetId: { type: 'string', desc: 'alvo (para focus)', max: 80 },
+      combatantId: { type: 'string', desc: 'o mesmo que targetId (aceito por engano comum)', max: 80 },
+      risky: { type: 'boolean', desc: 'o pedido é arriscado para ele' },
+      againstPrinciples: { type: 'boolean', desc: 'vai contra o que ele nunca faria' },
+    },
+    run: (s0, a, ctx) => {
+      const npc = findNpc(s0, a.npcId);
+      const ref = a.targetId ?? a.combatantId;
+      const target = ref ? findCombatantLoose(s0.combat.combatants, ref) : undefined;
+      const res = askAlly(s0, npc?.id ?? a.npcId, { stance: a.request as AllyStance, targetId: target?.id, risky: a.risky, againstPrinciples: a.againstPrinciples }, ctx.rng);
+      return 'error' in res ? fail(s0, res.error) : ok(res.state, res.summary, { outcome: res.outcome });
+    },
+  }),
+  defineTool({
     name: 'move_location',
     kind: 'action',
     origins: [...PLAYER, 'narrator'],
@@ -339,11 +379,17 @@ export const ACTION_TOOLS = [
         subDistrict: a.subDistrict ?? (a.district ? '' : s0.world.location.subDistrict),
         spot: a.spot,
       };
+      // Corpos pertencem à cena anterior. Ao sair, não ficam disponíveis no painel como se o jogador ainda estivesse lá.
+      const combatants = s0.combat.combatants.map(c => (c.side !== 'ally' && c.status !== 'active' && c.status !== 'fled' ? { ...c, lootUnavailable: true } : c));
       let s: GameState = {
         ...s0,
         world: { ...s0.world, location },
-        scene: { id: makeId('scene'), description: a.spot, presentNpcIds: [], threat: 'low', startedTurn: s0.turn },
+        combat: { ...s0.combat, combatants },
+        // A equipe (viva) vai junto.
+        scene: { id: makeId('scene'), description: a.spot, presentNpcIds: (s0.party?.members ?? []).map(m => m.npcId).filter(id => s0.npcs.some(n => n.id === id && n.status === 'alive')), threat: 'low', startedTurn: s0.turn },
       };
+      // Saiu do lugar: o ponto de acesso da Rede fica para trás (conectado = cai a conexão).
+      s = leaveAccessPoint(s, ctx.rng, 'Mudou de lugar');
       s = emit(s, 'PLAYER_MOVED', `${location.district} › ${location.subDistrict} › ${location.spot}`, { target: location.district, data: location });
       s = advanceTime(s, a.minutes ?? 15);
       return ok(s, `Deslocou-se para ${location.spot} (${location.district}).`);
@@ -491,6 +537,7 @@ export const ACTION_TOOLS = [
       const weapon = getPlayerWeapon(s0.character, a.weaponId);
       const res = reloadWeapon(s0.character, weapon.id);
       if ('error' in res) return fail(s0, res.error);
+      if (res.loadedRounds === 0) return ok({ ...s0, character: res.character }, `Destravou ${weapon.name}.`);
       const s = emit({ ...s0, character: res.character }, 'AMMO_RELOADED', `Recarregou ${weapon.name} (+${res.loadedRounds})`, { target: weapon.id, value: res.loadedRounds });
       return ok(s, `Recarregou ${weapon.name}: +${res.loadedRounds} cartuchos.`);
     },
@@ -507,10 +554,12 @@ export const ACTION_TOOLS = [
     run: (s0, a) => {
       const item = findItem(s0, a.itemId);
       if (!item || (!item.weapon && !item.armor)) return fail(s0, `"${a.itemId}" não é equipável.`);
+      // Pele blindada e afins são parte do corpo: não saem nem dão lugar a outra armadura no mesmo slot.
+      if (item.implant && item.armor) return fail(s0, `${item.name} é um implante: não se tira nem se põe.`);
       const equip = a.equipped ?? true;
       const inventory = s0.character.inventory.map(i => {
         if (i.id === item.id) return { ...i, equipped: equip };
-        if (equip && item.armor && i.armor?.slot === item.armor.slot) return { ...i, equipped: false };
+        if (equip && item.armor && i.armor?.slot === item.armor.slot && !i.implant) return { ...i, equipped: false };
         if (equip && item.weapon && i.weapon) return { ...i, equipped: false };
         return i;
       });
@@ -534,6 +583,7 @@ export const ACTION_TOOLS = [
         s = { ...s, character: healCharacter(s.character, natural + antibiotic) };
         const gained = s.character.hp.current - before;
         if (gained) s = emit(s, 'HEALED', `+${gained} PV (descanso)`, { value: gained });
+        s = healParty(s, natural);
       }
       return ok(s, `Descansou ${a.hours}h.`);
     },

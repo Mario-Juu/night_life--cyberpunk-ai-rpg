@@ -8,6 +8,7 @@ import {
   DEFAULT_MODEL_CHAIN,
   LlmError,
   classifyError,
+  coolDown,
   cooldownOf,
   msUntilPacificMidnight,
   resetLlmMemory,
@@ -134,18 +135,25 @@ describe('runChain', () => {
     expect(cooldownOf('k', 'gemini-3.8-flash')?.kind).toBe('timeout');
   });
 
+  it('provedor que IGNORA o sinal de aborto não segura a cadeia (API-4)', async () => {
+    process.env.GM_ATTEMPT_MS_NARRATE = '60';
+    const deaf: Transport = async call => {
+      if (call.model === 'gemini-3.8-flash') return new Promise(() => {}); // nunca resolve, nem com abort
+      return { text: '{"a":"ok"}', model: call.model, modelVersion: call.model, usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 } };
+    };
+    const r = await runChain('k', { ...req(), deadline: Date.now() + 20_000 }, deaf);
+    expect(r.model).toBe('gemini-3.7-flash');
+    expect(r.attempts[0].error).toMatch(/^timeout/);
+  });
+
   it('400 do schema no lite: repete simplificado e LEMBRA na próxima request', async () => {
     const big = { type: 'object', properties: { args: { type: 'object', properties: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`p${i}`, { type: 'string' }])) } } };
     const lite = FAST_MODEL_CHAIN[0];
-    const { transport, calls } = fakeTransport({ [lite]: invalidArg() });
-    // O fake recusa sempre no lite; o schema simplificado é aceito se o modelo já foi marcado:
-    const smart: Transport = call => (call.model === lite && call.schema === big ? transport(call) : ok(call));
-    await runChain('k', req('interpret', big), smart);
-    expect(calls).toHaveLength(1);
-    calls.length = 0;
-    const r = await runChain('k', req('interpret', big), c => (c.schema === big ? Promise.reject(invalidArg()) : ok(c)));
-    expect(r.model).toBe(lite);
-    expect(r.attempts).toHaveLength(1); // foi direto no simplificado
+    const r1 = await runChain('k', req('interpret', big), c => (c.schema === big ? Promise.reject(invalidArg()) : ok(c)));
+    expect(r1.model).toBe(lite);
+    expect(r1.attempts).toHaveLength(2); // completo recusado → simplificado
+    const r2 = await runChain('k', req('interpret', big), c => (c.schema === big ? Promise.reject(invalidArg()) : ok(c)));
+    expect(r2.attempts).toHaveLength(1); // foi direto no simplificado
   });
 
   it('chave recusada para tudo na hora (não queima a cadeia)', async () => {
@@ -240,5 +248,35 @@ describe('runChain', () => {
   it('reescrita de consistência só para contradições graves', () => {
     expect(isSevereWarning('A narração revelou o DV/dificuldade numérica — isso é segredo do Mestre.')).toBe(false);
     expect(isSevereWarning('O ataque ERROU Ganger; a narração diz que acertou.')).toBe(true);
+  });
+});
+
+describe('Modelos esfriando e trabalho de fundo', () => {
+  beforeEach(() => resetLlmMemory());
+
+  it('modelo pulado por estar esfriando aparece nas tentativas com o motivo (não some da lista)', async () => {
+    coolDown('k', DEFAULT_MODEL_CHAIN[1], 'quota_minute', 30_000);
+    const called: string[] = [];
+    const transport: Transport = async (call: TransportCall) => {
+      called.push(call.model);
+      if (call.model === DEFAULT_MODEL_CHAIN[0]) throw apiError(503, { error: { code: 503, status: 'UNAVAILABLE' } });
+      return { text: '{}', model: call.model, usage: {} };
+    };
+    const r = await runChain('k', { ...req(), allowLite: true }, transport);
+    expect(called).not.toContain(DEFAULT_MODEL_CHAIN[1]);
+    const skipped = r.attempts.find(a => a.skipped);
+    expect(skipped).toMatchObject({ model: DEFAULT_MODEL_CHAIN[1], ok: false, latencyMs: 0 });
+    expect(skipped?.error).toMatch(/^quota_minute pulado: esfriando por mais \d+s$/);
+    expect(r.model).toBe(DEFAULT_MODEL_CHAIN[2]);
+  });
+
+  it('perfil de NPC e costura do mundo usam a cadeia lite-primeiro (poupam os flash da narração)', async () => {
+    const called: string[] = [];
+    const transport: Transport = async (call: TransportCall) => {
+      called.push(call.model);
+      return { text: '{}', model: call.model, usage: {} };
+    };
+    for (const purpose of ['profile', 'worldgen'] as const) await runChain('k', { system: 's', prompt: 'p', schema: {}, mode: 'flash', purpose }, transport);
+    expect(called).toEqual([FAST_MODEL_CHAIN[0], FAST_MODEL_CHAIN[0]]);
   });
 });

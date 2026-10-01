@@ -6,7 +6,7 @@ import { humanityBand } from '@shared/rules/humanity';
 import { CYBERWARE, FOUNDATION_LABEL, GRADE_LABEL, INSTALL_LABEL, RIPPERDOC_TIER_LABEL, TIER_LABEL, averageLoss, maxHumanityPenalty, type CyberTier, type CyberwareDef } from '@shared/rules/cyberware';
 import { SKILLS } from '@shared/rules/skills';
 import { activeOs, cyberAccess, foundations, installedOs, osCooldownName, sceneRipperdoc } from '@shared/engine/cyberware';
-import { Badge, Button, Empty, Input, Meter, Select, cn } from '../../ui';
+import { Badge, Button, Empty, Input, Meter, Modal, Select, cn } from '../../ui';
 import { quickTool } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
 import { useTutorial } from '../tutorial/TutorialModal';
@@ -106,7 +106,7 @@ function Installed({ game, cw, depth = 0 }: { game: GameState; cw: CyberwareItem
   );
 }
 
-function Catalog({ game }: { game: GameState }) {
+function RipperdocCatalog({ game }: { game: GameState }) {
   const busy = useUiStore(s => s.gmBusy);
   const [cat, setCat] = useState<(typeof CATEGORIES)[number]>('Todos');
   const [q, setQ] = useState('');
@@ -128,9 +128,9 @@ function Catalog({ game }: { game: GameState }) {
   }, [cat, q, tier, onlyAvailable, game]);
 
   return (
-    <section className="space-y-2">
+    <section className="space-y-3">
       <p className="eyebrow">Ripperdoc · catálogo ({Object.keys(CYBERWARE).length})</p>
-      <div className={cn('border p-2 text-[11px]', doc ? 'border-neon-cyan/40 text-muted' : 'border-line text-dim')}>
+      <div className={cn('border p-3 text-[11px]', doc ? 'border-neon-cyan/40 bg-neon-cyan/5 text-muted' : 'border-line bg-surface-0/30 text-dim')}>
         {doc ? (
           <>
             <span className="text-fg">{doc.name}</span> · nível {doc.ripperdoc!.tier} ({RIPPERDOC_TIER_LABEL[doc.ripperdoc!.tier]}){doc.ripperdoc!.blackMarket ? ' · mercado negro' : ''}
@@ -139,7 +139,7 @@ function Catalog({ game }: { game: GameState }) {
           'Nenhum ripperdoc na cena: só bio-mods básicos (T1 de shopping). Vá até uma clínica para o resto.'
         )}
       </div>
-      <div className="flex flex-wrap gap-1">
+      <div className="flex flex-wrap gap-1 rounded border border-line-soft bg-surface-0/30 p-2">
         {([0, 1, 2, 3, 4, 5] as const).map(t => (
           <button key={t} type="button" onClick={() => setTier(t)} className={cn('border px-1.5 py-0.5 text-[10px]', tier === t ? 'border-neon-cyan text-neon-cyan' : 'border-line text-muted hover:text-fg')}>
             {t ? `T${t}` : 'Todo tier'}
@@ -161,13 +161,13 @@ function Catalog({ game }: { game: GameState }) {
           </button>
         ))}
       </div>
-      <ul className="space-y-1.5">
+      <ul className="grid gap-2 lg:grid-cols-2">
         {list.map(d => {
           const why = blocker(game, d);
           const access = cyberAccess(game, d);
           const price = access.ok ? access.price : d.price * (d.paired ? 2 : 1);
           return (
-            <li key={d.key} className="border border-line p-2 space-y-1">
+            <li key={d.key} className="border border-line bg-surface-0/20 p-3 space-y-2 transition-colors hover:border-neon-purple/50">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm text-fg">{d.name}</p>
@@ -218,12 +218,28 @@ function Catalog({ game }: { game: GameState }) {
   );
 }
 
+function RipperdocCatalogModal({ game, open, onClose }: { game: GameState; open: boolean; onClose: () => void }) {
+  const doc = sceneRipperdoc(game);
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="xl"
+      title="Catálogo do ripperdoc"
+      subtitle={doc ? `${doc.name} · nível ${doc.ripperdoc!.tier} · ${RIPPERDOC_TIER_LABEL[doc.ripperdoc!.tier]}` : 'Terminal remoto: implantes básicos ficam disponíveis sem uma clínica na cena.'}
+    >
+      <RipperdocCatalog game={game} />
+    </Modal>
+  );
+}
+
 export function CyberTab({ game }: { game: GameState }) {
   useTutorial('cyber', true);
   const c = game.character;
   const emp = Math.min(c.stats.EMP, effectiveEmp(c.humanity.current));
   const band = humanityBand(c);
-  const [shop, setShop] = useState(false);
+  const [ripperdocOpen, setRipperdocOpen] = useState(false);
+  const shop = ripperdocOpen;
   const roots = c.cyberware.filter(cw => !cw.parentId || !c.cyberware.some(p => p.id === cw.parentId));
   const loose = c.inventory.filter(i => i.cyberKey);
   const busy = useUiStore(s => s.gmBusy);
@@ -272,10 +288,10 @@ export function CyberTab({ game }: { game: GameState }) {
           })}
         </section>
       )}
-      <Button size="sm" variant={shop ? 'solid' : 'ghost'} tone="purple" block onClick={() => setShop(s => !s)} icon={<Cpu className="w-3.5 h-3.5" />}>
+      <Button size="sm" variant={shop ? 'solid' : 'ghost'} tone="purple" block onClick={() => setRipperdocOpen(s => !s)} icon={<Cpu className="w-3.5 h-3.5" />}>
         {shop ? 'Fechar catálogo' : 'Catálogo do ripperdoc'}
       </Button>
-      {shop && <Catalog game={game} />}
+      <RipperdocCatalogModal game={game} open={ripperdocOpen} onClose={() => setRipperdocOpen(false)} />
     </div>
   );
 }

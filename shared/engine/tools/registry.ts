@@ -37,6 +37,8 @@ export interface CombatantArg {
   ref?: number;
   distance?: string;
   cover?: string;
+  /** ally = luta do lado do jogador (gangue que ajuda, segurança contratada). */
+  side?: 'ally' | 'enemy';
 }
 
 type ArgOf<S> = S extends { type: 'string' } ? string : S extends { type: 'number' } ? number : S extends { type: 'boolean' } ? boolean : CombatantArg[];
@@ -117,6 +119,7 @@ const combatantZod = z.object({
   ref: stat(2, 10).optional(),
   distance: z.string().trim().max(10).optional(),
   cover: z.string().trim().max(10).optional(),
+  side: z.enum(['ally', 'enemy']).optional(),
 });
 
 function paramZod(spec: ParamSpec): z.ZodType {
@@ -246,14 +249,21 @@ export function runToolCalls(registry: ToolRegistry, state: GameState, calls: To
   let s = state;
   const records: ToolCallRecord[] = [];
   let pendingRoll: RollRequest | null = s.pendingRoll;
+  let spentAction = false;
   for (const call of calls.slice(0, maxCalls)) {
     const def = registry.get(call.tool);
     if (def?.kind === 'action' && pendingRoll && needsRoll(call.tool)) {
       records.push({ ...call, origin: ctx.origin, ok: false, summary: 'Já existe uma rolagem pendente neste turno.', error: 'rolagem pendente' });
       continue;
     }
+    // Em combate, a segunda Ação do mesmo turno é recusada (fica para o turno seguinte).
+    if (s.combat.active && spentAction && isTurnAction(call.tool)) {
+      records.push({ ...call, origin: ctx.origin, ok: false, summary: 'Você já agiu neste turno — é uma Ação por turno em combate.', error: 'ação já usada' });
+      continue;
+    }
     const res = executeTool(registry, s, call, ctx);
     s = res.state;
+    if (res.record.ok && isTurnAction(call.tool)) spentAction = true;
     records.push(res.record);
     if (res.pendingRoll && !pendingRoll) {
       pendingRoll = res.pendingRoll;
@@ -263,7 +273,14 @@ export function runToolCalls(registry: ToolRegistry, state: GameState, calls: To
   return { state: s, records, pendingRoll };
 }
 
-const ROLL_TOOLS = new Set(['attack', 'skill_check', 'persuade', 'intimidate', 'hack']);
+const ROLL_TOOLS = new Set(['attack', 'skill_check', 'persuade', 'intimidate', 'hack', 'quickhack']);
 export function needsRoll(tool: string): boolean {
   return ROLL_TOOLS.has(tool);
 }
+
+/**
+ * Ações que gastam a Ação do turno em combate: só UMA por turno. Sem isto, uma frase do jogador
+ * ("hackeio, atiro e agarro") rendia três ações contra uma única resposta dos inimigos.
+ */
+const TURN_ACTIONS = new Set(['quickhack', 'grapple', 'execute', 'reload']);
+export const isTurnAction = (tool: string) => ROLL_TOOLS.has(tool) || TURN_ACTIONS.has(tool);

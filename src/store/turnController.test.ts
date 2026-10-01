@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GmEnvelope, InterpretResponse, NarrateResponse, PhoneResponse } from '@shared/types/gm';
-import type { LlmRunMeta } from '@shared/types/turn';
+import type { LlmRunMeta, TurnRecord } from '@shared/types/turn';
+import type { GameState } from '@shared/types/game';
 import { buildCharacter, STAT_PRESETS } from '@shared/rules/creation';
 
 vi.mock('../services/audio', () => ({ sound: new Proxy({}, { get: () => () => undefined }) }));
@@ -54,7 +55,7 @@ vi.mock('../services/api', () => ({
   },
 }));
 
-const { startCampaign, sendAction, rollPending, sendPhoneMessage, regenerateNarration } = await import('./turnController');
+const { startCampaign, sendAction, rollPending, sendPhoneMessage, regenerateNarration, recoverInterruptedTurn, reload, consumeItem } = await import('./turnController');
 const { useGameStore } = await import('./gameStore');
 const { getRepository, setRepository, createMemoryRepository } = await import('../services/repository');
 
@@ -253,4 +254,81 @@ describe('Hospedagem cortou a resposta (502)', () => {
     expect(calls.filter(c => c.startsWith('narrate'))).toHaveLength(2);
     expect(useGameStore.getState().game!.chat.some(e => /cortou a resposta/.test(e.text))).toBe(true);
   }, 15_000);
+});
+
+describe('Página recarregada no meio do turno (UI-3)', () => {
+  it('narrando: fecha o turno, avisa e a narração pode ser pedida de novo', async () => {
+    await startCampaign(character());
+    interpretReply = { intent: { type: 'other', summary: 'olhar', confidence: 0.9 }, toolCalls: [] };
+    await sendAction('Olho em volta');
+    const game = useGameStore.getState().game!;
+    const done = (await getRepository().listTurns(game.id, game.session.branchId)).find(t => t.turn === game.turn && t.postEngineSnapshotId)!;
+    // O que sobra no localStorage quando a página recarrega no meio da narração.
+    useGameStore.getState().setActiveTurn({ ...done, phase: 'narrating', narration: null });
+    await recoverInterruptedTurn();
+    expect(useGameStore.getState().activeTurn).toBeNull();
+    expect(useGameStore.getState().game!.chat.at(-1)?.text).toMatch(/peça a narração de novo/);
+    calls.length = 0;
+    await regenerateNarration();
+    expect(calls).toEqual(['narrate:action']);
+  });
+
+  it('interpretando: fecha como falho e pede para reenviar; rolagem pendente fica como está', async () => {
+    await startCampaign(character());
+    const game = useGameStore.getState().game!;
+    const base = { turnId: 't', gameId: game.id, branchId: game.session.branchId, turn: game.turn, kind: 'action', startedAt: '', playerInput: 'x', parsedIntent: null, toolCalls: [], diceRolls: [] } as unknown as TurnRecord;
+    useGameStore.getState().setActiveTurn({ ...base, phase: 'awaiting_roll' });
+    await recoverInterruptedTurn();
+    expect(useGameStore.getState().activeTurn?.phase).toBe('awaiting_roll');
+    useGameStore.getState().setActiveTurn({ ...base, phase: 'interpreting' });
+    await recoverInterruptedTurn();
+    expect(useGameStore.getState().activeTurn).toBeNull();
+    expect(useGameStore.getState().game!.chat.at(-1)?.text).toMatch(/envie de novo/);
+  });
+});
+
+describe('Botões da aba Equipamento gastam a vez em combate', () => {
+  const inCombat = async () => {
+    await startCampaign(character());
+    const g = useGameStore.getState().game!;
+    const gun = g.character.inventory.find(i => i.weapon?.magSize)!;
+    const ammo = { id: 'item_ammo', name: 'Munição', category: 'ammo' as const, quantity: 30, description: '', equipped: false, value: 0, ammoKind: gun.weapon!.ammo ?? undefined };
+    const medkit = { id: 'item_kit', name: 'Kit', category: 'consumable' as const, quantity: 2, description: '', equipped: false, value: 0, heal: 6 };
+    const foe = { id: 'foe_a', name: 'Capanga', hp: { current: 20, max: 20 }, sp: { head: 0, body: 0 }, weapon: { name: 'Pistola', weaponClass: 'pistol_medium', damage: '2d6', quality: 'standard' }, attackBase: 10, evasionBase: 10, ref: 5, initiative: null, distance: '0-6m', cover: 'none', status: 'active' } as unknown as GameState['combat']['combatants'][number];
+    useGameStore.getState().setGame({
+      ...g,
+      character: {
+        ...g.character,
+        hp: { ...g.character.hp, current: 5 },
+        inventory: [...g.character.inventory.map(i => (i.id === gun.id ? { ...i, weapon: { ...i.weapon!, loaded: 0 } } : i)), ammo, medkit],
+      },
+      combat: { active: true, round: 1, playerInitiative: null, combatants: [foe], log: [] },
+    });
+    calls.length = 0;
+    return gun.id;
+  };
+
+  it('recarregar e usar item abrem um turno (inimigos agem, Mestre narra)', async () => {
+    const gunId = await inCombat();
+    const turn = useGameStore.getState().game!.turn;
+    reload(gunId);
+    await vi.waitFor(() => expect(calls).toEqual(['narrate:action']));
+    await vi.waitFor(() => expect(useGameStore.getState().activeTurn).toBeNull());
+    expect(useGameStore.getState().game!.turn).toBe(turn + 1);
+    consumeItem('item_kit');
+    await vi.waitFor(() => expect(useGameStore.getState().game!.turn).toBe(turn + 2));
+    await vi.waitFor(() => expect(useGameStore.getState().activeTurn).toBeNull());
+    expect(useGameStore.getState().game!.character.inventory.find(i => i.id === 'item_kit')?.quantity).toBe(1);
+  });
+
+  it('fora de combate continuam instantâneos (sem turno)', async () => {
+    const gunId = await inCombat();
+    const g = useGameStore.getState().game!;
+    useGameStore.getState().setGame({ ...g, combat: { ...g.combat, active: false, combatants: [] } });
+    const turn = useGameStore.getState().game!.turn;
+    reload(gunId);
+    consumeItem('item_kit');
+    expect(useGameStore.getState().game!.turn).toBe(turn);
+    expect(calls).toEqual([]);
+  });
 });

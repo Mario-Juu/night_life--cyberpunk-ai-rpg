@@ -15,6 +15,8 @@ import { normalizeInterpret, normalizeNarrate } from './gamemaster/normalize';
 import { buildInterpretPrompt, buildNarratePrompt } from './gamemaster/promptBuilder';
 import { INTERPRET_SCHEMA, NARRATE_SCHEMA } from './gamemaster/schemas';
 import { createApp } from './app';
+import { generateFronts } from '../shared/engine/fronts';
+import { scenario } from '../evals/harness';
 
 function context(): GameContext {
   const c = buildCharacter({
@@ -77,7 +79,7 @@ describe('prompts e schemas', () => {
     expect(prompt).toContain('pente 12/12');
     expect(prompt).toContain('SP cabeça 0 / corpo 7');
     expect(prompt).toContain('[foe_a] Capanga');
-    expect(prompt).toContain('SEGREDOS (o jogador NÃO sabe)');
+    expect(prompt).toContain('SÓ VOCÊ SABE');
   });
 
   it('narrador recebe o resultado do motor como verdade absoluta', () => {
@@ -226,5 +228,77 @@ describe('chave do próprio jogador', () => {
     app.close();
     expect(without.hasKey).toBe(false);
     expect(withKey.hasKey).toBe(true);
+  });
+
+  it('chave malformada no cabeçalho é recusada (não cai em silêncio na chave do servidor) — API-5', async () => {
+    const app = createApp({ gm: createGameMaster(fakeProvider([]).provider, () => {}), hasKey: () => true, defaultMode: () => 'flash' }).listen(0);
+    const port = (app.address() as { port: number }).port;
+    const bad = await fetch(`http://127.0.0.1:${port}/api/gm/status`, { headers: { 'x-gemini-key': 'curta demais' } });
+    app.close();
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/Chave Gemini inválida/);
+  });
+
+  it('método errado → 405 com Allow; OPTIONS → 204; turnos negativos no /summarize → 400 — API-8', async () => {
+    const app = createApp({ gm: createGameMaster(fakeProvider([]).provider, () => {}), hasKey: () => true, defaultMode: () => 'flash' }).listen(0);
+    const base = `http://127.0.0.1:${(app.address() as { port: number }).port}`;
+    const wrong = await fetch(`${base}/api/gm/narrate`);
+    const options = await fetch(`${base}/api/gm/narrate`, { method: 'OPTIONS' });
+    const missing = await fetch(`${base}/api/gm/nada`);
+    const summarize = await fetch(`${base}/api/gm/summarize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: 's', turnId: 't', fromTurn: -3, toTurn: 1.5, transcript: 'x' }),
+    });
+    app.close();
+    expect(wrong.status).toBe(405);
+    expect(wrong.headers.get('allow')).toMatch(/POST/);
+    expect(options.status).toBe(204);
+    expect(missing.status).toBe(404);
+    expect(summarize.status).toBe(400);
+  });
+
+  it('contexto sem roleData é recusado na validação (antes quebrava no prompt) — API-6', async () => {
+    const ctx = context() as unknown as { character: Record<string, unknown> };
+    delete ctx.character.roleData;
+    const app = createApp({ gm: createGameMaster(fakeProvider([]).provider, () => {}), hasKey: () => true, defaultMode: () => 'flash' }).listen(0);
+    const base = `http://127.0.0.1:${(app.address() as { port: number }).port}`;
+    const res = await fetch(`${base}/api/gm/interpret`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: ctx, text: 'atiro' }) });
+    app.close();
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('Filtro de conteúdo: nova tentativa com contexto reduzido', () => {
+  it('prompt completo bloqueado → repete com o contexto mínimo e narra (sem modo degradado)', async () => {
+    const prompts: string[] = [];
+    const provider: LlmProvider = {
+      name: 'fake',
+      async generate(req) {
+        prompts.push(req.prompt);
+        // Bloqueia enquanto houver a seção das tramas do mundo (o contexto completo).
+        if (req.prompt.includes('# NA CIDADE') && /\[front_/.test(req.prompt)) throw new LlmError('blocked PROHIBITED_CONTENT', [{ model: 'fake-1', ok: false, latencyMs: 1, error: 'blocked PROHIBITED_CONTENT' }], 'blocked');
+        return { text: JSON.stringify({ narration: 'A garoa cai.', dialogues: [], toolCalls: [], discoveries: [], suggestedActions: [], enemyActions: [] }), model: 'fake-1', usage: {}, attempts: [{ model: 'fake-1', ok: true, latencyMs: 1 }] };
+      },
+    };
+    const sc = scenario();
+    sc.state = generateFronts(sc.state, { seed: 'x' });
+    const env = await createGameMaster(provider, () => {}).narrate(sc.context('olho'), { kind: 'action', playerInput: 'olho', engineResult: null }, 'flash');
+    expect(env.meta.degraded).toBe(false);
+    expect(env.payload.narration).toBe('A garoa cai.');
+    expect(prompts).toHaveLength(2);
+    expect(env.meta.errors.some(e => /contexto reduzido/.test(e))).toBe(true);
+    expect(env.meta.attempts.map(a => a.ok)).toEqual([false, true]);
+  });
+
+  it('bloqueado mesmo enxuto → modo degradado dizendo que foi o filtro', async () => {
+    const provider: LlmProvider = {
+      name: 'fake',
+      async generate() {
+        throw new LlmError('blocked PROHIBITED_CONTENT', [{ model: 'fake-1', ok: false, latencyMs: 1, error: 'blocked' }], 'blocked');
+      },
+    };
+    const env = await createGameMaster(provider, () => {}).narrate(scenario().context('olho'), { kind: 'action', playerInput: 'olho', engineResult: null }, 'flash');
+    expect(env.meta).toMatchObject({ degraded: true, failureKind: 'blocked' });
   });
 });

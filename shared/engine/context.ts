@@ -9,6 +9,8 @@ import { getSkill } from '../rules/skills';
 import { retrieveMemories } from './memory';
 import { turnIdOf } from './events';
 import { computeThreat, pendingOffscreen } from './world';
+import { continuationOf } from './fronts';
+import { STANCE_LABEL } from './party';
 
 export const RECENT_HISTORY_ENTRIES = 14;
 export const MAX_CONTEXT_NPCS = 12;
@@ -36,7 +38,9 @@ export function relevantNpcs(state: GameState, query: string): Npc[] {
     const first = n.name.toLowerCase().replace(/["“”]/g, '').split(/\s+/)[0];
     const mentioned = q.includes(n.id) || (first.length > 2 && q.includes(first));
     if (n.status === 'dead') return mentioned ? 5 : -1;
-    return (state.scene.presentNpcIds.includes(n.id) ? 10 : 0) + (mentioned ? 8 : 0) + (activeGivers.has(n.id) ? 4 : 0) + (recentThreads.has(n.id) ? 2 : 0) + (n.isContact ? 1 : 0);
+    // Rosto/vítima de trama que o jogador ainda não conheceu: só entra se for citado.
+    if (n.offstage) return mentioned ? 8 : -1;
+    return (state.party?.members.some(m => m.npcId === n.id) ? 9 : 0) + (state.scene.presentNpcIds.includes(n.id) ? 10 : 0) + (mentioned ? 8 : 0) + (activeGivers.has(n.id) ? 4 : 0) + (recentThreads.has(n.id) ? 2 : 0) + (n.isContact ? 1 : 0);
   };
   return state.npcs
     .map(n => ({ n, s: score(n) }))
@@ -54,6 +58,21 @@ export function recentHistory(state: GameState, max = RECENT_HISTORY_ENTRIES) {
     .map(e => ({ turn: e.turn, kind: e.kind, text: summarizeChatEntry(e) }));
 }
 
+/** Limite de combatentes que o servidor aceita no contexto (server/validation.ts). */
+export const MAX_CONTEXT_COMBATANTS = 16;
+
+/**
+ * Combate enxuto para o Mestre: todo mundo de pé primeiro; corpos/fugidos só preenchem o que sobrar
+ * (os mais recentes). Sem isso, uma luta grande + corpos antigos estoura o limite do servidor e o
+ * jogo trava em "Requisição inválida" até o próximo combate.
+ */
+export function combatForContext(combat: GameState['combat']): GameState['combat'] {
+  if (combat.combatants.length <= MAX_CONTEXT_COMBATANTS) return combat;
+  const standing = combat.combatants.filter(c => c.status === 'active');
+  const rest = combat.combatants.filter(c => c.status !== 'active').slice(-Math.max(0, MAX_CONTEXT_COMBATANTS - standing.length));
+  return { ...combat, combatants: [...standing.slice(0, MAX_CONTEXT_COMBATANTS), ...rest] };
+}
+
 export function buildGameContext(state: GameState, query = ''): GameContext {
   const memories = retrieveMemories(state, query || state.world.situation, 8);
   return {
@@ -69,7 +88,7 @@ export function buildGameContext(state: GameState, query = ''): GameContext {
     factions: state.factions,
     flags: Object.values(state.flags),
     activeEffects: state.activeEffects,
-    combat: state.combat,
+    combat: combatForContext(state.combat),
     net: state.net,
     sandbox: state.sandbox,
     memories,
@@ -81,5 +100,28 @@ export function buildGameContext(state: GameState, query = ''): GameContext {
     playerKnowledge: state.discoveries.slice(-10).map(d => `${d.title}: ${d.description}`),
     upcoming: state.scheduled.filter(e => e.status === 'scheduled').slice(0, 8).map(e => ({ id: e.id, at: e.at, description: e.description })),
     offscreen: pendingOffscreen(state),
+    fronts: [...(state.fronts ?? []).filter(f => f.status === 'active'), ...(state.fronts ?? []).filter(f => f.status !== 'active').slice(-2)].map(f => ({
+      id: f.id,
+      title: f.title,
+      premise: f.premise,
+      who: f.who,
+      place: f.place,
+      motive: f.motive,
+      victim: f.victim,
+      twist: f.twist,
+      status: f.status,
+      playerAware: f.playerAware,
+      stage: f.stage,
+      total: f.stages.length,
+      done: f.stages.slice(0, f.stage).map(st => st.title),
+      next: f.status === 'active' && f.stages[f.stage] ? { title: f.stages[f.stage].title, at: f.nextAt, blockHint: f.stages[f.stage].blockHint } : undefined,
+      seedNpc: state.npcs.find(n => n.id === f.seedNpcId)?.name,
+      continues: continuationOf(state, f),
+    })),
+    news: (state.news ?? []).slice(-6).map(n => ({ source: n.source, headline: n.headline, at: n.at })),
+    party: (state.party?.members ?? []).map(m => {
+      const n = state.npcs.find(x => x.id === m.npcId);
+      return { npcId: m.npcId, name: n?.name ?? m.npcId, share: m.share, loyalty: m.loyalty, stance: STANCE_LABEL[m.stance], hp: n?.combat ? `${n.combat.hp.current}/${n.combat.hp.max}` : '?', present: state.scene.presentNpcIds.includes(m.npcId) };
+    }),
   };
 }

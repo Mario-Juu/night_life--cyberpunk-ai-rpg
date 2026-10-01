@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowDown } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
 import { Button, Spinner } from '../../ui';
-import { regenerateNarration, requestOpening } from '../../store/turnController';
+import { canRegenerate, regenerateNarration, requestOpening } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
 import { ChatEntryView } from './ChatEntryView';
 
@@ -15,6 +15,7 @@ export function NarrativeFeed({ game }: { game: GameState }) {
   const busy = useUiStore(s => s.gmBusy);
   const busyLabel = useUiStore(s => s.gmBusyLabel);
   const phoneTyping = useUiStore(s => s.phoneTyping);
+  const [regenerationAvailable, setRegenerationAvailable] = useState(false);
   // Rolagem do turno atual fica sem desfecho até a narração chegar.
   const concealing = useUiStore(s => s.concealedGame !== null);
 
@@ -22,9 +23,10 @@ export function NarrativeFeed({ game }: { game: GameState }) {
   // Entradas que já existiam ao abrir o jogo não são animadas de novo.
   const initialIds = useRef<Set<string> | null>(null);
   if (!initialIds.current) initialIds.current = new Set(game.chat.map(e => e.id));
-  // Só a última narração do turno atual (turno fechado, sem rolagem pendente) pode ser regenerada.
-  const lastNarration = [...game.chat].reverse().find(e => e.kind === 'narration');
-  const regenerableId = !busy && !game.pendingRoll && lastNarration?.turn === game.turn ? lastNarration.id : null;
+  // Última narração do turno atual (turno fechado, sem rolagem pendente) — ou, se o Mestre falhou de
+  // vez, o próprio aviso de falha: o motor já resolveu o turno, então dá para pedir a narração de novo.
+  const lastOfTurn = [...game.chat].reverse().find(e => e.turn === game.turn && (e.kind === 'narration' || e.kind === 'system'));
+  const regenerableId = regenerationAvailable && lastOfTurn ? lastOfTurn.id : null;
   const hidden = game.chat.length - entries.length;
 
   const scrollToBottom = (smooth = true) => {
@@ -38,6 +40,22 @@ export function NarrativeFeed({ game }: { game: GameState }) {
   }, [game.chat.length, busy, game.pendingRoll?.id]);
 
   useEffect(() => scrollToBottom(false), []);
+
+  // A entrada no chat não basta: um prólogo de Sandbox, por exemplo, é uma narração sem
+  // snapshot pós-motor. Só oferecemos regenerar quando o repositório ainda tem esse snapshot.
+  useEffect(() => {
+    let current = true;
+    setRegenerationAvailable(false);
+    if (busy || game.pendingRoll || !lastOfTurn) return () => {
+      current = false;
+    };
+    void canRegenerate().catch(() => false).then(available => {
+      if (current) setRegenerationAvailable(available);
+    });
+    return () => {
+      current = false;
+    };
+  }, [busy, game.id, game.session.branchId, game.turn, game.pendingRoll?.id, lastOfTurn?.id]);
 
   return (
     <div className="relative flex-1 min-h-0">

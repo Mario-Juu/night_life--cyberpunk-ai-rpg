@@ -199,6 +199,7 @@ export function buildCombatant(spec: CombatantArg, existing: Combatant[]): Comba
     brawlingBase: base.skills.brawling ?? (base.stats.DEX ?? 5) + 2,
     cool: base.stats.COOL,
     will: base.stats.WILL,
+    ...(spec.side === 'ally' ? { side: 'ally' as const, stance: 'aggressive' as const } : {}),
   };
 }
 

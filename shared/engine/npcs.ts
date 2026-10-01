@@ -2,11 +2,12 @@
  * Registro automático de personagens: quem fala na cena passa a existir no mundo,
  * mesmo que o narrador esqueça de chamar `upsert_npc`. Sem duplicatas.
  */
-import type { Dialogue, GameState, Npc } from '../types/game';
+import type { Dialogue, GameState, Npc, NpcProfile } from '../types/game';
 import { formatGameTime } from '../rules/world';
 import { parseNarration } from './narration';
 import { emit } from './events';
 import { slugId } from './ids';
+import { syncImportance } from './npcProfile';
 
 export function normalizeName(name: string): string {
   return name
@@ -94,19 +95,21 @@ export function ensureNpc(state: GameState, name: string, extra: Partial<Npc> = 
  * Registra quem falou na cena e marca como presente.
  * Mortos não "voltam" (a fala é ignorada — o verificador de consistência cuida disso).
  */
-export function registerSpeakers(state: GameState, speakers: string[]): { state: GameState; created: string[] } {
+export function registerSpeakers(state: GameState, speakers: string[]): { state: GameState; created: string[]; ids: string[] } {
   let s = state;
   const created: string[] = [];
+  const ids: string[] = [];
   const present = new Set(s.scene.presentNpcIds);
   for (const name of speakers) {
     if (isGenericSpeaker(name, s)) continue;
     const res = ensureNpc(s, name);
     s = res.state;
     if (res.created) created.push(res.npc.id);
+    ids.push(res.npc.id);
     if (res.npc.status !== 'dead') present.add(res.npc.id);
   }
   const presentNpcIds = [...present].filter(id => s.npcs.some(n => n.id === id && n.status !== 'dead'));
-  return { state: { ...s, scene: { ...s.scene, presentNpcIds } }, created };
+  return { state: { ...s, scene: { ...s.scene, presentNpcIds } }, created, ids };
 }
 
 /**
@@ -126,7 +129,21 @@ export function backfillNpcsFromChat(state: GameState): GameState {
       s = applyContactExchange(s, entry.text).state;
     }
   }
-  return s;
+  return syncImportance(backfillInteractions(s));
+}
+
+/** Saves anteriores à contagem: interações = turnos distintos em que o NPC falou no histórico. */
+function backfillInteractions(state: GameState): GameState {
+  const turns = new Map<string, Set<number>>();
+  for (const entry of state.chat) {
+    if (entry.kind !== 'narration') continue;
+    for (const name of speakersOf(entry.text)) {
+      const npc = isGenericSpeaker(name, state) ? undefined : findNpcLoose(state, name);
+      if (npc) turns.set(npc.id, (turns.get(npc.id) ?? new Set()).add(entry.turn));
+    }
+  }
+  if (!state.npcs.some(n => (turns.get(n.id)?.size ?? 0) > (n.interactions ?? 0))) return state;
+  return { ...state, npcs: state.npcs.map(n => ((turns.get(n.id)?.size ?? 0) > (n.interactions ?? 0) ? { ...n, interactions: turns.get(n.id)!.size } : n)) };
 }
 
 const HUMAN_TIE = /\b(mae|pai|irma\w*|filh\w*|avo|tia|tio|namorad\w*|espos\w*|marid\w*|amig\w*|prim[oa]s?|companheir\w*|parceir\w*|vizinh\w*|mentor\w*)\b/;
@@ -146,10 +163,24 @@ export const canUsePhone = (npc: Pick<Npc, 'kind' | 'status'>) => npc.kind !== '
  * - o laço inicial que é um bicho deixa de ser contato do Agent;
  * - a dívida/pressão é do JOGADOR, não do laço (antes ficava como "pendente" dele).
  */
+/** Personalidade padrão do Rafa (campanha nova e saves antigos). */
+export const RAFA_PROFILE: NpcProfile = {
+  traits: ['cético', 'pragmático', 'paranoico com corpos'],
+  voice: 'frases curtas, gíria de rua, chama todo mundo de choom, nunca fala nome de cliente por mensagem',
+  motivation: 'juntar eddies para sair do térreo e virar canal de verdade',
+  fear: 'virar alvo da Militech por causa de uma carga quente',
+  lines: 'nunca entrega um runner para a polícia',
+};
+
 export function repairNpcs(state: GameState): GameState {
   const debt = state.character.bio.debtReason?.trim();
   let changed = false;
   const npcs = state.npcs.map(n => {
+    // Rafa de saves antigos ganha a personalidade padrão (RAFA_ID; sem importar initialState: evita ciclo).
+    if (n.id === 'npc_rafa' && !n.profile) {
+      changed = true;
+      return { ...n, profile: { ...RAFA_PROFILE, traits: [...RAFA_PROFILE.traits] } };
+    }
     if (n.id !== 'npc_family') return n; // FAMILY_ID (sem importar initialState: evita ciclo)
     let next = n;
     if (n.kind === undefined && looksLikeAnimal(`${n.name} ${n.description}`)) next = { ...next, kind: 'animal', isContact: false, role: 'Bicho de estimação' };

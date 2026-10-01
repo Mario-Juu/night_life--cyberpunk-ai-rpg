@@ -1,10 +1,12 @@
 import type { GameState, Modifier, RollOutcome, RollRequest } from '../types/game';
-import { cryptoRng, type Rng } from './dice';
+import { cryptoRng, recordingRng, rollD10, type Rng } from './dice';
 import { resolveCheck, statValue } from './checks';
-import { applyPlayerAttack, getPlayerWeapon, resolvePlayerAttack, rollInitiative } from './combat';
+import { applyPlayerAttack, getPlayerWeapon, isActiveEnemy, resolvePlayerAttack, rollInitiative } from './combat';
 import { WEAPONS } from '../rules/weapons';
 import { activeOs } from './cyberBonus';
 import { effectPenalties, resolveDeathSave } from './health';
+import { useQuickhack } from './quickhacks';
+import type { QuickhackKey } from '../rules/quickhacks';
 
 /** Modificadores do pedido + efeitos ativos (penalidades de ferimento vêm do próprio resolveCheck). */
 export function requestModifiers(state: GameState, request: RollRequest): Modifier[] {
@@ -37,8 +39,10 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
       if (!canRof2(state, request) || !first.attack || first.attack.failure || first.attack.jammedNow) return first;
       // Cadência 2: o segundo golpe/tiro já vê o estado depois do primeiro.
       const applied = applyPlayerAttack(state, first.attack);
-      const after: GameState = { ...state, character: applied.character, combat: applied.combat };
-      const alive = after.combat.combatants.find(t => t.id === request.targetId && t.status === 'active') ?? after.combat.combatants.find(t => t.status === 'active');
+      // Ponto Fraco é UMA vez por rodada: o 2º golpe já tem de ver o bônus como gasto.
+      const roleUsage = { ...applied.combat.roleUsage, ...(first.attack.spotWeakness ? { spotWeaknessRound: state.combat.round } : {}) };
+      const after: GameState = { ...state, character: applied.character, combat: { ...applied.combat, roleUsage } };
+      const alive = after.combat.combatants.find(t => t.id === request.targetId && t.status === 'active') ?? after.combat.combatants.find(isActiveEnemy);
       if (!alive) return first;
       const followUp = resolvePlayerAttack(after, { ...request, targetId: alive.id, ambush: false }, 0, rng);
       return { ...first, followUp };
@@ -88,6 +92,24 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
       };
     }
 
+    case 'quickhack': {
+      // Teste de Interface (rank + 1d10 + Sorte) contra a defesa; o efeito usa dados próprios, gravados
+      // em effectRolls para o reducer aplicar exatamente o mesmo resultado.
+      const d10 = rollD10(rng);
+      const key = request.quickhack as QuickhackKey;
+      const target = { combatantId: request.targetId, npcId: request.targetNpcId };
+      const { rng: effectRng, log } = recordingRng(rng);
+      const res = useQuickhack(state, key, target, effectRng, { d10, luck: luckSpent });
+      const rank = state.character.roleRank;
+      const total = rank + d10.total + luckSpent;
+      const success = res.ok && res.data?.success === true;
+      return {
+        request,
+        check: { stat: 'INT', statValue: rank, skillId: null, skillValue: 0, d10, modifiers: [], luckSpent, total, dv: request.dv, success, margin: total - request.dv },
+        quickhack: { key, ok: res.ok, summary: res.summary, effectRolls: log.map(l => l.face) },
+      };
+    }
+
     case 'check':
     default: {
       const modifiers = requestModifiers(state, request);
@@ -99,5 +121,5 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
 
 /** Sorte só pode ser gasta em testes e ataques. */
 export function canSpendLuck(request: RollRequest | null): boolean {
-  return request?.kind === 'check' || request?.kind === 'attack';
+  return request?.kind === 'check' || request?.kind === 'attack' || request?.kind === 'quickhack';
 }

@@ -53,7 +53,7 @@ interface UiStore {
   liteNarration: 'ask' | 'allow';
   /** Pergunta pendente ao jogador (Flash indisponível: esperar ou seguir com o Lite?). */
   liteChoice: LiteChoiceRequest | null;
-  /** Nome da reserva da narração informado pelo servidor ("Mistral Medium" ou "Flash-Lite"). */
+  /** Nome da reserva da narração informado pelo servidor (hoje, "Flash-Lite"). */
   backupLabel: string;
   /** Tutoriais de primeira vez (um por sistema). */
   tutorialsOn: boolean;

@@ -13,6 +13,7 @@
  */
 import { createHash } from 'crypto';
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
+import { createCacheManager } from './explicitCache';
 import type { ModelMode } from '../../shared/types/gm';
 import type { FailureKind, LlmAttempt, LlmPurpose } from '../../shared/types/turn';
 import { requestKey } from './requestKey';
@@ -35,7 +36,7 @@ export interface GenerateRequest {
    * quando todos os flash falharem.
    */
   allowLite?: boolean;
-  /** Só os modelos flash-lite (último recurso da narração, depois do Flash e do Mistral). */
+  /** Só os modelos flash-lite (último recurso da narração, depois do Flash). */
   liteOnly?: boolean;
 }
 
@@ -43,7 +44,7 @@ export interface GenerateResult {
   text: string;
   model: string;
   modelVersion?: string;
-  usage: { inputTokens?: number; outputTokens?: number; cachedTokens?: number };
+  usage: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; thoughtsTokens?: number };
   attempts: LlmAttempt[];
 }
 
@@ -73,10 +74,21 @@ const PLACEHOLDER_KEYS = new Set(['', 'MY_GEMINI_API_KEY']);
  * Fica ABAIXO do tempo que o navegador espera (src/services/api.ts), para o servidor sempre
  * responder — com a narração ou com o fallback — antes de o cliente desistir.
  */
-export const gmBudgetMs = () => Number(process.env.GM_BUDGET_MS) || 110_000;
+/** Lê um tempo do ambiente; valor inválido (negativo, zero, NaN, Infinity) cai no padrão. */
+export function envMs(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+export const gmBudgetMs = () => envMs('GM_BUDGET_MS', 110_000);
 const MIN_ATTEMPT_MS = 4_000;
 
 const FAST_PURPOSES: ReadonlySet<LlmPurpose> = new Set(['interpret', 'summarize']);
+/**
+ * Trabalho de fundo (perfil de NPC, costura do mundo): lite primeiro, para não gastar a cota por minuto
+ * dos flash e deixá-los esfriando bem na hora da próxima narração. Tempo de tentativa de narração (escrevem mais).
+ */
+const BACKGROUND_PURPOSES: ReadonlySet<LlmPurpose> = new Set(['profile', 'worldgen']);
 /** Prosa: o lite só entra com a permissão do jogador. */
 const NARRATIVE_PURPOSES: ReadonlySet<LlmPurpose> = new Set(['narrate', 'prologue']);
 export const isLiteModel = (m: string) => /lite/i.test(m);
@@ -84,9 +96,9 @@ const TRANSIENT: ReadonlySet<FailureKind> = new Set(['overloaded', 'timeout', 'q
 
 /** Tempo máximo de UMA tentativa: classificação é rápida; narração escreve mais. */
 export function attemptTimeoutMs(purpose: LlmPurpose = 'narrate'): number {
-  if (process.env.GM_TIMEOUT_MS) return Number(process.env.GM_TIMEOUT_MS);
+  if (process.env.GM_TIMEOUT_MS) return envMs('GM_TIMEOUT_MS', 30_000);
   // Narração normal leva 5–20 s; 30 s por tentativa ainda cabe no limite de 60 s da Netlify.
-  return FAST_PURPOSES.has(purpose) ? Number(process.env.GM_ATTEMPT_MS_FAST) || 20_000 : Number(process.env.GM_ATTEMPT_MS_NARRATE) || 30_000;
+  return FAST_PURPOSES.has(purpose) ? envMs('GM_ATTEMPT_MS_FAST', 20_000) : envMs('GM_ATTEMPT_MS_NARRATE', 30_000);
 }
 
 export function getApiKey(): string | null {
@@ -119,7 +131,7 @@ const envList = (v: string | undefined) =>
 const noPro = (chain: string[]) => [...new Set(chain.filter(m => !/\bpro\b|-pro/i.test(m)))];
 
 export function modelChain(purpose: LlmPurpose | ModelMode = 'narrate'): string[] {
-  if (FAST_PURPOSES.has(purpose as LlmPurpose)) {
+  if (FAST_PURPOSES.has(purpose as LlmPurpose) || BACKGROUND_PURPOSES.has(purpose as LlmPurpose)) {
     const custom = envList(process.env.GM_MODELS_FAST);
     return noPro(custom.length ? custom : FAST_MODEL_CHAIN);
   }
@@ -151,6 +163,7 @@ export interface ErrorInfo {
 export function classifyError(err: unknown): ErrorInfo {
   const e = err as { name?: string; message?: string };
   const message = `${e?.message ?? err ?? ''}`;
+  if ((err as { blocked?: string })?.blocked) return { kind: 'blocked' };
   if (e?.name === 'AbortError' || e?.name === 'TimeoutError' || /aborted|timed? ?out/i.test(message)) return { kind: 'timeout' };
   const status = statusOf(err);
   if (/api key not valid|api_key_invalid|permission denied|unauthenticated/i.test(message) || status === 401 || status === 403) return { kind: 'auth', status };
@@ -174,7 +187,7 @@ export function isRetryable(err: unknown): boolean {
 }
 
 /** A causa que o jogador precisa saber, entre várias tentativas que falharam. */
-const KIND_PRIORITY: FailureKind[] = ['auth', 'quota_day', 'quota_minute', 'overloaded', 'timeout', 'model_unavailable', 'bad_request', 'invalid_json', 'network', 'other'];
+const KIND_PRIORITY: FailureKind[] = ['auth', 'blocked', 'quota_day', 'quota_minute', 'overloaded', 'timeout', 'model_unavailable', 'bad_request', 'invalid_json', 'network', 'other'];
 export function mainFailure(kinds: FailureKind[]): FailureKind {
   return KIND_PRIORITY.find(k => kinds.includes(k)) ?? 'other';
 }
@@ -293,6 +306,25 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, Math.max(0, ms)));
  * Percorre a cadeia de modelos com disjuntor, timeouts por tentativa e memórias de schema/thinking.
  * `transport` faz a chamada de verdade (Gemini em produção, fakes nos testes).
  */
+/** A promessa, ou a rejeição por tempo assim que o sinal abortar (o que vier primeiro). */
+function untilAborted<T>(signal: AbortSignal, work: Promise<T>): Promise<T> {
+  if (signal.aborted) return Promise.reject(Object.assign(new Error('timeout da tentativa'), { name: 'TimeoutError' }));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(Object.assign(new Error('timeout da tentativa'), { name: 'TimeoutError' }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(
+      v => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      e => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
 export async function runChain(apiKey: string, req: GenerateRequest, transport: Transport): Promise<GenerateResult> {
   const attempts: LlmAttempt[] = [];
   const kinds: FailureKind[] = [];
@@ -318,6 +350,11 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
   // esquentam primeiro (menos a cota diária, que não volta hoje).
   const now = Date.now();
   let chain = ordered.filter(m => !cooldownOf(apiKey, m, now));
+  // Pulados ficam registrados (com o motivo e quanto falta) — senão a cadeia parece "cair direto pro lite".
+  for (const m of ordered) {
+    const c = cooldownOf(apiKey, m, now);
+    if (c && chain.length) attempts.push({ model: m, ok: false, latencyMs: 0, skipped: true, error: `${c.kind} pulado: esfriando por mais ${Math.ceil((c.until - now) / 1000)}s` });
+  }
   if (!chain.length) {
     const cold = ordered.map(m => ({ m, c: cooldownOf(apiKey, m, now)! })).filter(x => x.c.kind !== 'quota_day');
     chain = cold.sort((a, b) => a.c.until - b.c.until).map(x => x.m);
@@ -353,7 +390,8 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
         const useSimple = needsSimpleSchema.has(model);
         const useThinking = fast && !noThinkingLevel.has(model);
         try {
-          const res = await transport({
+          // Promise.race com o sinal: um provedor que ignora o abort não segura a cadeia além do orçamento.
+          const res = await untilAborted(controller.signal, transport({
             model,
             system: req.system,
             prompt: req.prompt,
@@ -361,7 +399,7 @@ export async function runChain(apiKey: string, req: GenerateRequest, transport: 
             temperature: req.temperature,
             thinkingLevel: useThinking ? 'LOW' : undefined,
             signal: controller.signal,
-          });
+          }));
           attempts.push({ model, ok: true, latencyMs: Date.now() - started });
           return { ...res, attempts };
         } catch (err) {
@@ -445,26 +483,81 @@ function getClient(apiKey: string): GoogleGenAI {
   return client;
 }
 
-function geminiTransport(ai: GoogleGenAI): Transport {
-  return async call => {
-    const response = await ai.models.generateContent({
-      model: call.model,
-      contents: call.prompt,
-      config: {
-        systemInstruction: call.system,
-        responseMimeType: 'application/json',
-        responseJsonSchema: call.schema,
-        ...(call.temperature !== undefined ? { temperature: call.temperature } : {}),
-        ...(call.thinkingLevel ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
-        abortSignal: call.signal,
+/** O mínimo do SDK que o transporte usa (o GoogleGenAI real ou um falso nos testes). */
+export interface GeminiLike {
+  models: { generateContent(params: { model: string; contents: string; config: Record<string, unknown> }): Promise<{ text?: string; modelVersion?: string; usageMetadata?: Record<string, number | undefined>; promptFeedback?: { blockReason?: string } }> };
+  caches: { create(params: { model: string; config: Record<string, unknown> }): Promise<{ name?: string; expireTime?: string }> };
+}
+
+/** Cache explícito das instruções fixas (um por processo; só age com chave paga). */
+const caches = new Map<GeminiLike, ReturnType<typeof createCacheManager>>();
+function cacheFor(ai: GeminiLike) {
+  let m = caches.get(ai);
+  if (!m) {
+    m = createCacheManager({
+      async create(model, system, ttlSec) {
+        const c = await ai.caches.create({ model, config: { systemInstruction: system, ttl: `${ttlSec}s`, displayName: 'nightlife-system' } });
+        if (!c.name) throw new Error('cache sem nome');
+        return { name: c.name, expiresAt: c.expireTime ? new Date(c.expireTime).getTime() : Date.now() + ttlSec * 1000 };
       },
     });
+    caches.set(ai, m);
+  }
+  return m;
+}
+/** Modelos que aceitam o cache mas não o schema junto: vão com cache e só responseMimeType JSON. */
+const noSchemaWithCache = new Set<string>();
+
+export function geminiTransport(ai: GeminiLike, apiKey: string): Transport {
+  const cache = cacheFor(ai);
+  return async call => {
+    const send = (cached: string | null, withSchema: boolean) =>
+      ai.models.generateContent({
+        model: call.model,
+        contents: call.prompt,
+        config: {
+          // Com cache, as instruções já estão nele (o Google recusa mandar de novo).
+          ...(cached ? { cachedContent: cached } : { systemInstruction: call.system }),
+          responseMimeType: 'application/json',
+          ...(withSchema ? { responseJsonSchema: call.schema } : {}),
+          ...(call.temperature !== undefined ? { temperature: call.temperature } : {}),
+          ...(call.thinkingLevel ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+          abortSignal: call.signal,
+        },
+      });
+    const cached = await cache.get(apiKey, call.model, call.system);
+    let response;
+    if (!cached) response = await send(null, true);
+    else {
+      try {
+        response = await send(cached, !noSchemaWithCache.has(call.model));
+      } catch (err) {
+        if (statusOf(err) !== 400 && statusOf(err) !== 404 && statusOf(err) !== 403) throw err;
+        if (!noSchemaWithCache.has(call.model) && statusOf(err) === 400) {
+          // Talvez seja o schema junto do cache: tenta só com o cache (o parser e o motor validam o JSON).
+          try {
+            response = await send(cached, false);
+            noSchemaWithCache.add(call.model);
+          } catch (err2) {
+            if (statusOf(err2) !== 400 && statusOf(err2) !== 404 && statusOf(err2) !== 403) throw err2;
+          }
+        }
+        if (!response) {
+          // Cache recusado (vencido, apagado, sem suporte): esquece neste modelo e segue sem ele.
+          cache.drop(apiKey, call.model, call.system, true);
+          response = await send(null, true);
+        }
+      }
+    }
+    // O filtro de conteúdo do Google recusou o prompt: resposta vazia. Erro claro (não "JSON inválido").
+    const blocked = response.promptFeedback?.blockReason;
+    if (blocked) throw Object.assign(new Error(`blocked ${blocked}: o filtro de conteúdo do Google recusou o prompt`), { blocked });
     const u = response.usageMetadata;
     return {
       text: response.text ?? '',
       model: call.model,
       modelVersion: response.modelVersion,
-      usage: { inputTokens: u?.promptTokenCount, outputTokens: u?.candidatesTokenCount, cachedTokens: u?.cachedContentTokenCount },
+      usage: { inputTokens: u?.promptTokenCount, outputTokens: u?.candidatesTokenCount, cachedTokens: u?.cachedContentTokenCount, thoughtsTokens: u?.thoughtsTokenCount },
     };
   };
 }
@@ -477,6 +570,6 @@ export const geminiProvider: LlmProvider = {
       const msg = 'Nenhuma chave Gemini: configure a sua nas Configurações do jogo (ou no .env do servidor).';
       throw new LlmError(msg, [{ model: '-', ok: false, latencyMs: 0, error: msg }], 'auth');
     }
-    return runChain(apiKey, req, geminiTransport(getClient(apiKey)));
+    return runChain(apiKey, req, geminiTransport(getClient(apiKey) as unknown as GeminiLike, apiKey));
   },
 };

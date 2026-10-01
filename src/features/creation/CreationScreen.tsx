@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Minus, Plus, Zap } from 'lucide-react';
 import type { RoleId, StatKey, Stats } from '@shared/types/game';
 import {
+  MIN_AGE,
   POINT_BUDGET,
   ROLES,
   STARTER_WEAPONS,
@@ -133,8 +134,15 @@ export function CreationScreen() {
                   <Field label="Apelido de rua *" hint="Como a rua te chama.">
                     <Input tone="yellow" value={handle} onChange={e => setHandle(e.target.value)} placeholder="Sparks, Zero, Rook…" maxLength={24} data-autofocus />
                   </Field>
-                  <Field label="Idade">
-                    <Input type="number" min={16} max={60} value={age} onChange={e => setAge(Number(e.target.value))} />
+                  <Field label="Idade" hint={`De ${MIN_AGE} a 60 anos.`}>
+                    <Input
+                      type="number"
+                      min={MIN_AGE}
+                      max={60}
+                      value={age}
+                      onChange={e => setAge(Number(e.target.value))}
+                      onBlur={e => setAge(Math.min(60, Math.max(MIN_AGE, Math.round(Number(e.target.value) || MIN_AGE))))}
+                    />
                   </Field>
                   <Field label="Como você se mantém no corre">
                     <Input value={occupation} onChange={e => setOccupation(e.target.value)} maxLength={80} />

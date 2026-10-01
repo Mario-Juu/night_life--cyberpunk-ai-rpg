@@ -104,6 +104,8 @@ describe('Quem instala o quê', () => {
 });
 
 describe('Sistemas operacionais no combate', () => {
+  /** O que a fase dos inimigos faz depois da Ação do jogador: a rodada vira. */
+  const nextRound = (s: GameState): GameState => ({ ...s, combat: { ...s.combat, round: s.combat.round + 1 } });
   const fighter = (key: string) => {
     const sc = scenario()
       .edit(doc(5, true))
@@ -124,21 +126,25 @@ describe('Sistemas operacionais no combate', () => {
 
     sc.tool('interpreter', 'activate_cyberware', {}, [9, 9]); // passa no estresse
     expect(sc.last().ok).toBe(true);
+    // A ativação gastou a Ação desta rodada: o tempo dilatado vale a partir da próxima.
+    expect(activeOs(sc.state)).toBeNull();
+    sc.edit(nextRound);
     expect(activeOs(sc.state)?.extraAttack).toBe(true);
     sc.tool('interpreter', 'attack', { targetId: foe, weaponId: gun.id, twice: true });
     expect(sc.last().ok).toBe(true);
     sc.roll([2, 1, 1, 1, 1]);
     expect(sc.lastOutcome!.followUp).toBeDefined();
 
-    // Duas rodadas: depois de mais um ataque, o tempo volta ao normal.
-    sc.edit(s => ({ ...s, combat: { ...s.combat, round: s.combat.round + 1 } }));
+    // Passadas as rodadas do modelo (uma Ação turbinada por rodada), o tempo volta ao normal.
+    const run = sc.state.combat.os!;
+    sc.edit(s => ({ ...s, combat: { ...s.combat, round: run.startRound + run.rounds } }));
     expect(activeOs(sc.state)).toBeNull();
     expect(sc.tool('interpreter', 'activate_cyberware', {}).last().ok).toBe(false); // uma por luta
   });
 
   it('Sandevistan deixa esquivar de balas mesmo com REF baixo', () => {
     const sc = fighter('sandevistan');
-    sc.tool('interpreter', 'activate_cyberware', {}, [9, 9]);
+    sc.tool('interpreter', 'activate_cyberware', {}, [9, 9]).edit(nextRound);
     const res = resolveEnemyAttack(sc.state, sc.state.combat.combatants[0].id, sequenceRng([5, 10]))!; // 5 no ataque (a pistola ruim do capanga trava num 1), 10 na esquiva
     expect(res.result.defenseKind).toBe('evasion');
   });
@@ -154,7 +160,7 @@ describe('Sistemas operacionais no combate', () => {
 
   it('Berserk reduz o dano sofrido', () => {
     const sc = fighter('berserk_moore');
-    sc.tool('interpreter', 'activate_cyberware', {}, [9, 9]);
+    sc.tool('interpreter', 'activate_cyberware', {}, [9, 9]).edit(nextRound);
     sc.edit(s => ({ ...s, character: { ...s.character, inventory: s.character.inventory.map(i => (i.armor ? { ...i, equipped: false } : i)) } }));
     const res = resolveEnemyAttack(sc.state, sc.state.combat.combatants[0].id, sequenceRng([10, 1, 5, 5, 5, 5]))!;
     if (res.result.hit && res.result.application) expect(res.result.reduced).toBe(2);

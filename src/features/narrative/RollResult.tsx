@@ -84,7 +84,7 @@ export function RollResult({ outcome, defaultOpen = false, concealed = false }: 
           </p>
         ) : (
           <p className="tabular text-xs text-muted leading-relaxed">
-            {check.stat} {check.statValue}
+            {outcome.quickhack ? `Interface ${check.statValue}` : `${check.stat} ${check.statValue}`}
             {skill && ` + ${skill.label} ${check.skillValue}`}
             {' + d10 '}
             <span className={cn(check.d10.crit && 'text-neon-green', check.d10.fumble && 'text-danger')}>

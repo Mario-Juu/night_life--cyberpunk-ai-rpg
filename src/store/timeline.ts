@@ -7,7 +7,7 @@
 import type { GameState } from '@shared/types/game';
 import { makeId } from '@shared/engine/ids';
 import { getRepository, snapshotsToPrune, type SnapshotKind, type SnapshotMeta, type SnapshotRecord } from '../services/repository';
-import { requireGame, useGameStore } from './gameStore';
+import { requireGame, useGameStore, sanitizeGame } from './gameStore';
 
 const lineName = (id: string) => (id === 'main' ? 'principal' : id);
 
@@ -58,11 +58,12 @@ export async function rewindTo(snapshotIdToLoad: string): Promise<GameState> {
   if (!snap) throw new Error('Ponto de retorno não encontrado.');
   const metas = await repo.listSnapshots(snap.gameId);
   const future = metas.filter(m => m.branchId === snap.branchId && m.turn >= snap.turn && m.id !== snap.id).map(m => m.id);
-  await repo.deleteSnapshots([...future, snap.id]);
   const turns = await repo.listTurns(snap.gameId, snap.branchId);
-  await repo.deleteTurns(turns.filter(t => t.turn >= snap.turn).map(t => t.turnId));
-  const state = { ...snap.state, session: { ...snap.state.session, version: requireGame().session.version + 1 } };
+  // Restaura PRIMEIRO: se o estado do snapshot for inválido, nada é apagado e o jogo segue como estava.
+  const state = sanitizeGame({ ...snap.state, session: { ...snap.state.session, version: requireGame().session.version + 1 } });
   useGameStore.getState().setGame(state);
+  await repo.deleteSnapshots([...future, snap.id]);
+  await repo.deleteTurns(turns.filter(t => t.turn >= snap.turn).map(t => t.turnId));
   return state;
 }
 
@@ -77,10 +78,10 @@ export async function createBranch(fromSnapshotId: string): Promise<GameState> {
   const current = requireGame();
   await takeSnapshot(current, 'branch', `Ponta da linha ${lineName(current.session.branchId)} (turno ${current.turn})`);
   const branchId = makeId('br');
-  const state: GameState = {
+  const state: GameState = sanitizeGame({
     ...snap.state,
     session: { version: current.session.version + 1, branchId, parentBranchId: snap.branchId, branchedFromTurn: snap.turn },
-  };
+  });
   useGameStore.getState().setGame(state);
   await takeSnapshot(state, 'branch', `Início de uma nova linha (a partir do turno ${snap.turn})`);
   return state;
@@ -97,7 +98,7 @@ export async function switchBranch(branchId: string): Promise<GameState> {
   if (!tip) throw new Error('Linha do tempo sem pontos de retorno.');
   const snap = await repo.getSnapshot(tip.id);
   if (!snap) throw new Error('Ponto de retorno não encontrado.');
-  const state = { ...snap.state, session: { ...snap.state.session, version: current.session.version + 1 } };
+  const state = sanitizeGame({ ...snap.state, session: { ...snap.state.session, version: current.session.version + 1 } });
   useGameStore.getState().setGame(state);
   return state;
 }

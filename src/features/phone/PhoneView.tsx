@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronLeft, MessageSquare, Send, Smartphone, X } from 'lucide-react';
-import type { GameState, Npc } from '@shared/types/game';
+import { ChevronLeft, MessageSquare, Newspaper, Send, Smartphone, X } from 'lucide-react';
+import type { GameState, NewsSource, Npc } from '@shared/types/game';
+import { formatGameTime } from '@shared/rules/world';
+import { unreadNews } from '@shared/engine/fronts';
 import { Empty, SuggestionStrip, cn } from '../../ui';
-import { selectThread, sendPhoneMessage } from '../../store/turnController';
+import { NEWS_THREAD, markNewsSeen, selectThread, sendPhoneMessage } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
 
 function initials(name: string) {
@@ -30,9 +32,31 @@ function ContactList({ game }: { game: GameState }) {
     const tb = game.phone.find(t => t.npcId === b.id);
     return (tb?.unread ?? 0) - (ta?.unread ?? 0) || (tb?.messages.length ?? 0) - (ta?.messages.length ?? 0);
   });
-  if (!sorted.length) return <Empty icon={<Smartphone className="w-8 h-8" />} title="Agenda vazia" />;
+  const news = game.news ?? [];
+  const lastNews = news.at(-1);
+  const newsUnread = unreadNews(game);
   return (
     <ul className="divide-y divide-line-soft">
+      <li>
+        <button type="button" onClick={() => useUiStore.getState().setActiveThread(NEWS_THREAD)} className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-2 transition-colors">
+          <span className="w-10 h-10 shrink-0 grid place-items-center border border-neon-yellow/50 text-neon-yellow">
+            <Newspaper className="w-4 h-4" />
+          </span>
+          <span className="flex-1 min-w-0">
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-sm text-fg truncate">NCNet</span>
+              {lastNews && <span className="tabular text-[10px] text-dim shrink-0">{formatGameTime(lastNews.at).time}</span>}
+            </span>
+            <span className={cn('block text-xs truncate', newsUnread ? 'text-fg' : 'text-muted')}>{lastNews ? lastNews.headline : 'Manchetes e boatos de Night City'}</span>
+          </span>
+          {newsUnread ? <span className="shrink-0 min-w-5 h-5 px-1.5 rounded-full bg-neon-yellow text-surface-0 text-[10px] font-bold grid place-items-center">{newsUnread}</span> : null}
+        </button>
+      </li>
+      {!sorted.length && (
+        <li>
+          <Empty icon={<Smartphone className="w-8 h-8" />} title="Agenda vazia" />
+        </li>
+      )}
       {sorted.map(npc => {
         const thread = game.phone.find(t => t.npcId === npc.id);
         const last = thread?.messages.at(-1);
@@ -129,10 +153,42 @@ function ThreadView({ game, npc }: { game: GameState; npc: Npc }) {
   );
 }
 
+const SOURCE_TONE: Record<NewsSource, string> = {
+  '54 News': 'border-neon-cyan/50 text-neon-cyan',
+  NCNet: 'border-neon-yellow/50 text-neon-yellow',
+  Rumor: 'border-neon-magenta/50 text-neon-magenta',
+};
+
+/** Feed NCNet: manchetes e boatos das frentes do mundo (mais novas primeiro). */
+function NewsView({ game }: { game: GameState }) {
+  const news = game.news ?? [];
+  useEffect(() => {
+    markNewsSeen();
+  }, [news.length]);
+  if (!news.length) return <Empty icon={<Newspaper className="w-8 h-8" />} title="Nada no feed" />;
+  return (
+    <ul className="divide-y divide-line-soft">
+      {[...news].reverse().map(n => (
+        <li key={n.id} className="px-4 py-3 space-y-1">
+          <p className="flex items-center gap-2">
+            <span className={cn('border px-1 py-px text-[9px] font-display uppercase tracking-wider', SOURCE_TONE[n.source])}>{n.source === 'Rumor' ? 'Boato' : n.source}</span>
+            <span className="tabular text-[10px] text-dim">
+              {formatGameTime(n.at).weekday} {formatGameTime(n.at).time}
+            </span>
+          </p>
+          <p className="text-sm text-fg leading-snug">{n.headline}</p>
+          <p className="text-xs text-muted leading-snug">{n.body}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** Comunicador (Agent). Usado no drawer (desktop) e na aba do mobile. */
 export function PhoneView({ game, onClose }: { game: GameState; onClose?: () => void }) {
   const activeThread = useUiStore(s => s.activeThread);
-  const npc = activeThread ? game.npcs.find(n => n.id === activeThread) : undefined;
+  const newsOpen = activeThread === NEWS_THREAD;
+  const npc = activeThread && !newsOpen ? game.npcs.find(n => n.id === activeThread) : undefined;
 
   // Mensagens que chegam com a conversa aberta já contam como lidas.
   const unreadOpen = npc ? game.phone.find(t => t.npcId === npc.id)?.unread ?? 0 : 0;
@@ -143,7 +199,7 @@ export function PhoneView({ game, onClose }: { game: GameState; onClose?: () => 
   return (
     <div className="h-full flex flex-col min-h-0">
       <header className="flex items-center gap-2 px-3 h-14 border-b border-line shrink-0">
-        {npc ? (
+        {npc || newsOpen ? (
           <button type="button" onClick={() => selectThread(null)} aria-label="Voltar aos contatos" className="p-1.5 text-muted hover:text-neon-cyan">
             <ChevronLeft className="w-5 h-5" />
           </button>
@@ -151,8 +207,8 @@ export function PhoneView({ game, onClose }: { game: GameState; onClose?: () => 
           <MessageSquare className="w-5 h-5 text-neon-cyan ml-1.5" />
         )}
         <div className="flex-1 min-w-0">
-          <p className="font-display text-xs uppercase tracking-wider text-fg truncate">{npc ? npc.name : 'Agent · Mensagens'}</p>
-          <p className="text-[10px] text-muted truncate">{npc ? `${npc.role} · ${trustLabel(npc.trust)}` : 'Zetatech Agent v4.2'}</p>
+          <p className="font-display text-xs uppercase tracking-wider text-fg truncate">{npc ? npc.name : newsOpen ? 'NCNet' : 'Agent · Mensagens'}</p>
+          <p className="text-[10px] text-muted truncate">{npc ? `${npc.role} · ${trustLabel(npc.trust)}` : newsOpen ? 'Manchetes e boatos' : 'Zetatech Agent v4.2'}</p>
         </div>
         {onClose && (
           <button type="button" onClick={onClose} aria-label="Fechar telefone" className="p-1.5 text-muted hover:text-fg">
@@ -160,7 +216,11 @@ export function PhoneView({ game, onClose }: { game: GameState; onClose?: () => 
           </button>
         )}
       </header>
-      {npc ? <ThreadView game={game} npc={npc} /> : <div className="flex-1 min-h-0 overflow-y-auto"><ContactList game={game} /></div>}
+      {npc ? (
+        <ThreadView game={game} npc={npc} />
+      ) : (
+        <div className="flex-1 min-h-0 overflow-y-auto">{newsOpen ? <NewsView game={game} /> : <ContactList game={game} />}</div>
+      )}
     </div>
   );
 }

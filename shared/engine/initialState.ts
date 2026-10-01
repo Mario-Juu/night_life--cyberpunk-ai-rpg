@@ -1,12 +1,16 @@
-import { STATE_VERSION, type Character, type GameState, type Npc } from '../types/game';
+import { STATE_VERSION, type Character, type GameState, type Npc, type NpcGoal } from '../types/game';
 import { CAMPAIGN_START_TIME, advanceGameTime, formatGameTime, getDistrict } from '../rules/world';
 import { makeId } from './ids';
-import { looksLikeAnimal } from './npcs';
+import { RAFA_PROFILE, looksLikeAnimal } from './npcs';
 import { installCyberware } from './cyberware';
+import { withQuickhackDefaults } from './quickhacks';
 
 export const RAFA_ID = 'npc_rafa';
 export const FAMILY_ID = 'npc_family';
 export const MAIN_BRANCH = 'main';
+
+/** Rafa nasce com um objetivo próprio, escondido do jogador. */
+export const rafaGoal = (): NpcGoal => ({ id: makeId('goal'), text: 'Subir de canal de rua para canal com clientela própria em Japantown.', status: 'active', playerKnows: 'no' });
 
 export function makeNpc(partial: Pick<Npc, 'id' | 'name' | 'role'> & Partial<Npc>): Npc {
   return {
@@ -73,11 +77,14 @@ export function createInitialState(character: Character): GameState {
         trust: 10,
         respect: 20,
         currentGoal: 'Fechar o corre de entrega antes da meia-noite e meia.',
+        currentGoalKnown: true,
+        profile: { ...RAFA_PROFILE, traits: [...RAFA_PROFILE.traits] },
+        goals: [rafaGoal()],
         location: district.id,
         isContact: true,
         pendingMatters: 'Ofereceu um corre de entrega que paga €$600.',
         lastInteraction: clock,
-        knowledge: [{ id: makeId('fact'), fact: 'A carga do corre é um chip roubado da Militech.', secret: true }],
+        knowledge: [{ id: makeId('fact'), fact: 'A carga do corre é um chip roubado da Militech.', secret: true, playerKnows: 'no', weight: 2 }],
       }),
       ...(familyName
         ? [
@@ -154,5 +161,6 @@ export function withStarterCyberware(state: GameState): GameState {
     const res = installCyberware(s, key, () => 1, { free: true, average: true, noTime: true });
     if (res.ok) s = res.state;
   }
-  return s;
+  // Quickhacks de nível 1 e RAM no deck.
+  return { ...s, character: withQuickhackDefaults(s.character) };
 }

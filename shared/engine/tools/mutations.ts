@@ -3,10 +3,13 @@
  * O LLM não define números diretamente: dinheiro entra por recompensa de missão,
  * loot gerado pelo motor ou transferência atribuída e limitada.
  */
-import type { ConditionKey, CyberwareCategory, Faction, GameState, Mission, Npc, StatKey } from '../../types/game';
+import type { ConditionKey, CyberwareCategory, Faction, GameState, Mission, Npc, NpcBondKind, NpcGoalStatus, StatKey } from '../../types/game';
+import { leaveAccessPoint } from '../net';
+import { refillRam } from '../quickhacks';
+import { dismiss, endCombatParty, recruit, withPartyInCombat } from '../party';
 import { CONDITION_KEYS, CONDITION_LABEL, setCondition } from '../conditions';
 import { findCombatantLoose, mergeCombatants } from '../combatants';
-import { NPC_TEMPLATES, guessTemplate, templateDocs } from '../../rules/npcTemplates';
+import { NPC_TEMPLATES, NPC_TEMPLATE_KEYS, guessTemplate, templateDocs } from '../../rules/npcTemplates';
 import { humanityTransition } from '../humanity';
 import { COMBATANT_STATUS_LABEL, COVER_LABEL, NPC_STATUS_LABEL, RELATION_LABEL } from '../../rules/labels';
 import { DISTANCE_LABEL } from '../../rules/weapons';
@@ -16,8 +19,9 @@ import { installCyberware } from '../cyberware';
 import { findCyberware, implantFromName } from '../../rules/cyberware';
 import { humanityBand, isCyberpsycho } from '../../rules/humanity';
 import { CRITICAL_INJURIES, findCriticalInjuryTemplate } from '../../rules/criticalInjuries';
-import { computeMaxHumanity, STAT_KEYS } from '../../rules/stats';
+import { computeMaxHumanity, humanityAfter, STAT_KEYS } from '../../rules/stats';
 import { WEAPONS } from '../../rules/weapons';
+import { MAX_TRANSFER_IN } from '../../rules/catalog';
 import { advanceGameTime, formatGameTime } from '../../rules/world';
 import { applyDamageToCharacter, healCharacter } from '../health';
 import { makeId, slugId } from '../ids';
@@ -25,6 +29,8 @@ import { emit } from '../events';
 import { advanceTime, normalizeFlagKey, PAYMENT_WINDOW_TURNS, paymentMatchesQuest, recentPayments, resolveQuest, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
 import { defineTool, fail, ok } from './registry';
 import { ensureNpc } from '../npcs';
+import { changeFront, type FrontChange } from '../fronts';
+import { BOND_LABEL, NPC_BOND_KINDS, addKnowsAboutPlayer, revealNpcItem, setNpcProfile, targetName, upsertNpcBond, upsertNpcGoal } from '../npcProfile';
 import { addToInventory, buildCombatant, buildItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, recentAcquisition, sameName } from './helpers';
 
 const NARR = ['narrator', 'engine'] as const;
@@ -35,7 +41,7 @@ const CYBER = ['Neuralware', 'Ciberóptico', 'Ciberáudio', 'Membro Cibernético
 
 /** Maior valor de item que o narrador pode entregar de graça. */
 export const MAX_GIFT_VALUE = 1000;
-export const MAX_TRANSFER_IN = 1000;
+export { MAX_TRANSFER_IN };
 
 export const MUTATION_TOOLS = [
   // ---------------------------------------------------------------- relações
@@ -147,13 +153,14 @@ export const MUTATION_TOOLS = [
       situation: { type: 'string', desc: 'situação atual (1 frase)', max: 300 },
       objective: { type: 'string', desc: 'objetivo imediato do jogador', max: 300 },
       weather: { type: 'string', desc: 'clima', max: 80 },
+      netAccess: { type: 'boolean', desc: 'false = o jogador se afastou do terminal/servidor/ponto de acesso da Rede (some do painel; conectado, a conexão cai)' },
     },
-    run: (s0, a) => {
+    run: (s0, a, ctx) => {
       const ids = a.presentNpcIds
         ?.split(',')
         .map(x => x.trim())
         .map(x => findNpc(s0, x))
-        .filter((n): n is Npc => !!n && n.status !== 'dead')
+        .filter((n): n is Npc => !!n && n.status === 'alive')
         .map(n => n.id);
       const scene = {
         ...s0.scene,
@@ -162,7 +169,9 @@ export const MUTATION_TOOLS = [
         threat: (a.threat as typeof s0.scene.threat) ?? s0.scene.threat,
       };
       const world = { ...s0.world, situation: a.situation ?? s0.world.situation, objective: a.objective ?? s0.world.objective, weather: a.weather ?? s0.world.weather };
-      return ok(emit({ ...s0, scene, world }, 'SCENE_CHANGED', `Cena: ${scene.description} (ameaça ${THREAT_LABEL[scene.threat].toLowerCase()})`, { data: { presentNpcIds: scene.presentNpcIds } }), 'Cena atualizada');
+      let s = emit({ ...s0, scene, world }, 'SCENE_CHANGED', `Cena: ${scene.description} (ameaça ${THREAT_LABEL[scene.threat].toLowerCase()})`, { data: { presentNpcIds: scene.presentNpcIds } });
+      if (a.netAccess === false) s = leaveAccessPoint(s, ctx.rng);
+      return ok(s, 'Cena atualizada');
     },
   }),
   defineTool({
@@ -238,6 +247,7 @@ export const MUTATION_TOOLS = [
       role: { type: 'string', desc: 'função', max: 80 },
       description: { type: 'string', desc: 'descrição', max: 300 },
       currentGoal: { type: 'string', desc: 'o que ele quer agora', max: 200 },
+      goalKnown: { type: 'boolean', desc: 'o jogador sabe/percebe o que ele quer agora (ele disse ou é óbvio)' },
       location: { type: 'string', desc: 'onde está', max: 80 },
       faction: { type: 'string', desc: 'facção', max: 80 },
       pendingMatters: { type: 'string', desc: 'assunto pendente com o jogador', max: 200 },
@@ -246,6 +256,7 @@ export const MUTATION_TOOLS = [
       present: { type: 'boolean', desc: 'está fisicamente na cena' },
       knowledge: { type: 'string', desc: 'um fato que ele sabe', max: 300 },
       secret: { type: 'boolean', desc: 'o fato é segredo (o jogador não sabe)' },
+      learnsAboutPlayer: { type: 'string', desc: 'algo sobre o JOGADOR que o NPC passou a saber (ele contou, viu, ouviu falar)', max: 200 },
       ripperdocTier: {
         type: 'number',
         desc: 'se é RIPPERDOC: nível da clínica — 1 açougueiro de beco/bio-mod, 2 ripperdoc de bairro, 3 clínica estabelecida, 4 clínica corporativa/de elite, 5 lenda. Seja realista com a lore do lugar.',
@@ -263,7 +274,14 @@ export const MUTATION_TOOLS = [
           : existing?.ripperdoc && a.blackMarket !== undefined
             ? { ...existing.ripperdoc, blackMarket: a.blackMarket }
             : existing?.ripperdoc;
-      const fact = a.knowledge ? [{ id: makeId('fact'), fact: a.knowledge, secret: a.secret ?? true }] : [];
+      // Virar bicho não é uma atualização: um animal não entra na equipe de combate (recruit recusa).
+      if (a.kind === 'animal' && existing && s0.party?.members.some(m => m.npcId === existing.id)) {
+        return fail(s0, `${existing.name} está na sua equipe: não pode virar animal. Use dismiss_npc antes.`);
+      }
+      const secret = a.secret ?? true;
+      const fact = a.knowledge ? [{ id: makeId('fact'), fact: a.knowledge, secret, playerKnows: secret ? ('no' as const) : ('yes' as const) }] : [];
+      // Objetivo novo: o jogador só sabe se o narrador disser; trocar de objetivo esconde de novo.
+      const goalKnown = a.goalKnown ?? (a.currentGoal && a.currentGoal !== existing?.currentGoal ? false : existing?.currentGoalKnown);
       let s: GameState;
       let npc: Npc;
       if (existing) {
@@ -272,6 +290,7 @@ export const MUTATION_TOOLS = [
           role: a.role ?? existing.role,
           description: a.description ?? existing.description,
           currentGoal: a.currentGoal ?? existing.currentGoal,
+          currentGoalKnown: goalKnown,
           location: a.location ?? existing.location,
           faction: a.faction ?? existing.faction,
           pendingMatters: a.pendingMatters ?? existing.pendingMatters,
@@ -295,6 +314,7 @@ export const MUTATION_TOOLS = [
           fear: 0,
           anger: 0,
           currentGoal: a.currentGoal,
+          currentGoalKnown: goalKnown,
           location: a.location ?? s0.world.location.district,
           knowledge: fact,
           status: 'alive',
@@ -308,11 +328,150 @@ export const MUTATION_TOOLS = [
         if (npc.kind === 'animal') npc = { ...npc, isContact: false };
         s = emit({ ...s0, npcs: [...s0.npcs, npc] }, 'NPC_MET', `Conheceu ${npc.name} (${npc.role})`, { target: npc.id });
       }
+      if (a.learnsAboutPlayer) s = addKnowsAboutPlayer(s, npc.id, [a.learnsAboutPlayer]);
       if (a.present !== undefined && npc.status !== 'dead') {
         const others = s.scene.presentNpcIds.filter(id => id !== npc.id);
         s = { ...s, scene: { ...s.scene, presentNpcIds: a.present ? [...others, npc.id] : others } };
+        if (a.present) s = { ...s, npcs: s.npcs.map(n => (n.id === npc.id && n.offstage ? { ...n, offstage: undefined } : n)) };
       }
       return ok(s, `${npc.name} (${npc.id})`, { id: npc.id });
+    },
+  }),
+  defineTool({
+    name: 'npc_profile',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description: 'Personalidade de um NPC que importa (recorrente, contratante, aliado, rival). Defina uma vez e mantenha coerente; campos ausentes ficam como estão.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      traits: { type: 'string', desc: '2–4 traços separados por vírgula (ex.: "desconfiado, vaidoso, leal à irmã")', max: 160 },
+      voice: { type: 'string', desc: 'jeito de falar: registro, gíria, manias', max: 200 },
+      motivation: { type: 'string', desc: 'o que move a pessoa', max: 200 },
+      afraidOf: { type: 'string', desc: 'o que ela teme', max: 160 },
+      lines: { type: 'string', desc: 'o que ela não faz de jeito nenhum', max: 200 },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      if (!npc) return fail(s0, `NPC "${a.npcId}" não existe. Apresente com upsert_npc antes.`);
+      if (npc.kind === 'animal') return fail(s0, `${npc.name} é um animal: descreva o temperamento na description.`);
+      // Chamada vazia não é sucesso: sem nenhum campo, nada é definido e o Mestre acha que já definiu.
+      if (![a.traits, a.voice, a.motivation, a.afraidOf, a.lines].some(v => v?.trim())) {
+        return fail(s0, `Mande ao menos um campo do perfil de ${npc.name} (traits, voice, motivation, afraidOf ou lines).`);
+      }
+      const s = setNpcProfile(s0, npc.id, { traits: a.traits, voice: a.voice, motivation: a.motivation, fear: a.afraidOf, lines: a.lines });
+      return ok(s, `${npc.name}: ${s.npcs.find(n => n.id === npc.id)!.profile!.traits.join(', ') || 'perfil atualizado'}`);
+    },
+  }),
+  defineTool({
+    name: 'npc_goal',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description: 'Objetivo de LONGO PRAZO de um NPC (o imediato é currentGoal no upsert_npc). Sem goalId cria; com goalId atualiza o status. O jogador não fica sabendo por aqui: use reveal_npc.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      goalId: { type: 'string', desc: 'id existente (goal_…) para atualizar', max: 60 },
+      text: { type: 'string', desc: 'o que ele quer', max: 200 },
+      status: { type: 'string', desc: 'active, done (conseguiu) ou dropped (desistiu)', enum: ['active', 'done', 'dropped'] },
+      playerKnows: { type: 'boolean', desc: 'ao criar: o jogador já sabe disso (ex.: o NPC disse abertamente)' },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      if (!npc) return fail(s0, `NPC "${a.npcId}" não existe.`);
+      const res = upsertNpcGoal(s0, npc.id, { goalId: a.goalId, text: a.text, status: a.status as NpcGoalStatus | undefined, playerKnows: a.playerKnows ? 'yes' : undefined });
+      if ('error' in res) return fail(s0, res.error);
+      return ok(res.state, `${npc.name}: ${res.goal.text} (${res.goal.status}, ${res.goal.id})`, { id: res.goal.id });
+    },
+  }),
+  defineTool({
+    name: 'npc_bond',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description: 'Vínculo de um NPC com outro NPC ou facção (deve dinheiro, é rival, é amante…). Escondido do jogador até reveal_npc, a não ser que playerKnows.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      targetId: { type: 'string', desc: 'id/nome do outro NPC ou id/nome da facção', required: true, max: 80 },
+      kind: { type: 'string', desc: 'tipo do vínculo', required: true, enum: NPC_BOND_KINDS },
+      note: { type: 'string', desc: 'detalhe curto', max: 160 },
+      playerKnows: { type: 'boolean', desc: 'o jogador já sabe disso' },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      if (!npc) return fail(s0, `NPC "${a.npcId}" não existe.`);
+      const target = findNpc(s0, a.targetId)?.id ?? s0.factions.find(f => f.id === a.targetId || sameName(f.name, a.targetId))?.id;
+      if (!target) return fail(s0, `"${a.targetId}" não é NPC nem facção conhecidos. Apresente com upsert_npc antes.`);
+      const res = upsertNpcBond(s0, npc.id, { targetId: target, kind: a.kind as NpcBondKind, note: a.note, playerKnows: a.playerKnows ? 'yes' : undefined });
+      if ('error' in res) return fail(s0, res.error);
+      return ok(res.state, `${npc.name} ${BOND_LABEL[res.bond.kind]} ${targetName(res.state, target)} (${res.bond.id})`, { id: res.bond.id });
+    },
+  }),
+  defineTool({
+    name: 'reveal_npc',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description:
+      'O jogador DESCOBRE (level yes) ou passa a DESCONFIAR (suspects) de um segredo, objetivo ou vínculo de um NPC. Só quando a cena mostra como: confissão, documento, escuta, dedução com pistas. itemId = fact_…/goal_…/bond_… do contexto, ou current_goal.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      itemId: { type: 'string', desc: 'id do segredo/objetivo/vínculo', required: true, max: 60 },
+      level: { type: 'string', desc: 'yes = sabe; suspects = desconfia', enum: ['yes', 'suspects'] },
+      how: { type: 'string', desc: 'como descobriu (vai para o Diário)', max: 160 },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      if (!npc) return fail(s0, `NPC "${a.npcId}" não existe.`);
+      const res = revealNpcItem(s0, npc.id, a.itemId, (a.level as 'yes' | 'suspects' | undefined) ?? 'yes', a.how);
+      if ('error' in res) return fail(s0, res.error);
+      return ok(res.state, `${a.level === 'suspects' ? 'Desconfia' : 'Descobriu'}: ${res.text}`);
+    },
+  }),
+  defineTool({
+    name: 'front_update',
+    kind: 'mutation',
+    origins: NARR,
+    description:
+      'Frente do mundo (seção NA CIDADE): advance = o próximo passo acontece agora; delay = o jogador atrapalhou (adia 1 dia); stop = o jogador deteve a trama de vez; hint = o jogador passou a desconfiar do que está por trás; reveal = descobriu.',
+    params: {
+      frontId: { type: 'string', desc: 'id da frente (front_…)', required: true, max: 80 },
+      change: { type: 'string', desc: 'o que mudou', required: true, enum: ['advance', 'delay', 'stop', 'hint', 'reveal'] },
+      reason: { type: 'string', desc: 'o que na cena causou isso', max: 200 },
+    },
+    run: (s0, a) => {
+      const res = changeFront(s0, a.frontId, a.change as FrontChange, a.reason);
+      if ('error' in res) return fail(s0, res.error);
+      return ok(res.state, res.summary);
+    },
+  }),
+  defineTool({
+    name: 'recruit_npc',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description:
+      'O NPC entra na EQUIPE do jogador (luta ao lado dele, segue de lugar em lugar). Só quando ele aceitou na ficção. Amigo precisa confiar (confiança ≥ 20); mercenário entra pela parte de cada trabalho (share ≥ 10). template = ficha de combate (bodyguard, security_operative, sixth_street…). Máx. 3.',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      share: { type: 'number', desc: '% de cada pagamento de trabalho que ele leva (0 = amigo; 10–50 = mercenário)', min: 0, max: 50 },
+      template: { type: 'string', desc: 'ficha de combate pronta que combina com ele', enum: NPC_TEMPLATE_KEYS },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      if (!npc) return fail(s0, `NPC "${a.npcId}" não existe.`);
+      const res = recruit(s0, npc.id, { template: a.template, share: a.share });
+      return 'error' in res ? fail(s0, res.error) : ok(res.state, res.summary);
+    },
+  }),
+  defineTool({
+    name: 'dismiss_npc',
+    kind: 'mutation',
+    origins: [...NARR_PHONE, 'interpreter'],
+    description: 'O NPC sai da equipe (dispensado, foi embora, traiu).',
+    params: {
+      npcId: { type: 'string', desc: 'id ou nome exato', required: true, max: 80 },
+      reason: { type: 'string', desc: 'por quê', max: 200 },
+    },
+    run: (s0, a) => {
+      const npc = findNpc(s0, a.npcId);
+      const res = dismiss(s0, npc?.id ?? a.npcId, a.reason);
+      return 'error' in res ? fail(s0, res.error) : ok(res.state, res.summary);
     },
   }),
   defineTool({
@@ -507,6 +666,7 @@ export const MUTATION_TOOLS = [
     },
     run: (s0, a) => {
       const money = s0.character.money;
+      if (!a.amount) return fail(s0, 'Transferência de €$0 não é transferência: mande o valor que mudou de mão (ou não chame a ferramenta).');
       if (a.amount < 0 && money < -a.amount) return fail(s0, `Saldo insuficiente: tem €$${money}, precisa pagar €$${-a.amount}.`);
       if (a.amount > 0) {
         // Missão concluída há pouco (neste turno ou nos últimos) já pagou o trabalho: não pagar de novo pela cena.
@@ -518,6 +678,17 @@ export const MUTATION_TOOLS = [
           const quest = s0.missions.find(m => m.id === reward.questId)!;
           return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" (€$${reward.reward ?? reward.value}) já foi paga pelo motor quando a missão foi concluída. Narre esse pagamento, não pague de novo.`);
         }
+        // Eco com o sinal trocado: o JOGADOR acabou de pagar este valor a esta pessoa (pay_money) — não é uma entrada.
+        const giver = findNpc(s0, a.counterpart);
+        const echo = s0.events.find(
+          e =>
+            e.type === 'MONEY_CHANGED' &&
+            e.source === 'player' &&
+            e.turn >= s0.turn - 1 &&
+            e.value === -a.amount &&
+            (e.target === giver?.id || (typeof e.target === 'string' && sameName(e.target, a.counterpart))),
+        );
+        if (echo) return fail(s0, `Isso é o pagamento que o JOGADOR fez (${echo.summary}): ele pagou, não recebeu. Não registre de novo; narre a entrega do dinheiro.`);
       }
       const s = { ...s0, character: { ...s0.character, money: money + a.amount } };
       return ok(
@@ -535,7 +706,9 @@ export const MUTATION_TOOLS = [
     run: (s0, a, ctx) => {
       const foe = s0.combat.combatants.find(c => c.id === a.combatantId);
       if (!foe) return fail(s0, 'Não há esse corpo por aqui.');
+      if (foe.side === 'ally') return fail(s0, `${foe.name} é do seu lado — não se revista um aliado caído.`);
       if (foe.status === 'active') return fail(s0, `${foe.name} ainda está de pé.`);
+      if (foe.lootUnavailable) return fail(s0, `${foe.name} ficou para trás quando você saiu da cena.`);
       if (foe.looted) return fail(s0, `${foe.name} já foi revistado.`);
       let s: GameState = { ...s0, combat: { ...s0.combat, combatants: s0.combat.combatants.map(c => (c.id === foe.id ? { ...c, looted: true } : c)) } };
       const found: string[] = [];
@@ -701,11 +874,12 @@ export const MUTATION_TOOLS = [
         character: {
           ...c,
           cyberware: [...c.cyberware, cw],
-          humanity: {
-            current: Math.max(0, c.humanity.current - a.humanityLoss),
-            // Cyberpunk RED: cada peça reduz o máximo em 2 (Borgware 4); estético (perda 0) não reduz.
-            max: Math.max(0, Math.min(c.humanity.max, computeMaxHumanity(c.stats.EMP)) - (a.humanityLoss > 0 ? (a.category === 'Borgware' ? 4 : 2) : 0)),
-          },
+          // Cyberpunk RED: cada peça reduz o máximo em 2 (Borgware 4); estético (perda 0) não reduz.
+          humanity: humanityAfter(
+            { current: c.humanity.current, max: Math.min(c.humanity.max, computeMaxHumanity(c.stats.EMP)) },
+            a.humanityLoss,
+            a.humanityLoss > 0 ? (a.category === 'Borgware' ? 4 : 2) : 0,
+          ),
         },
       };
       const next = humanityTransition(s0, emit(s, 'CYBERWARE_INSTALLED', `${a.name} (−${a.humanityLoss} Humanidade)`, { target: cw.id, value: -a.humanityLoss }));
@@ -785,7 +959,8 @@ export const MUTATION_TOOLS = [
       // Inimigos já na luta (mesmo id/nome) não duplicam — o narrador costuma repeti-los a cada turno.
       const { combatants, added, reused } = mergeCombatants(s0.combat.active ? s0.combat.combatants : [], a.combatants, buildCombatant);
       const combat = s0.combat.active ? { ...s0.combat, combatants } : { active: true, round: 1, playerInitiative: null, combatants, log: [] };
-      let s: GameState = { ...s0, combat, scene: { ...s0.scene, threat: s0.scene.threat === 'extreme' ? 'extreme' as const : 'high' as const } };
+      // A equipe presente entra já na abertura (antes só aparecia no painel depois da primeira ação).
+      let s: GameState = withPartyInCombat({ ...s0, combat, scene: { ...s0.scene, threat: s0.scene.threat === 'extreme' ? 'extreme' as const : 'high' as const } });
       if (added.length) s = emit(s, 'COMBAT_STARTED', `Combate: ${added.map(c => c.name).join(', ')}`, { data: { ids: added.map(c => c.id) } });
       const incomplete = a.combatants.filter(c => !c.template && !(guessTemplate(c.name) && c.hp === undefined && c.sp === undefined && c.attackBase === undefined && !c.weaponClass && !c.damage) && (c.hp === undefined || c.sp === undefined || (!c.weaponClass && !c.damage) || c.attackBase === undefined || c.evasionBase === undefined)).map(c => c.name);
       const unknown = a.combatants.filter(c => c.template && !NPC_TEMPLATES[c.template]).map(c => c.template);
@@ -814,6 +989,10 @@ export const MUTATION_TOOLS = [
       const foe = findCombatantLoose(s0.combat.combatants, a.id, { includeDown: true });
       if (!foe) return fail(s0, `Combatente ${a.id} não existe.`);
       if (a.status === 'active' && foe.hp.current <= 0) return fail(s0, `${foe.name} está com 0 PV e não pode voltar a lutar.`);
+      // Aliado só cai pelos PV (o motor derruba): o narrador não mata quem luta do lado do jogador.
+      if (foe.side === 'ally' && (a.status === 'down' || a.status === 'dead')) {
+        return fail(s0, `${foe.name} é aliado: quem o derruba é o dano. Para tirá-lo da luta, ask_ally retreat ou dismiss_npc.`);
+      }
       if (foe.status === 'dead' && a.status && a.status !== 'dead') return fail(s0, `${foe.name} está morto.`);
       const cover = (a.cover as typeof foe.cover) ?? foe.cover;
       // Cobertura total tem PV: dá para atirar nela até quebrar.
@@ -887,14 +1066,25 @@ export const MUTATION_TOOLS = [
   defineTool({
     name: 'end_combat',
     kind: 'mutation',
-    origins: NARR,
+    origins: [...NARR, 'player'],
     description: 'Encerra o combate.',
-    params: { summary: { type: 'string', desc: 'desfecho', max: 200 } },
-    run: (s0, a) => {
+    params: {
+      summary: { type: 'string', desc: 'desfecho', max: 200 },
+      abandonLoot: { type: 'boolean', desc: 'true se o jogador fugiu/deixou a cena e não pode mais revistar os corpos' },
+    },
+    run: (s0, a, ctx) => {
       if (!s0.combat.active) return fail(s0, 'Não há combate ativo.');
+      if (ctx.origin === 'player' && s0.combat.combatants.some(c => c.status === 'active' && c.side !== 'ally')) {
+        return fail(s0, 'Ainda há inimigos de pé. Derrote-os, faça-os fugir ou renda-os antes de encerrar o combate.');
+      }
       // Corpos continuam registrados (para loot) até o próximo combate.
-      const s = releaseGrapple({ ...s0, combat: { ...s0.combat, active: false, round: 0, playerInitiative: null, os: undefined }, scene: { ...s0.scene, threat: 'medium' as const } });
-      return ok(emit(s, 'COMBAT_ENDED', `Fim do combate${a.summary ? `: ${a.summary}` : ''}`), 'Combate encerrado');
+      // Equipe: PV voltam para a ficha; quem caiu faz o Teste de Morte.
+      const aftermath = endCombatParty(s0, ctx.rng);
+      const combatants = a.abandonLoot
+        ? aftermath.state.combat.combatants.map(c => (c.side !== 'ally' && c.status !== 'active' && c.status !== 'fled' ? { ...c, lootUnavailable: true } : c))
+        : aftermath.state.combat.combatants;
+      const s = releaseGrapple({ ...aftermath.state, character: refillRam(aftermath.state.character), combat: { ...aftermath.state.combat, active: false, round: 0, playerInitiative: null, combatants, os: undefined }, scene: { ...aftermath.state.scene, threat: 'medium' as const } });
+      return ok(emit(s, 'COMBAT_ENDED', `Fim do combate${a.summary ? `: ${a.summary}` : ''}`), ['Combate encerrado', ...aftermath.lines].join(' '));
     },
   }),
 ];

@@ -93,6 +93,35 @@ export function RulesModal() {
         </section>
 
         <section className="space-y-2">
+          <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Combate: iniciativa e equipe</h3>
+          <ul className="list-disc pl-5 text-muted space-y-1">
+            <li>Iniciativa = REF + 1d10, rolada sozinha na primeira ação. Depois da sua Ação agem os mais lentos; a rodada vira e os mais rápidos agem antes de você.</li>
+            <li>Uma Ação por turno em combate: ataque, quickhack, agarrão, execução ou recarga. Uma segunda ação na mesma frase fica para o turno seguinte.</li>
+            <li>Emboscada só vale no golpe de abertura, e só deixa os inimigos desprevenidos se acertar.</li>
+            <li>Equipe: até 3 aliados. Amigo entra pela confiança; mercenário, por uma parte (≥ 10%) de cada trabalho. O motor joga por eles; você pede e eles decidem.</li>
+            <li>Aliado caído faz Teste de Morte no fim da luta (d10 &lt; CORPO sobrevive com 1 PV). PV e ferimentos continuam na próxima luta.</li>
+          </ul>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Quickhacks (Trilheiro)</h3>
+          <ul className="list-disc pl-5 text-muted space-y-1">
+            <li>Hacks no espaço físico, sem entrar numa arquitetura: Interface + 1d10 contra a defesa do alvo. Em combate, é a Ação do turno.</li>
+            <li>Cada hack gasta RAM do deck; a RAM volta 2 por rodada e enche quando a luta acaba.</li>
+            <li>Três ramos (Controle, Hardware e Dano) em quatro níveis: o nível 1 vem com o papel; os outros pedem Interface 4/6/8 e custam 20/30/50 PM.</li>
+            <li>Inconsciente ou imobilizado, você não hackeia. Aliados não podem ser alvo.</li>
+          </ul>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">A cidade se mexe</h3>
+          <p className="text-muted">
+            Cada campanha sorteia tramas próprias (gangues, corpos, fixers) que avançam sozinhas com o relógio — com ou sem você. As notícias e os boatos mostram o que já
+            aconteceu; agir contra uma trama pode atrasá-la ou detê-la. Quando uma termina, outra (ou uma continuação) começa.
+          </p>
+        </section>
+
+        <section className="space-y-2">
           <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Evolução</h3>
           <p className="text-muted">
             O Mestre concede Pontos de Melhoria (PM) ao fim de cenas marcantes. Subir uma perícia custa 20 × o novo nível, até o nível 10; subir o rank da Habilidade de Papel

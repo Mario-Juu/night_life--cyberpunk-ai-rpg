@@ -143,6 +143,9 @@ export function buildStartingSkills(role: RoleId): Record<string, number> {
   return skills;
 }
 
+/** Idade mínima: o filtro do Gemini bloqueia cenas inteiras quando há menor de idade num mundo adulto. */
+export const MIN_AGE = 18;
+
 export function buildCharacter(input: CreationInput): Character {
   const error = validateStats(input.stats);
   if (error) throw new Error(error);
@@ -235,7 +238,7 @@ export function buildCharacter(input: CreationInput): Character {
     bio: {
       name: input.name.trim() || 'Alex',
       handle: input.handle.trim() || 'Novato',
-      age: Math.min(60, Math.max(16, Math.round(input.age) || 20)),
+      age: Math.min(60, Math.max(MIN_AGE, Math.round(input.age) || 20)),
       role: role.id,
       occupation: input.occupation.trim() || 'Bicos noturnos',
       district: input.district,

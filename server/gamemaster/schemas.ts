@@ -52,6 +52,52 @@ export const PHONE_SCHEMA = {
   required: ['replyText', 'suggestedReplies', 'toolCalls'],
 };
 
+export const PROFILE_SCHEMA = {
+  type: 'object',
+  properties: {
+    traits: { type: 'array', items: S },
+    voice: S,
+    motivation: S,
+    fear: S,
+    lines: S,
+    goal: S,
+    secret: S,
+    secretWeight: N,
+    bond: { type: 'object', properties: { targetId: S, kind: S, note: S }, required: ['targetId', 'kind'] },
+    knowsAboutPlayer: { type: 'array', items: S },
+  },
+  required: ['traits'],
+};
+
+const FRONT_TEXTS = {
+  type: 'object',
+  properties: {
+    id: S,
+    title: S,
+    premise: S,
+    twist: S,
+    stages: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: S,
+          blockHint: S,
+          effects: { type: 'array', items: { type: 'object', properties: { kind: S, headline: S, body: S, text: S }, required: ['kind'] } },
+        },
+        required: ['title', 'blockHint', 'effects'],
+      },
+    },
+  },
+  required: ['id', 'title', 'premise', 'twist', 'stages'],
+};
+
+export const WORLDGEN_SCHEMA = {
+  type: 'object',
+  properties: { fronts: { type: 'array', items: FRONT_TEXTS } },
+  required: ['fronts'],
+};
+
 export const SUMMARY_SCHEMA = {
   type: 'object',
   properties: { summary: S },

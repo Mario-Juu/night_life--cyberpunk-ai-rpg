@@ -5,6 +5,9 @@
 import type { AmmoKind, HitLocation, ItemCategory, StreetDrugKey, WeaponClass } from '../types/game';
 import { STREET_DRUGS } from './streetDrugs';
 
+/** Teto de uma entrada avulsa do narrador (transfer_money). Pagamentos maiores vêm de missão. */
+export const MAX_TRANSFER_IN = 1000;
+
 export const WEAPON_PRICES: Record<WeaponClass, number> = {
   unarmed: 0,
   martial_arts: 0,

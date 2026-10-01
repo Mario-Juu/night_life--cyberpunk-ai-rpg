@@ -3,7 +3,7 @@ import type { GameState } from '@shared/types/game';
 import { ICE, NET_DIFFICULTY_LABEL, PROGRAMS, netActionsFor } from '@shared/rules/net';
 import { describeFloor, canNetrun } from '@shared/engine/net';
 import { Badge, Button, Empty, Meter, cn } from '../../ui';
-import { endNetTurnPanel, netPanelAction } from '../../store/turnController';
+import { endNetTurnPanel, leaveNetAccess, netPanelAction } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
 import { useGameStore } from '../../store/gameStore';
 
@@ -50,11 +50,21 @@ export function NetPanel({ game }: { game: GameState }) {
 
       {!run ? (
         canNetrun(game) ? (
-          <Button tone="cyan" variant="solid" icon={<LogIn className="w-4 h-4" />} disabled={disabled} onClick={() => void netPanelAction('jack_in')}>
-            Conectar (1 Ação de Rede)
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button tone="cyan" variant="solid" icon={<LogIn className="w-4 h-4" />} disabled={disabled} onClick={() => void netPanelAction('jack_in')}>
+              Conectar (1 Ação de Rede)
+            </Button>
+            <Button variant="ghost" icon={<LogOut className="w-4 h-4" />} disabled={disabled} onClick={leaveNetAccess} title="O ponto de acesso some do painel">
+              Afastar-se
+            </Button>
+          </div>
         ) : (
-          <p className="text-xs text-muted">Só um Trilheiro com ciberdeck pode entrar nesta arquitetura.</p>
+          <div className="space-y-2">
+            <p className="text-xs text-muted">Só um Trilheiro com ciberdeck pode entrar nesta arquitetura.</p>
+            <Button size="sm" variant="ghost" icon={<LogOut className="w-3.5 h-3.5" />} disabled={disabled} onClick={leaveNetAccess}>
+              Afastar-se
+            </Button>
+          </div>
         )
       ) : (
         <>

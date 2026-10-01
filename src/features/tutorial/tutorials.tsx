@@ -5,6 +5,8 @@
 import type { ReactNode } from 'react';
 import { ArrowDown, FileSearch, Hand, KeyRound, Map, Radar, Shield, Skull, Swords, Zap } from 'lucide-react';
 import type { TutorialId } from '../../store/uiStore';
+import { useGameStore } from '../../store/gameStore';
+import { ROLE_ABILITY } from '@shared/rules/roles';
 import { cn } from '../../ui';
 
 export interface TutorialStep {
@@ -54,6 +56,21 @@ function Floors({ you, rows }: { you: number; rows: Array<[string, 'fg' | 'dim' 
 function Chip({ icon, children, tone = 'cyan' }: { icon?: ReactNode; children: ReactNode; tone?: 'cyan' | 'yellow' | 'danger' | 'green' | 'magenta' }) {
   const color = { cyan: 'border-neon-cyan/50 text-neon-cyan', yellow: 'border-neon-yellow/50 text-neon-yellow', danger: 'border-danger/50 text-danger', green: 'border-neon-green/50 text-neon-green', magenta: 'border-neon-magenta/50 text-neon-magenta' }[tone];
   return <span className={cn('inline-flex items-center gap-1 border px-1.5 py-0.5 font-display text-[10px] uppercase tracking-wider', color)}>{icon}{children}</span>;
+}
+
+/** A habilidade do papel de QUEM JOGA (antes era sempre a do Solo, qualquer que fosse o papel). */
+function PlayerRoleAbility() {
+  const character = useGameStore(s => s.game?.character);
+  const info = ROLE_ABILITY[character?.bio.role ?? 'solo'] ?? ROLE_ABILITY.solo;
+  return (
+    <>
+      <div className="flex items-center justify-between">
+        <span className="font-display uppercase tracking-wider text-neon-yellow">{info.name}</span>
+        <span className="tabular text-2xl">{character?.roleRank ?? 4}</span>
+      </div>
+      <p className="text-muted">{info.summary}</p>
+    </>
+  );
 }
 
 function Bar({ value, max, tone }: { value: number; max: number; tone: string }) {
@@ -195,6 +212,27 @@ export const TUTORIALS: Record<TutorialId, Tutorial> = {
         ),
       },
       {
+        title: 'Iniciativa, uma Ação por turno e a sua equipe',
+        body: (
+          <>
+            A iniciativa (<b>REF + 1d10</b>) rola sozinha na sua primeira ação e manda na ordem: depois da sua Ação, quem é mais lento age, a rodada vira e os mais rápidos agem
+            antes de você de novo. É <b>uma Ação por turno</b> — atirar, hackear, agarrar ou recarregar. Quem anda com você entra na luta como <b>aliado</b>: você pode
+            <b> pedir</b> (“foca no da escopeta”, “me cobre”, “recua”), mas ele decide pela lealdade e pela confiança — pode topar, fazer do jeito dele ou recusar.
+          </>
+        ),
+        visual: (
+          <Frame>
+            <p className="eyebrow">Ordem de iniciativa</p>
+            <div className="flex flex-wrap gap-1">
+              <Chip tone="danger">Ganger 1 · 14</Chip>
+              <Chip tone="yellow">Você · 12</Chip>
+              <Chip tone="green">Jax (aliado) · 9</Chip>
+              <Chip tone="danger">Ganger 2 · 7</Chip>
+            </div>
+          </Frame>
+        ),
+      },
+      {
         title: 'Dano e armadura',
         body: (
           <>
@@ -255,10 +293,7 @@ export const TUTORIALS: Record<TutorialId, Tutorial> = {
         visual: (
           <Frame>
             <p className="eyebrow">Habilidade de Papel</p>
-            <div className="flex items-center justify-between">
-              <span className="font-display uppercase tracking-wider text-neon-yellow">Consciência de Combate</span>
-              <span className="tabular text-2xl">4</span>
-            </div>
+            <PlayerRoleAbility />
           </Frame>
         ),
       },

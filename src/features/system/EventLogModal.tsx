@@ -113,7 +113,8 @@ function TurnCard({ t }: { t: TurnRecord }) {
                 {t.llmRuns.map(r => (
                   <li key={r.requestId} className={cn(r.degraded && 'text-neon-yellow')}>
                     {r.purpose} · {r.model} · {(r.latencyMs / 1000).toFixed(2)}s · {r.inputTokens ?? '?'}/{r.outputTokens ?? '?'} tokens
-                    {r.cachedTokens ? ` (${r.cachedTokens} em cache)` : ''} · versão do prompt {r.promptVersion}
+                    {r.cachedTokens ? ` (${r.cachedTokens} em cache)` : ''}
+                    {r.thoughtsTokens ? ` · +${r.thoughtsTokens} de pensamento` : ''} · versão do prompt {r.promptVersion}
                     {r.attempts.length > 1 && ` · ${r.attempts.length} tentativas`}
                     {r.liteOffered && <span className="text-neon-yellow"> · Flash indisponível (Lite oferecido)</span>}
                     {r.errors.length > 0 && <span className="text-danger"> · {r.errors.join('; ').slice(0, 200)}</span>}
@@ -122,8 +123,8 @@ function TurnCard({ t }: { t: TurnRecord }) {
                         <summary className="cursor-pointer text-dim hover:text-neon-cyan">ver tentativas</summary>
                         <ol className="space-y-0.5 mt-0.5">
                           {r.attempts.map((a, i) => (
-                            <li key={i} className={a.ok ? 'text-neon-green' : 'text-muted'}>
-                              {i + 1}. {a.model} · {(a.latencyMs / 1000).toFixed(1)}s · {a.ok ? 'ok' : attemptReason(a.error)}
+                            <li key={i} className={a.ok ? 'text-neon-green' : a.skipped ? 'text-dim' : 'text-muted'}>
+                              {i + 1}. {a.model} · {a.skipped ? `pulado — ${attemptReason(a.error)} (${a.error?.match(/por mais (\d+s)/)?.[1] ?? '?'} para voltar)` : `${(a.latencyMs / 1000).toFixed(1)}s · ${a.ok ? 'ok' : attemptReason(a.error)}`}
                             </li>
                           ))}
                         </ol>
@@ -263,6 +264,7 @@ const ATTEMPT_REASON: Record<string, string> = {
   auth: 'chave recusada',
   model_unavailable: 'modelo indisponível',
   network: 'falha de rede',
+  blocked: 'bloqueado pelo filtro de conteúdo do Google',
 };
 function attemptReason(error?: string): string {
   if (!error) return 'falhou';

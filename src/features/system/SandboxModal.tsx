@@ -206,6 +206,16 @@ export function SandboxModal({ game }: { game: GameState }) {
             <Button size="sm" variant="solid" tone="danger" onClick={() => tool('start_combat', { combatants: [{ name: NPC_TEMPLATES[tpl].name, template: tpl, count, distance }] }, 'Inimigos gerados')}>
               Gerar inimigos
             </Button>
+            <Button
+              size="sm"
+              variant="solid"
+              tone="green"
+              disabled={!game.combat.active}
+              title={game.combat.active ? 'Adiciona um combatente do seu lado à luta atual.' : 'Inicie um combate antes de adicionar um aliado.'}
+              onClick={() => tool('start_combat', { combatants: [{ name: `Aliado: ${NPC_TEMPLATES[tpl].name}`, template: tpl, count: 1, distance, side: 'ally' }] }, 'Aliado adicionado ao combate')}
+            >
+              Adicionar 1 aliado
+            </Button>
             <Button size="sm" variant="ghost" onClick={() => apply(sbx.endCombat, 'Combate limpo')}>
               Limpar combate
             </Button>

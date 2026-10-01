@@ -15,6 +15,8 @@ export function failureHint(kind?: FailureKind): string {
       return 'A chave Gemini foi recusada. Confira a chave em Configurações.';
     case 'network':
       return 'Falha de rede entre o servidor do jogo e o Google. Tente de novo.';
+    case 'blocked':
+      return 'O filtro de conteúdo do Google recusou esta cena (algo sensível no contexto). Tente reformular a ação; se continuar, avise — é um caso para ajustar no jogo.';
     default:
       return 'Tente continuar em instantes.';
   }
@@ -32,6 +34,8 @@ export function failureTitle(kind?: FailureKind): string {
       return 'Google sobrecarregado';
     case 'auth':
       return 'Chave Gemini recusada';
+    case 'blocked':
+      return 'Cena bloqueada pelo filtro do Google';
     default:
       return 'Mestre em modo degradado';
   }

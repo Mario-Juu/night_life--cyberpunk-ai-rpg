@@ -21,12 +21,14 @@ export function RollCard({ game }: { game: GameState }) {
   const c = game.character;
   const skill = getSkill(request.skillId);
   const isDeath = request.kind === 'deathSave';
-  const penalties = isDeath ? [] : checkPenalties(c, request.stat);
+  const isHack = request.kind === 'quickhack';
+  // Quickhack: Interface + 1d10 (+ Sorte), sem penalidades de atributo.
+  const penalties = isDeath || isHack ? [] : checkPenalties(c, request.stat);
   // Mesmos modificadores que o motor aplicará (situação, relação, cena, efeitos, ferimentos).
   const mods = isDeath
     ? []
     : [...requestModifiers(game, request), ...(request.aimedHead ? [{ label: 'Mira na cabeça', value: AIMED_SHOT_PENALTY }] : []), ...penalties];
-  const base = statValue(c, request.stat) + skillValue(c, request.skillId) + mods.reduce((s, m) => s + m.value, 0);
+  const base = isHack ? c.roleRank : statValue(c, request.stat) + skillValue(c, request.skillId) + mods.reduce((s, m) => s + m.value, 0);
   const luckAllowed = canSpendLuck(request) && c.luck.current > 0;
   // O DV é segredo do Mestre (como numa mesa real); só aparece no modo transparente.
   const revealDv = useUiStore(s => s.revealDv);
@@ -51,12 +53,12 @@ export function RollCard({ game }: { game: GameState }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className={cn('eyebrow', isDeath ? 'text-danger' : 'text-neon-yellow')}>
-            {isDeath ? 'Teste de Morte' : request.kind === 'attack' ? 'Ataque' : request.origin === 'gm' ? 'O Mestre pede um teste' : 'Teste'}
+            {isDeath ? 'Teste de Morte' : request.kind === 'attack' ? 'Ataque' : isHack ? 'Quickhack' : request.origin === 'gm' ? 'O Mestre pede um teste' : 'Teste'}
           </p>
           <p className="text-sm text-fg leading-snug mt-0.5">{request.reason}</p>
         </div>
         {request.origin === 'player' && (
-          <button type="button" onClick={cancelLocalRoll} disabled={rolling || busy} aria-label="Cancelar ataque" className="text-muted hover:text-fg p-1 -m-1">
+          <button type="button" onClick={cancelLocalRoll} disabled={rolling || busy} aria-label={isHack ? 'Cancelar quickhack' : 'Cancelar ataque'} className="text-muted hover:text-fg p-1 -m-1">
             <X className="w-4 h-4" />
           </button>
         )}
@@ -67,6 +69,13 @@ export function RollCard({ game }: { game: GameState }) {
           <>
             <Badge tone="danger">1d10 + {deathSavePenalty(c)} ≤ BODY {c.stats.BODY}</Badge>
             <span className="text-muted">10 natural sempre falha.</span>
+          </>
+        ) : isHack ? (
+          <>
+            <Badge tone="cyan">Interface {c.roleRank}</Badge>
+            <span className="text-muted">
+              = {base} + 1d10{showDv ? ` vs defesa ${request.dv}` : ''}
+            </span>
           </>
         ) : (
           <>

@@ -170,6 +170,8 @@ export interface Character {
   roleData: RoleData;
   /** Ciberdeck (Trilheiro). */
   deck?: Cyberdeck;
+  /** Quickhacks desbloqueados (chaves de shared/rules/quickhacks.ts). */
+  quickhacks?: string[];
   /** Briga: id do combatente que o personagem está agarrando. */
   grappling?: string;
   /** Escudo humano: o agarrado recebe os tiros; morto, vira escudo-cadáver com PV = CORPO. */
@@ -233,6 +235,8 @@ export interface Cyberdeck {
   quality: 'poor' | 'standard' | 'excellent';
   slots: number;
   programs: DeckProgram[];
+  /** RAM para quickhacks (recupera por rodada; fora de combate, enche). */
+  ram?: { current: number; max: number };
 }
 
 export type NetNodeKind = 'password' | 'file' | 'control' | 'ice' | 'empty';
@@ -332,11 +336,55 @@ export interface Mission {
 
 export type NpcStatus = 'alive' | 'missing' | 'dead';
 
+/** O que o JOGADOR sabe de um fato, objetivo ou vínculo de NPC (evita diálogos que pressupõem o que ele não sabe). */
+export type Awareness = 'no' | 'suspects' | 'yes';
+
 export interface NpcKnowledge {
   id: string;
   fact: string;
-  /** Segredo: o NPC sabe, o jogador não. */
+  /** Segredo: o NPC esconde isso. Quanto o jogador já descobriu fica em `playerKnows`. */
   secret: boolean;
+  /** Ausente = 'no' se for segredo, 'yes' se não for (saves antigos). */
+  playerKnows?: Awareness;
+  /** Peso do segredo: 1 detalhe, 2 sério, 3 muda tudo. */
+  weight?: 1 | 2 | 3;
+  revealedTurn?: number;
+  /** Como o jogador descobriu (aparece no Diário). */
+  revealedHow?: string;
+}
+
+/** Personalidade: o que faz o NPC soar como ele mesmo. */
+export interface NpcProfile {
+  traits: string[];
+  /** Jeito de falar: registro, gíria, manias. */
+  voice?: string;
+  /** O que move a pessoa. */
+  motivation?: string;
+  fear?: string;
+  /** O que ela não faz de jeito nenhum. */
+  lines?: string;
+}
+
+export type NpcGoalStatus = 'active' | 'done' | 'dropped';
+
+/** Objetivo de longo prazo (o `currentGoal` é o imediato). */
+export interface NpcGoal {
+  id: string;
+  text: string;
+  status: NpcGoalStatus;
+  playerKnows: Awareness;
+}
+
+export type NpcBondKind = 'aliado' | 'rival' | 'deve_a' | 'cobra' | 'familia' | 'amante' | 'chefe' | 'subordinado' | 'ex';
+
+/** Ligação com outro NPC ou facção. */
+export interface NpcBond {
+  id: string;
+  /** Id de NPC ou de facção. */
+  targetId: string;
+  kind: NpcBondKind;
+  note?: string;
+  playerKnows: Awareness;
 }
 
 export interface Npc {
@@ -362,7 +410,28 @@ export interface Npc {
   conditions?: Condition[];
   /** É ripperdoc: nível da clínica (1–5) e se mexe com hardware militar do mercado negro. */
   ripperdoc?: { tier: 1 | 2 | 3 | 4 | 5; blackMarket?: boolean };
+  profile?: NpcProfile;
+  goals?: NpcGoal[];
+  bonds?: NpcBond[];
+  /** O jogador sabe o objetivo imediato (currentGoal)? Ausente = não. */
+  currentGoalKnown?: boolean;
+  /** Importância na história (só sobe). Ausente = figurante. */
+  importance?: NpcImportance;
+  /** Em quantos turnos diferentes o NPC interagiu com o jogador (falou, trocou mensagem). */
+  interactions?: number;
+  lastSeenTurn?: number;
+  /** Último turno em que o perfil foi pedido ao Mestre (evita repetir quando falha). */
+  profileTriedTurn?: number;
+  /** O que o NPC sabe do JOGADOR (dívida, passado, segredos). Fora disto, só o que viu acontecer. */
+  knowsAboutPlayer?: string[];
+  /** Existe no mundo (frente), mas o jogador ainda não o conheceu: fora do Diário até interagir. */
+  offstage?: boolean;
+  /** Ficha de combate (membros da equipe): persiste entre lutas. */
+  combat?: NpcCombatBlock;
 }
+
+/** figurante (só falou numa cena) → recorrente (voltou, é contato) → central (contratante, laço, muita história). */
+export type NpcImportance = 'extra' | 'recurring' | 'core';
 
 export interface Faction {
   id: string;
@@ -390,6 +459,8 @@ export interface Combatant {
   cover: CoverLevel;
   status: CombatantStatus;
   looted?: boolean;
+  /** O jogador deixou a cena; este corpo não pode mais ser revistado. */
+  lootUnavailable?: boolean;
   conditions?: Condition[];
   /** Ficha pronta usada (shared/rules/npcTemplates.ts). */
   template?: string;
@@ -407,6 +478,59 @@ export interface Combatant {
   facedown?: 'player' | 'npc';
   /** PV da cobertura total atrás da qual está (atirar nela a destrói). */
   coverHp?: number;
+  /** Efeitos de quickhack ativos (até a rodada indicada). */
+  hacks?: CombatantHack[];
+  /** De que lado luta (ausente = inimigo). */
+  side?: 'ally' | 'enemy';
+  /** Aliado da equipe: o NPC por trás (PV e ferimentos persistem depois da luta). */
+  npcId?: string;
+  /** Postura do aliado (decidida por ele; o jogador só pede). */
+  stance?: AllyStance;
+  /** Alvo que o aliado aceitou focar. */
+  focusId?: string;
+}
+
+/** aggressive: ataca o inimigo mais ferido · focus: um alvo · protect: quem ameaça o jogador · hold: segura posição na cobertura · retreat: sai da luta. */
+export type AllyStance = 'aggressive' | 'focus' | 'protect' | 'hold' | 'retreat';
+
+/** Ficha de combate que um aliado leva de uma luta para outra. */
+export interface NpcCombatBlock {
+  template?: string;
+  hp: { current: number; max: number };
+  sp: { head: number; body: number };
+  weapon: Combatant['weapon'];
+  attackBase: number;
+  evasionBase: number;
+  ref: number;
+  body?: number;
+  brawlingBase?: number;
+  cool?: number;
+  will?: number;
+}
+
+export interface PartyMember {
+  npcId: string;
+  /** Parte de cada pagamento de trabalho (%), descontada pelo motor ao concluir a missão. */
+  share: number;
+  /** 0–100: sobe com pagamento em dia e decisões alinhadas; cai com calote e traição. */
+  loyalty: number;
+  since: number;
+  stance: AllyStance;
+  /** Alvo combinado (postura focus): fica aqui para valer mesmo antes de o aliado entrar na luta. */
+  focusId?: string;
+}
+
+export interface CombatantHack {
+  key: string;
+  label: string;
+  /** Último round em que vale. */
+  untilRound: number;
+  /** Bônus para o JOGADOR acertar este alvo. */
+  hitBonus?: number;
+  /** Modificador nos ataques DESTE combatente. */
+  attackMod?: number;
+  /** Dano por rodada (ignora armadura). */
+  dot?: string;
 }
 
 export interface CombatState {
@@ -587,6 +711,81 @@ export interface ScheduledEvent {
   resolvedTurn?: number;
 }
 
+// ---------------------------------------------------------------------------
+// Frentes do mundo (tramas que andam sozinhas) e notícias
+// ---------------------------------------------------------------------------
+
+export type NewsSource = '54 News' | 'NCNet' | 'Rumor';
+
+export interface NewsItem {
+  id: string;
+  turn: number;
+  /** Hora do jogo (ISO). */
+  at: string;
+  source: NewsSource;
+  headline: string;
+  body: string;
+  frontId?: string;
+  read?: boolean;
+}
+
+/** Efeito de um estágio de frente, já com os textos preenchidos. */
+export type FrontEffect =
+  | { kind: 'news'; source: NewsSource; headline: string; body: string }
+  | { kind: 'message'; npcId: string; text: string }
+  | { kind: 'npc_status'; npcId: string; status: NpcStatus }
+  | { kind: 'faction'; factionId: string; delta: number }
+  | { kind: 'flag'; key: string; value: FlagValue; visibility: 'public' | 'hidden' }
+  | { kind: 'scene_hook'; text: string };
+
+export interface FrontStage {
+  title: string;
+  /** Horas de jogo depois do estágio anterior (ou do início). */
+  hours: number;
+  effects: FrontEffect[];
+  /** O que o jogador pode fazer para segurar este estágio (guia do Mestre). */
+  blockHint: string;
+}
+
+export type FrontStatus = 'active' | 'resolved' | 'averted';
+
+/** Trama montada por mistura de átomos (shared/rules/storyAtoms.ts): quem, onde, por quê, quem sofre e a reviravolta. */
+export interface Front {
+  id: string;
+  title: string;
+  /** Premissa preenchida ("Os Valentinos recrutam mercenários num cassino de Japantown"). */
+  premise: string;
+  who: string;
+  factionId?: string;
+  place: string;
+  motive: string;
+  victim: string;
+  /** Reviravolta escondida: só o Mestre sabe até ser revelada. */
+  twist: string;
+  arc: string;
+  seedNpcId?: string;
+  victimNpcId?: string;
+  /** Estágios já disparados (0 = nenhum). */
+  stage: number;
+  stages: FrontStage[];
+  status: FrontStatus;
+  /** Quanto o jogador sabe da trama por trás das notícias. */
+  playerAware: Awareness;
+  /** Hora do jogo (ISO) do próximo estágio. */
+  nextAt: string;
+  /** Átomos usados (evita repetir entre frentes e depura a mistura). */
+  atoms: Record<string, string>;
+  /** Hora do jogo em que a trama entrou no mundo e em que acabou (resolvida ou detida). */
+  createdAt?: string;
+  endedAt?: string;
+  /** Continuação de outra frente (mesmo grupo por trás, mesmo rosto se vivo). */
+  parentId?: string;
+  /** Textos já reescritos pelo Mestre (fluência, concordância e ganchos com a ficha). */
+  polished?: boolean;
+  /** Turno da última tentativa de reescrita (evita repetir quando falha). */
+  polishTriedTurn?: number;
+}
+
 export type ThreatLevel = 'low' | 'medium' | 'high' | 'extreme';
 
 export interface SceneState {
@@ -619,7 +818,7 @@ export interface HistorySummary {
 // Rolagens
 // ---------------------------------------------------------------------------
 
-export type RollKind = 'check' | 'attack' | 'deathSave' | 'initiative';
+export type RollKind = 'check' | 'attack' | 'deathSave' | 'initiative' | 'quickhack';
 export type RollOrigin = 'gm' | 'player';
 
 export interface RollRequest {
@@ -644,6 +843,8 @@ export interface RollRequest {
   ambush?: boolean;
   /** Modificadores rotulados calculados pelo motor (relação, cena, flags). */
   modifiers?: Modifier[];
+  /** Rolagem de quickhack: qual (o alvo vem em targetId/targetNpcId). */
+  quickhack?: string;
 }
 
 /** Registro de uma rolagem física (reproduzível pela seed). */
@@ -783,6 +984,11 @@ export interface RollOutcome {
   initiative?: { player: number; enemies: Array<{ id: string; value: number }> };
   /** Cadência 2: o segundo ataque da mesma Ação. */
   followUp?: RollOutcome;
+  /**
+   * Quickhack: o desfecho e os dados do EFEITO (dano etc.), gravados para o reducer repetir o
+   * mesmo resultado sobre o estado (o teste de Interface já está em check.d10).
+   */
+  quickhack?: { key: string; ok: boolean; summary: string; effectRolls: number[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -827,4 +1033,10 @@ export interface GameState {
   suggestedActions: string[];
   /** Modo Sandbox (debug): estado manipulável pelo painel, sem limitadores de roleplay. */
   sandbox?: boolean;
+  /** Tramas do mundo desta run (ausente em saves antigos até o carregamento gerar). */
+  fronts?: Front[];
+  /** Feed NCNet do Agent: manchetes e rumores. */
+  news?: NewsItem[];
+  /** Equipe: NPCs que lutam ao lado do jogador. */
+  party?: { members: PartyMember[] };
 }

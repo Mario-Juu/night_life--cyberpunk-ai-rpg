@@ -45,6 +45,13 @@ export function conditionPenalties(c: Character): Modifier[] {
   return [];
 }
 
+/** Combatente impedido de agir: inconsciente ou imobilizado (agarrado só dá −2; caído não impede). */
+export function combatantCannotAct(t: { conditions?: Condition[] }): string | null {
+  if (hasCondition(t.conditions, 'unconscious')) return 'inconsciente';
+  if (hasCondition(t.conditions, 'restrained')) return 'imobilizado';
+  return null;
+}
+
 /** O jogador não pode atacar enquanto estiver imobilizado ou inconsciente. */
 export function playerCannotAct(c: Character): string | null {
   if (hasCondition(c.conditions, 'unconscious')) return 'Você está inconsciente.';

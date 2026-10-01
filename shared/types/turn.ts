@@ -45,12 +45,14 @@ export interface LlmAttempt {
   ok: boolean;
   latencyMs: number;
   error?: string;
+  /** Nem foi chamado: o modelo estava esfriando de uma falha anterior (o motivo vai em error). */
+  skipped?: boolean;
 }
 
-export type LlmPurpose = 'interpret' | 'narrate' | 'prologue' | 'phone' | 'summarize';
+export type LlmPurpose = 'interpret' | 'narrate' | 'prologue' | 'phone' | 'summarize' | 'profile' | 'worldgen';
 
 /** Por que uma chamada ao LLM falhou (a causa que o jogador precisa saber). */
-export type FailureKind = 'quota_day' | 'quota_minute' | 'overloaded' | 'timeout' | 'auth' | 'bad_request' | 'model_unavailable' | 'invalid_json' | 'network' | 'other';
+export type FailureKind = 'quota_day' | 'quota_minute' | 'overloaded' | 'timeout' | 'auth' | 'bad_request' | 'model_unavailable' | 'invalid_json' | 'blocked' | 'network' | 'other';
 
 /** Metadados de observabilidade de cada chamada ao LLM. */
 export interface LlmRunMeta {
@@ -65,6 +67,8 @@ export interface LlmRunMeta {
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
+  /** Tokens de "pensamento" do modelo (cobrados como saída, não aparecem no texto). */
+  thoughtsTokens?: number;
   latencyMs: number;
   attempts: LlmAttempt[];
   toolsCalled: string[];

@@ -67,7 +67,8 @@ function directDamage(s: GameState, foe: Combatant, dmg: number, choke: boolean)
 export function brawl(s0: GameState, action: BrawlAction, targetId: string | undefined, rng: Rng): BrawlResult {
   const c = s0.character;
   if (c.dead) return fail(s0, 'O personagem está morto.');
-  const held = c.grappling ? s0.combat.combatants.find(x => x.id === c.grappling) : undefined;
+  // Agarrado que caiu/fugiu/morreu não prende mais ninguém (senão o jogador fica preso a um corpo).
+  const held = c.grappling ? s0.combat.combatants.find(x => x.id === c.grappling && x.status === 'active') : undefined;
   const body = statValue(c, 'BODY');
 
   switch (action) {
@@ -76,6 +77,7 @@ export function brawl(s0: GameState, action: BrawlAction, targetId: string | und
       if (held) return fail(s0, `Você já está agarrando ${held.name}.`);
       const foe = findCombatantLoose(s0.combat.combatants, targetId);
       if (!foe) return fail(s0, 'Esse alvo não está no combate (entre em combate com ele antes).');
+      if (foe.side === 'ally') return fail(s0, `${foe.name} está do seu lado — use dismiss_npc antes.`);
       // Ação de Movimento (MOVE × 2 m): cola no alvo se ele estiver ao alcance.
       if (foe.distance !== 'melee' && moveMeters(movementValue(c)) < BRACKET_NEAR_EDGE[foe.distance]) return fail(s0, `${foe.name} está longe demais para alcançar neste turno — aproxime-se primeiro.`);
       // Teste resistido: o alvo rola DEX + Briga + 1d10 agora (empate favorece o defensor).
@@ -115,7 +117,7 @@ export function brawl(s0: GameState, action: BrawlAction, targetId: string | und
     }
     case 'escape': {
       if (!hasCondition(c.conditions, 'grappled')) return fail(s0, 'Ninguém está te agarrando.');
-      const grabber = findCombatantLoose(s0.combat.combatants, targetId) ?? s0.combat.combatants.filter(x => x.status === 'active' && x.distance === 'melee').sort((a, b) => (b.brawlingBase ?? 0) - (a.brawlingBase ?? 0))[0];
+      const grabber = findCombatantLoose(s0.combat.combatants, targetId) ?? s0.combat.combatants.filter(x => x.status === 'active' && x.side !== 'ally' && x.distance === 'melee').sort((a, b) => (b.brawlingBase ?? 0) - (a.brawlingBase ?? 0))[0];
       const defense = (grabber?.brawlingBase ?? 10) + rollD10(rng).total;
       const res = instantCheck(s0, { reason: `Escapar do agarrão${grabber ? ` de ${grabber.name}` : ''}`, stat: 'DEX', skillId: 'brawling', dv: defense }, rng);
       let s = res.state;

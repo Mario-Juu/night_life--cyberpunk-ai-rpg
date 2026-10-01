@@ -69,6 +69,8 @@ e aceita `expectedVersion` (concorrência otimista).
 | Orquestração do turno no cliente | `src/store/turnController.ts` |
 | Snapshots, rewind e branches | `src/store/timeline.ts` |
 | Persistência local (IndexedDB) | `src/services/repository.ts` |
+| NPCs: perfil, objetivos, vínculos, o que o jogador sabe, importância | `shared/engine/npcProfile.ts` |
+| Frentes do mundo (mistura de átomos, relógio, NCNet, costura) | `shared/engine/fronts.ts`, `shared/rules/storyAtoms.ts`, `shared/rules/storyCatalog.ts` |
 
 ## 3. Ferramentas
 
@@ -78,6 +80,8 @@ e aceita `expectedVersion` (concorrência otimista).
   - relações e reputação: `modify_relationship`, `modify_reputation`, `modify_heat`, `modify_faction`;
   - mundo e cena: `set_flag`, `update_scene`, `advance_time`, `schedule_event`, `cancel_event`;
   - NPCs e mensagens: `upsert_npc`, `npc_status`, `send_message`;
+  - profundidade dos NPCs: `npc_profile`, `npc_goal`, `npc_bond`, `reveal_npc` (o que o jogador sabe só sobe por aqui);
+  - frentes do mundo: `front_update` (adiantar, atrasar, deter, o jogador desconfia/descobre);
   - missões: `start_quest`, `update_quest`, `complete_quest`, `fail_quest`;
   - itens e dinheiro: `give_item`, `remove_item`, `transfer_money`;
   - corpo e efeitos: `damage`, `heal`, `stabilize`, `add_injury`, `remove_injury`, `add_effect`, `modify_humanity`, `add_cyberware`, `award_ip`;
@@ -180,7 +184,6 @@ Coberto pelo motor e verificado em `evals/red-rules.eval.ts`:
 Ainda não implementado (recomendado, em ordem de impacto):
 1. **Habilidades de Papel** (Solo: Consciência de Combate; Trilheiro: Interface; Técnico: Criador; Medicânico: Medicina; Canal: Operador; Nômade: Moto).
 2. **ROF 2**: pistolas, SMGs e armas brancas leves/médias atacam duas vezes por ação.
-3. **Ordem de iniciativa aplicada** aos turnos de combate.
 4. **Fogo automático e fogo de supressão.**
 5. **Netrunning** (arquiteturas, programas, ICE).
 
@@ -197,5 +200,7 @@ A "meia cobertura" (+2 no DV) é uma regra da casa; no RED, cobertura bloqueia a
 - Rolagens usam 1d10 (Cyberpunk RED), não 1d20. A arquitetura (`RollRecord`, `recordingRng`) aceita outros dados.
 - O jogador ainda clica em "Rolar". A rolagem é do motor; o clique preserva a agência e o uso de Sorte.
 - Ações com rolagem fazem 2 chamadas ao LLM (interpretar e narrar); ações simples também. O intérprete sempre usa o modelo flash.
-- A ordem de iniciativa é exibida, mas os turnos de combate ainda não são forçados por ela.
+- Iniciativa aplicada (`shared/engine/initiative.ts`): depois da Ação do jogador, aliados e inimigos agem na ordem (os mais lentos fecham a rodada; os mais rápidos abrem a próxima), ANTES da narração. `enemyActions` do narrador só vale no turno em que ele inicia o combate.
+- Equipe (`shared/engine/party.ts`): aliados controlados pelo motor; o jogador pede (`ask_ally`) e o aliado aceita, adapta ou recusa. PV persistem entre lutas; parte do pagamento descontada ao concluir missão.
+- Quickhacks do Trilheiro (`shared/engine/quickhacks.ts`, `shared/rules/quickhacks.ts`): árvore 3×4, RAM do deck, Interface + 1d10 contra a defesa do alvo.
 - O verificador de consistência é heurístico: pega os casos críticos (disparo sem munição, morto falando, acerto/erro invertido).

@@ -54,7 +54,8 @@ export function activeOs(s: Pick<GameState, 'character' | 'combat' | 'activeEffe
   const inst = installedOs(s.character);
   if (!inst) return null;
   const run = s.combat.os;
-  if (s.combat.active && run && run.key === inst.def.key && s.combat.round < run.startRound + run.rounds) return inst.os;
+  // Janela fechada dos dois lados: a ativação gasta a rodada em que foi ligada (startRound é a seguinte).
+  if (s.combat.active && run && run.key === inst.def.key && s.combat.round >= run.startRound && s.combat.round < run.startRound + run.rounds) return inst.os;
   if (!s.combat.active && s.activeEffects.some(e => e.name === osOnName(inst.def))) return inst.os;
   return null;
 }

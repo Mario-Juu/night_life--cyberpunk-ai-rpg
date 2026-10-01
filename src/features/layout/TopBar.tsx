@@ -1,3 +1,4 @@
+import { unreadNews } from '@shared/engine/fronts';
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, Bug, CloudRain, History, Menu, MessageSquare, PanelLeft, PanelRight, Save, Settings, Siren, Swords } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
@@ -63,7 +64,7 @@ function MenuButton({ sandbox }: { sandbox?: boolean }) {
 
 export function TopBar({ game }: { game: GameState }) {
   const t = formatGameTime(game.world.time);
-  const unread = game.phone.reduce((s, th) => s + th.unread, 0);
+  const unread = game.phone.reduce((s, th) => s + th.unread, 0) + unreadNews(game);
   const toggleSheet = useUiStore(s => s.toggleSheet);
   const sheetOpen = useUiStore(s => s.sheetOpen);
   const sideOpen = useUiStore(s => s.sideOpen);

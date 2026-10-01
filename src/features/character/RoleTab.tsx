@@ -1,4 +1,5 @@
-import { ArrowUp, Minus, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowUp, Cpu, Minus, Plus } from 'lucide-react';
 import type { GameState } from '@shared/types/game';
 import {
   COMBAT_AWARENESS,
@@ -14,6 +15,7 @@ import {
 } from '@shared/rules/roles';
 import { PROGRAMS, netActionsFor } from '@shared/rules/net';
 import { useTutorial } from '../tutorial/TutorialModal';
+import { QuickhackStoreModal } from './QuickhackTree';
 import { freePoints, surgeryValue, unlockedDrugs, type RoleSection } from '@shared/engine/roles';
 import { Badge, Button, cn } from '../../ui';
 import { dispatch } from '../../store/gameStore';
@@ -39,6 +41,7 @@ function Stepper({ label, value, hint, onMinus, onPlus, disabledMinus, disabledP
 
 export function RoleTab({ game }: { game: GameState }) {
   const c = game.character;
+  const [quickhackShopOpen, setQuickhackShopOpen] = useState(false);
   const info = ROLE_ABILITY[c.bio.role];
   const d = c.roleData;
   useTutorial('role', true);
@@ -168,8 +171,14 @@ export function RoleTab({ game }: { game: GameState }) {
             })}
           </ul>
           <p className="text-[11px] text-dim">Use a aba Rede no painel lateral quando houver um ponto de acesso na cena.</p>
+          {c.deck && (
+            <Button size="sm" variant="ghost" tone="cyan" block icon={<Cpu className="h-3.5 w-3.5" />} onClick={() => setQuickhackShopOpen(true)}>
+              Abrir loja de quickhacks
+            </Button>
+          )}
         </section>
       )}
+      {c.bio.role === 'netrunner' && c.deck && <QuickhackStoreModal c={c} open={quickhackShopOpen} onClose={() => setQuickhackShopOpen(false)} />}
 
       {c.bio.role === 'fixer' && (
         <section className="space-y-1 text-sm">

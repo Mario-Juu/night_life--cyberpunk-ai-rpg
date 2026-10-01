@@ -57,7 +57,7 @@ describe('TEST 003 — segredo não vira conhecimento do jogador', () => {
     const ctx = sc.context('Dex');
     expect(ctx.playerKnowledge.join(' ')).not.toMatch(/trair/);
     const prompt = buildNarratePrompt(ctx, { kind: 'action', playerInput: 'falo com o Dex', engineResult: null });
-    expect(prompt).toMatch(/SEGREDOS \(o jogador NÃO sabe\): Dex vai trair/);
+    expect(prompt).toMatch(/SÓ VOCÊ SABE \(ninguém age como se o jogador soubesse\): \[fact_\w+\] Dex vai trair/);
     expect(prompt.split('O jogador sabe:')[1].split('\n')[0]).not.toMatch(/trair/);
   });
 });

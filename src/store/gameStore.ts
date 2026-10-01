@@ -4,7 +4,9 @@ import type { GameState } from '@shared/types/game';
 import type { TurnRecord } from '@shared/types/turn';
 import { gameReducer, type GameAction } from '@shared/engine/reducer';
 import { validateSave } from '../services/saves';
+import { toast } from '../ui/toastStore';
 import { backfillNpcsFromChat, repairNpcs } from '@shared/engine/npcs';
+import { generateFronts, repairFronts } from '@shared/engine/fronts';
 
 /** Cada mudança confirmada incrementa session.version (controle de concorrência/auditoria). */
 function bump(prev: GameState, next: GameState): GameState {
@@ -44,13 +46,29 @@ export const useGameStore = create<GameStore>()(
         }
         set({ game: bump(current, next) });
       },
-      setGame: state => set({ game: state, activeTurn: null }),
+      // Campanha nova, slot ou importação: saves de antes das frentes ganham as deles (seed da campanha).
+      setGame: state => set({ game: state && sanitizeGame(state), activeTurn: null }),
       setActiveTurn: activeTurn => set({ activeTurn }),
     }),
     {
       name: 'nightlife_state_v2',
       version: 3,
-      storage: createJSONStorage(() => localStorage),
+      // Cota do navegador cheia não pode derrubar o turno no meio: avisa uma vez e segue em memória.
+      storage: createJSONStorage(() => ({
+        getItem: k => localStorage.getItem(k),
+        removeItem: k => localStorage.removeItem(k),
+        setItem: (k, v) => {
+          try {
+            localStorage.setItem(k, v);
+            storageWarned = false;
+          } catch {
+            if (!storageWarned) {
+              storageWarned = true;
+              toast({ title: 'Não deu para salvar', body: 'O armazenamento do navegador encheu. Exporte a campanha (Menu → Salvar/Carregar) antes de fechar a aba.', tone: 'danger' });
+            }
+          }
+        },
+      })),
       // Sem `migrate`, o zustand DESCARTA estados de versão anterior. A migração real
       // (v2 → v3) acontece em `merge`, via validateSave/migrateState.
       migrate: persisted => persisted as GameStore,
@@ -60,9 +78,17 @@ export const useGameStore = create<GameStore>()(
         if (!p?.game) return current;
         try {
           // Recupera personagens que falaram em cena mas nunca foram cadastrados (saves antigos).
-          const game = repairNpcs(backfillNpcsFromChat(validateSave(p.game)));
+          const game = sanitizeGame(p.game);
           return { ...current, game, activeTurn: p.activeTurn?.gameId === game.id ? p.activeTurn : null };
-        } catch {
+        } catch (err) {
+          // Guarda o original para não perder a campanha quando o save estiver corrompido/mais novo.
+          try {
+            const raw = localStorage.getItem('nightlife_state_v2');
+            if (raw) localStorage.setItem('nightlife_state_backup', raw);
+          } catch {
+            /* sem espaço para a cópia: segue */
+          }
+          brokenSave = (err as Error)?.message ?? 'motivo desconhecido';
           return current;
         }
       },
@@ -83,6 +109,20 @@ export function requireGame(): GameState {
 export function dispatch(action: GameAction): void {
   useGameStore.getState().dispatch(action);
 }
+
+/**
+ * Saneamento ÚNICO de toda campanha que entra no jogo (carregar, importar, slot, rewind, ramificação):
+ * migra o schema, repara NPCs/frentes de saves antigos e garante as frentes do mundo.
+ */
+export function sanitizeGame(raw: unknown): GameState {
+  return repairFronts(generateFronts(repairNpcs(backfillNpcsFromChat(validateSave(raw)))));
+}
+
+/** Save persistido que não pôde ser lido nesta sessão (a UI avisa o jogador). */
+export let brokenSave: string | null = null;
+export const clearBrokenSave = () => (brokenSave = null);
+
+let storageWarned = false;
 
 export function commit(next: GameState, expectedVersion?: number): void {
   useGameStore.getState().commit(next, expectedVersion);

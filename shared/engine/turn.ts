@@ -16,7 +16,10 @@ import { REGISTRY, runToolCalls } from './tools';
 import { acknowledgeOffscreen, pendingOffscreen } from './world';
 import { memoriesFromEvents, pruneMemories, touchMemories } from './memory';
 import { applyContactExchange, registerSpeakers, speakersOf } from './npcs';
+import { noteInteraction, syncImportance } from './npcProfile';
+import { processFronts, replenishFronts } from './fronts';
 import { CYBERPSYCHO_ACTIONS, isCyberpsycho } from '../rules/humanity';
+import { runEnemyPhase } from './initiative';
 
 export interface Step {
   state: GameState;
@@ -85,7 +88,7 @@ export function applyInterpretation(step: Step, interp: InterpretResponse, rng: 
 export function toCheckRecord(outcome: RollOutcome): CheckRecord {
   const c = outcome.check;
   return {
-    check: outcome.request.kind === 'deathSave' ? 'DEATH_SAVE' : outcome.request.kind === 'initiative' ? 'INITIATIVE' : (getSkill(c.skillId)?.id ?? c.stat).toUpperCase(),
+    check: outcome.request.kind === 'deathSave' ? 'DEATH_SAVE' : outcome.request.kind === 'initiative' ? 'INITIATIVE' : outcome.request.kind === 'quickhack' ? 'INTERFACE' : (getSkill(c.skillId)?.id ?? c.stat).toUpperCase(),
     dice: '1d10',
     roll: c.d10.total,
     modifier: c.total - c.d10.total,
@@ -116,6 +119,21 @@ export function applyRoll(step: Step, luckSpent: number, seed: string): Step & {
   };
 }
 
+/**
+ * Em combate, depois da Ação do jogador: os inimigos agem na ordem de iniciativa (motor), ANTES da
+ * narração — o Mestre narra o que já aconteceu. Fora de combate ou no prólogo, nada.
+ */
+export function applyEnemyPhase(step: Step, rng: Rng = cryptoRng): Step {
+  if (step.record.kind === 'prologue' || !step.state.combat.active || step.state.character.dead) return step;
+  if (step.record.toolCalls.some(t => t.tool === 'enemy_phase')) return step;
+  const phase = runEnemyPhase(step.state, rng);
+  const summary = phase.lines.length ? phase.lines.join(' ') : 'Nenhum inimigo consegue agir nesta rodada.';
+  return {
+    state: phase.state,
+    record: { ...step.record, toolCalls: [...step.record.toolCalls, { tool: 'enemy_phase', args: {}, origin: 'engine', ok: true, summary, data: { round: phase.state.combat.round, attacks: phase.results.length } }] },
+  };
+}
+
 /** Resultado mecânico consolidado (é só isto que o narrador precisa respeitar). */
 export function buildEngineResult(step: Step, outcome: RollOutcome | null): EngineResult {
   return {
@@ -134,15 +152,22 @@ export function buildEngineResult(step: Step, outcome: RollOutcome | null): Engi
 export function applyNarration(step: Step, narr: NarrateResponse, rng: Rng = cryptoRng): Step {
   let s = appendChat(step.state, { kind: 'narration', text: narr.narration, degraded: narr.degraded });
   // Quem fala na cena passa a existir no mundo (o narrador pode enriquecer depois com upsert_npc).
-  if (!narr.degraded) s = registerSpeakers(s, speakersOf(narr.narration, narr.dialogues)).state;
+  if (!narr.degraded) {
+    const reg = registerSpeakers(s, speakersOf(narr.narration, narr.dialogues));
+    s = noteInteraction(reg.state, reg.ids);
+  }
   for (const d of narr.discoveries) {
     if (s.discoveries.some(x => x.title === d.title)) continue;
     s = appendChat({ ...s, discoveries: [...s.discoveries, d].slice(-60) }, { kind: 'discovery', text: d.description, discovery: d });
   }
   const run = runToolCalls(REGISTRY, s, narr.toolCalls, { rng, origin: 'narrator' }, 20);
   s = run.state;
-  for (const action of narr.enemyActions.slice(0, 6)) {
-    const res = resolveEnemyAttack(s, action.attackerId, rng);
+  // Com a fase dos inimigos resolvida pelo motor, enemyActions do narrador só vale no turno em que ELE iniciou o combate.
+  const enginePhase = step.record.toolCalls.some(t => t.tool === 'enemy_phase');
+  // Um ataque por atacante: o narrador repetindo o mesmo id descreve o MESMO ataque.
+  const attackers = enginePhase ? [] : [...new Set(narr.enemyActions.map(a => a.attackerId))].slice(0, 6);
+  for (const attackerId of attackers) {
+    const res = resolveEnemyAttack(s, attackerId, rng);
     if (res) s = gameReducer(s, { type: 'enemyAttack', result: res.result });
   }
   // Ciberpsicose: o jogador só escolhe impulsos — nunca fica sem opções.
@@ -154,7 +179,10 @@ export function applyNarration(step: Step, narr: NarrateResponse, rng: Rng = cry
 
 /** Fecha o turno: memórias automáticas, poda, eventos do turno e versão final. */
 export function finalizeTurn(step: Step, retrievedMemoryIds: string[]): Step {
-  let s = touchMemories(step.state, retrievedMemoryIds);
+  // Quem voltou à história ganha importância (e, com ela, perfil gerado fora do turno).
+  // O mundo anda: estágios de frente vencidos pelo relógio deste turno disparam aqui.
+  // Trama que acabou abre espaço para outra (às vezes a continuação dela).
+  let s = syncImportance(replenishFronts(processFronts(touchMemories(step.state, retrievedMemoryIds))));
   const events = eventsOfTurn(s, step.record.turnId);
   const mem = memoriesFromEvents(s, events);
   s = pruneMemories(mem.state);
@@ -175,6 +203,6 @@ export function finalizeTurn(step: Step, retrievedMemoryIds: string[]): Step {
 export function applyPhoneReply(state: GameState, npcId: string, reply: PhoneResponse, read: boolean, rng: Rng = cryptoRng): { state: GameState; records: TurnRecord['toolCalls'] } {
   let s = gameReducer(state, { type: 'phoneReply', npcId, text: reply.replyText, suggestedReplies: reply.suggestedReplies, read });
   const run = runToolCalls(REGISTRY, s, reply.toolCalls, { rng, origin: 'phone' }, 8);
-  s = run.state;
+  s = syncImportance(noteInteraction(run.state, [npcId]));
   return { state: s, records: run.records };
 }

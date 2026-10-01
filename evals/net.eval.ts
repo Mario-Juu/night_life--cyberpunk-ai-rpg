@@ -149,3 +149,26 @@ describe('Pelo texto (intérprete)', () => {
     expect(prompt).toMatch(/CONECTADO · andar 1\/1/);
   });
 });
+
+describe('Ponto de acesso some quando o jogador se afasta (relato do caminhão)', () => {
+  const withAccess = () => scenario({ role: 'netrunner' }).tool('narrator', 'net_architecture', { name: 'Caminhão da Militech', accessPoint: 'painel da cabine', difficulty: 'basic' });
+
+  it('mudar de lugar tira a arquitetura do painel', () => {
+    const sc = withAccess();
+    expect(sc.state.net.architecture).not.toBeNull();
+    sc.tool('interpreter', 'move_location', { spot: 'Beco atrás do mercado' });
+    expect(sc.state.net.architecture).toBeNull();
+  });
+
+  it('narrador diz que o jogador se afastou (mesma cena): some também', () => {
+    const sc = withAccess().tool('narrator', 'update_scene', { description: 'Longe do caminhão', netAccess: false });
+    expect(sc.state.net.architecture).toBeNull();
+  });
+
+  it('conectado e saiu do alcance: a conexão cai', () => {
+    const sc = withAccess().tool('interpreter', 'jack_in', {});
+    expect(sc.state.net.run).not.toBeNull();
+    sc.tool('narrator', 'move_location', { spot: 'Rua de baixo' });
+    expect(sc.state.net).toMatchObject({ run: null, architecture: null });
+  });
+});

@@ -51,6 +51,15 @@ export function computeMaxHumanity(emp: number): number {
   return emp * 10;
 }
 
+/**
+ * Humanidade depois de instalar cromo. O máximo cai junto com a instalação, então o atual tem de
+ * ser preso ao novo teto — senão um personagem com Humanidade cheia fica com 60/56 e a ficha mente.
+ */
+export function humanityAfter(h: { current: number; max: number }, loss: number, maxPenalty: number): { current: number; max: number } {
+  const max = Math.max(0, h.max - maxPenalty);
+  return { current: Math.min(max, Math.max(0, h.current - loss)), max };
+}
+
 /** EMP efetivo cai conforme a Humanidade é perdida. */
 export function effectiveEmp(humanityCurrent: number): number {
   return Math.max(0, Math.floor(humanityCurrent / 10));

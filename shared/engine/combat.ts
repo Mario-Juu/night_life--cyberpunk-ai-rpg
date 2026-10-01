@@ -6,6 +6,7 @@ import type {
   CombatState,
   DamageApplication,
   DamageRoll,
+  DistanceBracket,
   EnemyAttackResult,
   GameState,
   GrenadeKind,
@@ -16,8 +17,8 @@ import type {
   RollRequest,
   WeaponClass,
 } from '../types/game';
-import { AIMED_SHOT_PENALTY, BRACKET_NEAR_EDGE, WEAPONS, autofireDv, isArmorPiercingMelee, moveMeters, rangedDv, unarmedDamage } from '../rules/weapons';
-import { setCondition } from './conditions';
+import { AIMED_SHOT_PENALTY, ALL_BRACKETS, BRACKET_NEAR_EDGE, WEAPONS, autofireDv, isArmorPiercingMelee, moveMeters, rangedDv, unarmedDamage } from '../rules/weapons';
+import { combatantCannotAct, setCondition } from './conditions';
 import { randomCriticalInjury } from '../rules/criticalInjuries';
 import { cryptoRng, rollD10, rollDamage, type Rng } from './dice';
 import { resolveCheck, skillValue, statValue } from './checks';
@@ -66,8 +67,86 @@ export function isMeleeWeapon(item: InventoryItem): boolean {
   return WEAPONS[item.weapon?.weaponClass ?? 'unarmed'].melee;
 }
 
+/** Aliado do jogador (equipe ou quem o narrador pôs do nosso lado). */
+export const isAlly = (t: Combatant) => t.side === 'ally';
+/** Inimigo de pé: alvo do jogador, do Ping, da supressão, da ameaça da cena. */
+export const isActiveEnemy = (t: Combatant) => t.status === 'active' && !isAlly(t);
+
 export function activeEnemies(combat: CombatState): Combatant[] {
-  return combat.combatants.filter(c => c.status === 'active');
+  return combat.combatants.filter(isActiveEnemy);
+}
+
+export function activeAllies(combat: CombatState): Combatant[] {
+  return combat.combatants.filter(t => t.status === 'active' && isAlly(t));
+}
+
+export interface NpcAttackResult {
+  attackerId: string;
+  defenderId: string;
+  hit: boolean;
+  skipped?: string;
+  jammed?: boolean;
+  hpDamage?: number;
+  defenderStatusAfter?: CombatantStatus;
+  /** Linha para o registro e para o narrador. */
+  line: string;
+}
+
+/** Faixa entre dois combatentes: a maior das duas (as faixas são medidas a partir do jogador). */
+export function betweenCombatants(a: Pick<Combatant, 'distance'>, b: Pick<Combatant, 'distance'>): DistanceBracket {
+  return ALL_BRACKETS.indexOf(a.distance) >= ALL_BRACKETS.indexOf(b.distance) ? a.distance : b.distance;
+}
+
+/**
+ * Ataque entre NPCs (aliado × inimigo): mesma balística do resto do motor.
+ * Distância: a maior das duas faixas; corpo a corpo: Evasão do defensor.
+ */
+export function resolveCombatantAttack(state: GameState, attackerId: string, defenderId: string, rng: Rng = cryptoRng): { combat: CombatState; result: NpcAttackResult } | null {
+  const attacker = state.combat.combatants.find(t => t.id === attackerId && t.status === 'active');
+  const defender = state.combat.combatants.find(t => t.id === defenderId && t.status === 'active');
+  if (!attacker || !defender) return null;
+  const tag = (t: Combatant) => (isAlly(t) ? `${t.name} (aliado)` : t.name);
+  const stopped = combatantCannotAct(attacker);
+  if (stopped) {
+    const line = `${tag(attacker)} não age (${stopped}).`;
+    return { combat: state.combat, result: { attackerId, defenderId, hit: false, skipped: stopped, line } };
+  }
+  const patch = (id: string, fn: (t: Combatant) => Combatant): CombatState => ({ ...state.combat, combatants: state.combat.combatants.map(t => (t.id === id ? fn(t) : t)) });
+  if (attacker.skipNextAttack) {
+    const line = `${tag(attacker)} não ataca (${attacker.skipNextAttack}).`;
+    return { combat: patch(attacker.id, t => ({ ...t, skipNextAttack: undefined })), result: { attackerId, defenderId, hit: false, skipped: attacker.skipNextAttack, line } };
+  }
+  const profile = WEAPONS[attacker.weapon.weaponClass];
+  const roll = rollD10(rng);
+  if (attacker.weapon.quality === 'poor' && !profile.melee && roll.natural === 1) {
+    const line = `A arma de ${tag(attacker)} TRAVOU.`;
+    return { combat: patch(attacker.id, t => ({ ...t, skipNextAttack: 'destravando a arma' })), result: { attackerId, defenderId, hit: false, jammed: true, line } };
+  }
+  const hackMod = (attacker.hacks ?? []).reduce((n, h) => n + (h.attackMod ?? 0), 0) + (defender.hacks ?? []).reduce((n, h) => n + (h.hitBonus ?? 0), 0);
+  const attackTotal = attacker.attackBase + roll.total + hackMod + (attacker.weapon.quality === 'excellent' ? 1 : 0);
+  if (defender.cover === 'full' && !profile.melee) {
+    const line = `${tag(attacker)} atira em ${tag(defender)}, mas a cobertura segura.`;
+    return { combat: state.combat, result: { attackerId, defenderId, hit: false, line } };
+  }
+  const evasion = () => defender.evasionBase + rollD10(rng).total;
+  let defense: number;
+  if (profile.melee) defense = evasion();
+  else {
+    // A faixa de distância é medida a partir do JOGADOR: entre dois NPCs vale a maior das duas, senão um
+    // aliado parado em "0–6 m" acertaria de graça um atirador a 40 m.
+    const band = betweenCombatants(attacker, defender);
+    const dv = (rangedDv(attacker.weapon.weaponClass, band) ?? 99) + (defender.cover === 'partial' ? 2 : 0);
+    defense = defender.ref >= 8 ? Math.max(dv, evasion()) : dv;
+  }
+  if (attackTotal <= defense) {
+    const line = `${tag(attacker)} ataca ${tag(defender)} e erra.`;
+    return { combat: state.combat, result: { attackerId, defenderId, hit: false, line } };
+  }
+  const dmg = rollDamage(attacker.weapon.damage, rng);
+  const r = damageCombatant(defender, dmg, { location: 'body', halfArmor: isArmorPiercingMelee(attacker.weapon.weaponClass), rng });
+  const combat = patch(defender.id, t => ({ ...t, hp: { ...t.hp, current: r.application.hpAfter }, sp: { ...t.sp, body: r.application.spAfter }, status: r.statusAfter }));
+  const line = `${tag(attacker)} acerta ${tag(defender)}: −${r.application.hpDamage} PV${r.statusAfter === 'down' ? ' — caiu' : ` (${r.application.hpAfter}/${defender.hp.max})`}.`;
+  return { combat, result: { attackerId, defenderId, hit: true, hpDamage: r.application.hpDamage, defenderStatusAfter: r.statusAfter, line } };
 }
 
 /** DV estimado mostrado ao jogador antes de atacar. */
@@ -155,6 +234,8 @@ export function buildAttackRequest(c: Character, weapon: InventoryItem, target: 
     mode: mode === 'single' ? undefined : mode,
     rof2: opts.twice || undefined,
     ambush: opts.ambush || undefined,
+    // Quickhacks ativos no alvo (Ping, Ótica reiniciada, Paralisar Movimento): o jogador acerta com mais facilidade.
+    modifiers: target?.hacks?.some(h => h.hitBonus) ? target.hacks.filter(h => h.hitBonus).map(h => ({ label: h.label, value: h.hitBonus! })) : undefined,
   };
 }
 
@@ -170,7 +251,7 @@ function damageNotation(c: Character, weapon: InventoryItem, cls: WeaponClass): 
 }
 
 /** Aplica um dano já rolado num combatente (armadura, cabeça, ablação, crítico, não letal). */
-function damageCombatant(
+export function damageCombatant(
   target: Combatant,
   damage: DamageRoll,
   opts: { location: HitLocation; halfArmor: boolean; ablate?: number; nonLethal?: 'stun' | 'rubber'; rng: Rng },
@@ -238,7 +319,7 @@ export function resolvePlayerAttack(state: GameState, request: RollRequest, luck
   const profile = WEAPONS[cls];
   const mode = request.mode ?? 'single';
   const burst = mode === 'autofire' || mode === 'suppressive';
-  const target = state.combat.combatants.find(t => t.id === request.targetId && t.status === 'active');
+  const target = state.combat.combatants.find(t => t.id === request.targetId && isActiveEnemy(t));
   const stat = burst ? 'REF' : profile.melee || profile.thrown ? 'DEX' : 'REF';
   const skillId = burst ? 'autofire' : profile.skillId;
   const usesAmmo = !profile.melee && !profile.thrown;
@@ -290,7 +371,7 @@ export function resolvePlayerAttack(state: GameState, request: RollRequest, luck
   if (mode === 'suppressive') {
     const check = resolveCheck(c, { stat: 'REF', skillId: 'autofire', dv: 0, modifiers: mods, luckSpent, ignoreFumble: soloValue(c, 'fumbleRecovery') > 0 }, rng);
     const suppression = state.combat.combatants
-      .filter(t => t.status === 'active' && t.cover !== 'full' && BRACKET_NEAR_EDGE[t.distance] <= 25)
+      .filter(t => isActiveEnemy(t) && t.cover !== 'full' && BRACKET_NEAR_EDGE[t.distance] <= 25)
       .map(t => ({ id: t.id, name: t.name, held: (t.will ?? 5) + NPC_SAVE_BASE + rng(10) > check.total }));
     const jammed = quality === 'poor' && check.d10.natural === 1;
     const attack: AttackResult = { ...baseAttack, hit: !jammed, ammoAfter: (ammoBefore ?? 0) - 10, ammoUsed: 10, suppression: jammed ? [] : suppression, jammedNow: jammed || undefined, targetName: 'área' };
@@ -438,7 +519,7 @@ export function applyPlayerAttack(state: GameState, attack: AttackResult): { cha
   if (attack.closedIn) add(attack.targetId, t => ({ ...t, distance: 'melee' }));
   for (const s of attack.suppression ?? []) if (!s.held) add(s.id, t => ({ ...t, skipNextAttack: 'suprimido: mergulhou na cobertura', cover: t.cover === 'none' ? 'partial' : t.cover }));
   // Emboscada: os inimigos ainda desprevenidos perdem a próxima ação.
-  if (attack.ambush) for (const t of state.combat.combatants) if (t.status === 'active') add(t.id, x => ({ ...x, skipNextAttack: x.skipNextAttack ?? 'pego de surpresa' }));
+  if (attack.ambush && attack.hit) for (const t of state.combat.combatants) if (isActiveEnemy(t)) add(t.id, x => ({ ...x, skipNextAttack: x.skipNextAttack ?? 'pego de surpresa' }));
 
   const combat: CombatState = patch.size ? { ...state.combat, combatants: state.combat.combatants.map(t => patch.get(t.id)?.(t) ?? t) } : state.combat;
   return { character, combat };
@@ -450,11 +531,17 @@ export function applyPlayerAttack(state: GameState, attack: AttackResult): { cha
  * Corpo a corpo: rolagem de Evasão do jogador.
  */
 export function resolveEnemyAttack(state: GameState, attackerId: string, rng: Rng = cryptoRng): { result: EnemyAttackResult; character: Character } | null {
-  const attacker = state.combat.combatants.find(t => t.id === attackerId && t.status === 'active');
+  // Só um INIMIGO de pé ataca o jogador (aliado nunca, nem por enemyActions do narrador).
+  const attacker = state.combat.combatants.find(t => t.id === attackerId && isActiveEnemy(t));
   if (!attacker) return null;
   const c = state.character;
   const profile = WEAPONS[attacker.weapon.weaponClass];
 
+  // Inconsciente ou amarrado: não age (a condição continua; não é consumida como o skipNextAttack).
+  const blocked = combatantCannotAct(attacker);
+  if (blocked) {
+    return { result: { attackerId, attackerName: attacker.name, attackTotal: 0, defenseTotal: 0, defenseKind: 'dv', hit: false, skipped: blocked }, character: c };
+  }
   // Suprimido, ofuscado, emboscado ou destravando a arma: perde este ataque.
   if (attacker.skipNextAttack) {
     return { result: { attackerId, attackerName: attacker.name, attackTotal: 0, defenseTotal: 0, defenseKind: 'dv', hit: false, skipped: attacker.skipNextAttack }, character: c };
@@ -468,7 +555,9 @@ export function resolveEnemyAttack(state: GameState, attackerId: string, rng: Rn
   const grappledPenalty = (attacker.conditions ?? []).some(x => x.key === 'grappled') ? -2 : 0;
   const facedownPenalty = attacker.facedown === 'player' ? -2 : 0;
   const os = activeOs(state);
-  const attackTotal = attacker.attackBase + attackRoll.total + grappledPenalty + facedownPenalty + (attacker.weapon.quality === 'excellent' ? 1 : 0) - (os?.enemyPenalty ?? 0);
+  // Quickhacks no atacante (Choque Sônico, Pane de Cromo, Ciberpsicose): penalidade nos ataques dele.
+  const hackPenalty = (attacker.hacks ?? []).reduce((n, h) => n + (h.attackMod ?? 0), 0);
+  const attackTotal = attacker.attackBase + attackRoll.total + grappledPenalty + facedownPenalty + hackPenalty + (attacker.weapon.quality === 'excellent' ? 1 : 0) - (os?.enemyPenalty ?? 0);
 
   const evasionPenalty = checkPenalties(c, 'DEX').reduce((s, m) => s + m.value, 0);
   const evasionTotal = () => statValue(c, 'DEX') + skillValue(c, 'evasion') + rollD10(rng).total + evasionPenalty + (os?.evade ?? 0);
@@ -537,7 +626,7 @@ export function rollInitiative(state: GameState, rng: Rng = cryptoRng): { player
   const modifiers = [...checkPenalties(state.character, 'REF'), ...(reaction ? [{ label: 'Reação de Iniciativa', value: reaction }] : []), ...cyberInitiative(state)];
   return {
     player: statValue(state.character, 'REF') + modifiers.reduce((s, m) => s + m.value, 0) + die,
-    enemies: activeEnemies(state.combat).map(e => ({ id: e.id, value: e.ref + rng(10) })),
+    enemies: state.combat.combatants.filter(t => t.status === 'active').map(e => ({ id: e.id, value: e.ref + rng(10) })),
     die,
     modifiers,
   };
@@ -547,7 +636,7 @@ export function rollInitiative(state: GameState, rng: Rng = cryptoRng): { player
 export function turnOrder(combat: CombatState): Array<{ id: string; name: string; initiative: number | null; isPlayer: boolean }> {
   const rows = [
     { id: 'player', name: 'Você', initiative: combat.playerInitiative, isPlayer: true },
-    ...combat.combatants.filter(t => t.status === 'active').map(t => ({ id: t.id, name: t.name, initiative: t.initiative, isPlayer: false })),
+    ...combat.combatants.filter(t => t.status === 'active').map(t => ({ id: t.id, name: isAlly(t) ? `${t.name} (aliado)` : t.name, initiative: t.initiative, isPlayer: false })),
   ];
   return rows.sort((a, b) => (b.initiative ?? -99) - (a.initiative ?? -99));
 }

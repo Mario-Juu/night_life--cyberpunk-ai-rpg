@@ -92,6 +92,15 @@ export const ChatEntryView = memo(function ChatEntryView({ entry, onRegenerate, 
       );
     case 'system':
     default:
-      return <p className="text-center tabular text-[11px] text-dim">{entry.text}</p>;
+      return (
+        <div className="space-y-1">
+          <p className="text-center tabular text-[11px] text-dim">{entry.text}</p>
+          {onRegenerate && (
+            <button type="button" onClick={onRegenerate} className="mx-auto flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted hover:text-neon-cyan">
+              <RefreshCw className="w-3 h-3" /> Tentar narrar de novo
+            </button>
+          )}
+        </div>
+      );
   }
 });

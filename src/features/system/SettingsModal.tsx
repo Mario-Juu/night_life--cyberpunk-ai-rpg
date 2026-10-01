@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Button, Input, Modal, cn } from '../../ui';
+import { toast } from '../../ui/toastStore';
 import { fetchStatus } from '../../services/api';
 import { sound } from '../../services/audio';
 import { useUiStore } from '../../store/uiStore';
@@ -78,7 +79,13 @@ export function SettingsModal() {
               variant="solid"
               disabled={!keyDraft.trim()}
               onClick={async () => {
-                useUiStore.getState().setGeminiKey(keyDraft);
+                const clean = keyDraft.trim();
+                // Mesma regra do servidor (requestKey.sanitizeKey): fora disso, a chave seria ignorada em silêncio.
+                if (clean.length < 20 || clean.length > 200 || /\s/.test(clean)) {
+                  toast({ title: 'Chave não parece válida', body: 'Uma chave Gemini não tem espaços e tem entre 20 e 200 caracteres. Confira o que foi colado.', tone: 'danger' });
+                  return;
+                }
+                useUiStore.getState().setGeminiKey(clean);
                 setKeyDraft('');
                 const status = await fetchStatus();
                 useUiStore.getState().setHasKey(status.hasKey);

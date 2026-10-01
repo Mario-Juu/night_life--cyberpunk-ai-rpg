@@ -13,6 +13,9 @@ const CharacterSchema = z.looseObject({
   inventory: z.array(z.looseObject({ id: z.string(), name: z.string(), quantity: z.number() })),
   cyberware: z.array(z.any()),
   criticalInjuries: z.array(z.any()),
+  // O prompt descreve a Habilidade de Papel a partir daqui: sem ela, o pedido quebrava lá dentro.
+  roleRank: z.number(),
+  roleData: z.looseObject({}),
 });
 
 export const ContextSchema = z.looseObject({
@@ -62,11 +65,30 @@ export const PhoneBody = z.object({
   message: z.string().trim().min(1).max(800),
 });
 
+export const ProfileBody = z.object({
+  sessionId: z.string(),
+  turnId: z.string(),
+  npc: z.looseObject({ id: z.string().min(1).max(80), name: z.string().min(1).max(80), role: z.string().max(80), description: z.string().max(400), importance: z.enum(['extra', 'recurring', 'core']) }),
+  needs: z.enum(['profile', 'depth', 'both']),
+  evidence: z.string().max(12_000),
+  player: z.looseObject({ handle: z.string(), role: z.string() }),
+  others: z.array(z.object({ id: z.string(), name: z.string(), role: z.string() })).max(80),
+  model,
+});
+
+export const WorldgenBody = z.object({
+  sessionId: z.string(),
+  turnId: z.string(),
+  player: z.looseObject({ handle: z.string(), role: z.string() }),
+  fronts: z.array(z.looseObject({ id: z.string().max(80), title: z.string().max(300), stages: z.array(z.looseObject({ effects: z.array(z.any()).max(10) })).max(8) })).min(1).max(5),
+  model,
+});
+
 export const SummarizeBody = z.object({
   sessionId: z.string(),
   turnId: z.string(),
-  fromTurn: z.number(),
-  toTurn: z.number(),
+  fromTurn: z.number().int().nonnegative(),
+  toTurn: z.number().int().nonnegative(),
   transcript: z.string().min(1).max(60_000),
   model,
-});
+}).refine(b => b.toTurn >= b.fromTurn, { message: 'toTurn antes de fromTurn', path: ['toTurn'] });

@@ -8,11 +8,16 @@ import { MAIN_BRANCH } from './initialState';
 import { withRoleDefaults } from './roles';
 import { starterDeck } from './net';
 import { implantFromName } from '../rules/cyberware';
+import { MIN_AGE } from '../rules/creation';
+import { withQuickhackDefaults } from './quickhacks';
 
 /** Campos adicionados dentro da v3 (habilidades de papel, Rede): preenche sem mudar a versão. */
 function fillDefaults(s: GameState): GameState {
   let character = withRoleDefaults(s.character);
+  // Protagonista menor de idade: o filtro do Gemini bloqueia cenas inteiras (PROHIBITED_CONTENT). Mínimo 18.
+  if ((character.bio?.age ?? 18) < MIN_AGE) character = { ...character, bio: { ...character.bio, age: MIN_AGE } };
   if (character.bio.role === 'netrunner' && !character.deck) character = { ...character, deck: starterDeck() };
+  character = withQuickhackDefaults(character);
   // Trilheiros de saves antigos: o Neural Link + Plugues passaram a ser cromo de verdade (sem cobrar Humanidade retroativa).
   if (character.bio.role === 'netrunner' && !(character.cyberware ?? []).some(cw => cw.key === 'interface_plugs')) {
     const link = { id: makeId('cw'), key: 'neural_link', name: 'Neural Link', category: 'Neuralware' as const, humanityLoss: 0, description: 'Fundação da neuralware.' };

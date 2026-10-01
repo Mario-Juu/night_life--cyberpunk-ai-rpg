@@ -131,6 +131,28 @@
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
+
+  /* A ficha pode ser uma coluna estreita no desktop. Breakpoints de viewport fariam a árvore
+     caber três ramos dentro de 320 px; container query usa a largura real do painel. */
+  .quickhack-tree {
+    container-type: inline-size;
+  }
+
+  .quickhack-branches {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @container (min-width: 34rem) {
+    .quickhack-branches {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @container (min-width: 54rem) {
+    .quickhack-branches {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
 }
 
 @utility scrollbar-none {

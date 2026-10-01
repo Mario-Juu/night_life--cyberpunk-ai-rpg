@@ -350,6 +350,19 @@ function endRun(s0: GameState, reason: string, lines: string[], reset: boolean):
   return emit(s, 'NET_JACK_OUT', reason);
 }
 
+/**
+ * O jogador se afastou do ponto de acesso (foi embora, mudou de lugar): a arquitetura some do painel.
+ * Ainda conectado? Sair do alcance derruba a conexão — desconexão INSEGURA (o ICE rezzado cobra).
+ */
+export function leaveAccessPoint(s0: GameState, rng: Rng, reason = 'Afastou-se do ponto de acesso'): GameState {
+  if (!s0.net.architecture) return s0;
+  const lines: string[] = [];
+  let s = s0.net.run ? unsafeJackOut(s0, rng, lines) : s0;
+  const name = s0.net.architecture.name;
+  s = { ...s, net: { ...s.net, run: null, architecture: null } };
+  return emit(s, 'SCENE_CHANGED', `${reason}: ${name} fora de alcance${lines.length ? ` (${lines.join(' ')})` : ''}`, { data: { architectureId: s0.net.architecture.id } });
+}
+
 /** Desconexão insegura: todo ICE rezzado encontrado aplica o efeito. */
 export function unsafeJackOut(s0: GameState, rng: Rng, lines: string[], skipIceId?: string): GameState {
   if (!s0.net.run) return s0;

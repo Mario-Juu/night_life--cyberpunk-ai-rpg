@@ -2,16 +2,18 @@
  * Monta o contexto em seções:
  * PERSONAGEM + CENA + NPCs + MISSÕES + MUNDO/FLAGS + MEMÓRIAS + RESUMOS + HISTÓRICO + ENTRADA DO TURNO.
  */
-import type { Character, Condition, RollOutcome } from '../../shared/types/game';
+import type { Awareness, Character, Condition, Npc, RollOutcome } from '../../shared/types/game';
+import { BOND_LABEL, factAwareness, targetName } from '../../shared/engine/npcProfile';
 import { CONDITION_LABEL } from '../../shared/engine/conditions';
 import { COMBAT_AWARENESS, DRUGS, MAKER_SPECIALTIES, ROLE_ABILITY, familyVehicle, operatorPerks } from '../../shared/rules/roles';
 import { PROGRAMS, netActionsFor } from '../../shared/rules/net';
+import { QUICKHACKS, type QuickhackKey } from '../../shared/rules/quickhacks';
 import { surgeryValue, unlockedDrugs } from '../../shared/engine/roles';
 import { describeNet } from '../../shared/engine/net';
 import { humanityBand } from '../../shared/rules/humanity';
 import { describeCyberware } from '../../shared/engine/cyberware';
 import type { EngineResult } from '../../shared/types/turn';
-import type { GameContext } from '../../shared/types/gm';
+import type { GameContext, NpcProfileRequest, WorldgenRequest } from '../../shared/types/gm';
 import { getSkill } from '../../shared/rules/skills';
 import { formatGameTime } from '../../shared/rules/world';
 import { getRole } from '../../shared/rules/creation';
@@ -30,7 +32,7 @@ function humanityLine(c: Character): string {
 /** Habilidade de Papel (Cyberpunk RED) — o que o motor já aplica e o que o Mestre deve considerar. */
 export function describeRoleAbility(c: Character): string {
   const info = ROLE_ABILITY[c.bio.role];
-  const d = c.roleData;
+  const d = c.roleData ?? {};
   let detail = '';
   switch (c.bio.role) {
     case 'solo':
@@ -40,6 +42,7 @@ export function describeRoleAbility(c: Character): string {
       break;
     case 'netrunner':
       detail = `${netActionsFor(c.roleRank)} Ações de Rede/turno · deck ${c.deck?.name ?? '—'} (${(c.deck?.programs ?? []).filter(p => !p.destroyed).map(p => PROGRAMS[p.key].name).join(', ')})`;
+      if (c.quickhacks?.length) detail += ` · QUICKHACKS (RAM ${c.deck?.ram?.current ?? 0}/${c.deck?.ram?.max ?? 0}): ${c.quickhacks.filter(k => k in QUICKHACKS).map(k => `${k} ${QUICKHACKS[k as QuickhackKey].name} (${QUICKHACKS[k as QuickhackKey].ram} RAM)`).join(', ')}`;
       break;
     case 'tech':
       detail = MAKER_SPECIALTIES.map(m => `${m.label} ${d.maker?.[m.key] ?? 0}`).join(', ');
@@ -129,27 +132,61 @@ function describeScene(ctx: GameContext): string {
   if (ctx.combat.active) {
     lines.push(`COMBATE — rodada ${ctx.combat.round}${ctx.combat.playerInitiative !== null ? `, iniciativa do jogador ${ctx.combat.playerInitiative}` : ''}`);
     for (const c of ctx.combat.combatants)
-      lines.push(`  - [${c.id}] ${c.name}: PV ${c.hp.current}/${c.hp.max}, SP ${c.sp.body}, ${c.weapon.name} (${c.weapon.damage}), ${DISTANCE_LABEL[c.distance]}, cobertura ${c.cover}${c.cover === 'full' && c.coverHp !== undefined ? ` (${c.coverHp} PV)` : ''}, ${c.status}${c.conditions?.length ? `, ${describeConditions(c.conditions)}` : ''}${c.skipNextAttack ? `, PERDE o próximo ataque (${c.skipNextAttack})` : ''}${c.facedown ? `, Encarada: ${c.facedown === 'player' ? 'recuou diante do jogador (−2)' : 'venceu o jogador (jogador −2 contra ele)'}` : ''}`);
+      lines.push(`  - [${c.id}] ${c.name}${c.side === 'ally' ? ` (ALIADO${c.stance ? `, ${c.stance}` : ''})` : ''}: PV ${c.hp.current}/${c.hp.max}, SP ${c.sp.body}, ${c.weapon.name} (${c.weapon.damage}), ${DISTANCE_LABEL[c.distance]}, cobertura ${c.cover}${c.cover === 'full' && c.coverHp !== undefined ? ` (${c.coverHp} PV)` : ''}, ${c.status}${c.conditions?.length ? `, ${describeConditions(c.conditions)}` : ''}${c.skipNextAttack ? `, PERDE o próximo ataque (${c.skipNextAttack})` : ''}${c.hacks?.length ? `, hackeado: ${c.hacks.map(h => h.label).join(', ')}` : ''}${c.facedown ? `, Encarada: ${c.facedown === 'player' ? 'recuou diante do jogador (−2)' : 'venceu o jogador (jogador −2 contra ele)'}` : ''}`);
   } else if (ctx.combat.combatants.length) {
     lines.push(`Corpos/inimigos da última luta: ${ctx.combat.combatants.map(c => `[${c.id}] ${c.name} (${c.status}${c.looted ? ', revistado' : ''})`).join(', ')}`);
   }
   return lines.join('\n');
 }
 
+/** Quantos NPCs (além dos presentes) levam o perfil completo; os demais só nome, relação e traços. */
+const FULL_DEPTH_NPCS = 4;
+
+const AWARE_LABEL = { yes: 'o jogador SABE', suspects: 'o jogador DESCONFIA', no: 'SÓ VOCÊ SABE' } as const;
+
+/** Personalidade, objetivos, vínculos e fatos — cada um marcado com o que o JOGADOR sabe. */
+export function describeNpcDepth(npc: Npc, ctx: Pick<GameContext, 'npcs' | 'factions'>, indent = '    '): string[] {
+  const lines: string[] = [];
+  const p = npc.profile;
+  if (p) {
+    const parts = [
+      p.traits.length ? `traços: ${p.traits.join(', ')}` : '',
+      p.voice ? `voz: ${p.voice}` : '',
+      p.motivation ? `move-se por: ${p.motivation}` : '',
+      p.fear ? `teme: ${p.fear}` : '',
+      p.lines ? `nunca: ${p.lines}` : '',
+    ].filter(Boolean);
+    if (parts.length) lines.push(`${indent}PERFIL — ${parts.join(' · ')}`);
+  }
+  if (npc.currentGoal) lines.push(`${indent}quer agora [current_goal]: ${npc.currentGoal} (${AWARE_LABEL[npc.currentGoalKnown ? 'yes' : 'no']})`);
+  for (const g of npc.goals ?? []) {
+    if (g.status === 'active') lines.push(`${indent}objetivo [${g.id}]: ${g.text} (${AWARE_LABEL[g.playerKnows]})`);
+  }
+  const closed = (npc.goals ?? []).filter(g => g.status !== 'active');
+  if (closed.length) lines.push(`${indent}objetivos encerrados: ${closed.map(g => `${g.text} (${g.status === 'done' ? 'conseguiu' : 'desistiu'})`).join(' | ')}`);
+  for (const b of npc.bonds ?? []) lines.push(`${indent}vínculo [${b.id}]: ${BOND_LABEL[b.kind]} ${targetName(ctx, b.targetId)}${b.note ? ` — ${b.note}` : ''} (${AWARE_LABEL[b.playerKnows]})`);
+  const facts = (a: Awareness) => npc.knowledge.filter(k => factAwareness(k) === a);
+  const known = facts('yes');
+  const suspected = facts('suspects');
+  const hidden = facts('no');
+  if (known.length) lines.push(`${indent}o jogador SABE: ${known.map(k => k.fact).join(' | ')}`);
+  if (suspected.length) lines.push(`${indent}o jogador DESCONFIA (sem certeza): ${suspected.map(k => `[${k.id}] ${k.fact}`).join(' | ')}`);
+  if (npc.kind !== 'animal') lines.push(`${indent}sabe do jogador: ${npc.knowsAboutPlayer?.length ? npc.knowsAboutPlayer.join(' | ') : 'só o que viu acontecer'}`);
+  if (hidden.length) lines.push(`${indent}SÓ VOCÊ SABE (ninguém age como se o jogador soubesse): ${hidden.map(k => `[${k.id}] ${k.fact}${k.weight === 3 ? ' (muda tudo)' : ''}`).join(' | ')}`);
+  return lines;
+}
+
 function describeNpcs(ctx: GameContext): string {
   return (
     ctx.npcs
-      .map(n => {
-        const secrets = n.knowledge.filter(k => k.secret).map(k => k.fact);
-        const known = n.knowledge.filter(k => !k.secret).map(k => k.fact);
+      .map((n, i) => {
+        const full = ctx.scene.presentNpcIds.includes(n.id) || i < FULL_DEPTH_NPCS;
         return [
           `  - [${n.id}] ${n.name} (${n.role}) ${n.ripperdoc ? `RIPPERDOC nível ${n.ripperdoc.tier}${n.ripperdoc.blackMarket ? ' + mercado negro' : ''} ` : ''}${n.kind === 'animal' ? 'ANIMAL (não fala, não usa o Agent) ' : ''}${n.status === 'dead' ? '☠ MORTO' : n.status === 'missing' ? 'DESAPARECIDO' : ''}`.trimEnd(),
           `    confiança ${n.trust} · respeito ${n.respect} · medo ${n.fear} · raiva ${n.anger}${n.location ? ` · em ${n.location}` : ''}`,
           n.conditions?.length ? `    condições: ${describeConditions(n.conditions)}` : '',
-          n.currentGoal ? `    objetivo: ${n.currentGoal}` : '',
           n.pendingMatters ? `    pendente: ${n.pendingMatters}` : '',
-          known.length ? `    fatos públicos: ${known.join(' | ')}` : '',
-          secrets.length ? `    SEGREDOS (o jogador NÃO sabe): ${secrets.join(' | ')}` : '',
+          ...(full ? describeNpcDepth(n, ctx) : n.profile?.traits.length ? [`    traços: ${n.profile.traits.join(', ')}`] : []),
         ]
           .filter(Boolean)
           .join('\n');
@@ -171,6 +208,28 @@ function describeWorld(ctx: GameContext): string {
   return lines.join('\n');
 }
 
+const FRONT_AWARE = { no: 'o jogador NÃO sabe da trama', suspects: 'o jogador DESCONFIA', yes: 'o jogador SABE da trama' } as const;
+
+/** Tramas do mundo: o que está por trás (só o Mestre), o que já aconteceu e o próximo passo. */
+export function describeFronts(ctx: GameContext): string {
+  const fronts = ctx.fronts ?? [];
+  const lines = fronts.map(f => {
+    const head = `  - [${f.id}] ${f.title} — ${f.status === 'active' ? `passo ${f.stage}/${f.total}` : f.status === 'resolved' ? 'CONCLUÍDA (aconteceu)' : 'DETIDA pelo jogador'} · ${FRONT_AWARE[f.playerAware]}`;
+    return [
+      head,
+      f.continues ? `    CONTINUAÇÃO de "${f.continues.title}", que ${f.continues.outcome}` : '',
+      `    quem: ${f.who} · onde: ${f.place || '—'} · por quê: ${f.motive || '—'} · quem sofre: ${f.victim || '—'}${f.seedNpc ? ` · rosto: ${f.seedNpc}` : ''}`,
+      f.done.length ? `    já aconteceu: ${f.done.join(' → ')}` : '',
+      f.next ? `    próximo (${formatGameTime(f.next.at).weekday} ${formatGameTime(f.next.at).time}): ${f.next.title} · o jogador segura se: ${f.next.blockHint}` : '',
+      f.twist ? `    reviravolta (SÓ VOCÊ SABE): ${f.twist}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  });
+  const news = (ctx.news ?? []).map(n => `  - [${n.source}] ${n.headline}`);
+  return [lines.join('\n') || '  (cidade quieta)', news.length ? `Manchetes recentes no NCNet do jogador:\n${news.join('\n')}` : ''].filter(Boolean).join('\n');
+}
+
 export function describeOutcome(o: RollOutcome): string {
   const c = o.check;
   const skill = getSkill(c.skillId)?.label ?? 'sem perícia';
@@ -186,6 +245,14 @@ export function describeOutcome(o: RollOutcome): string {
   if (o.attack?.failure) {
     const reason = { no_ammo: 'ARMA SEM MUNIÇÃO (clique seco, nada disparou)', out_of_range: 'ALVO FORA DO ALCANCE', in_cover: 'ALVO EM COBERTURA TOTAL', no_target: 'ALVO INDISPONÍVEL', jammed: 'ARMA TRAVADA (nada disparou; destravar custa uma ação)' }[o.attack.failure];
     lines.push(`ATAQUE NÃO REALIZADO: ${reason}.`);
+    return lines.join('\n');
+  }
+  if (o.quickhack) {
+    const dice = c.d10.crit ? `${c.d10.rolls.join('+')} (CRÍTICO)` : c.d10.fumble ? `${c.d10.rolls[0]}−${c.d10.rolls[1]} (FALHA CRÍTICA)` : `${c.d10.natural}`;
+    lines.push(
+      `QUICKHACK: Interface ${c.statValue} + d10 ${dice}${c.luckSpent ? ` + Sorte ${c.luckSpent}` : ''} = ${c.total} vs defesa ${c.dv} → ${c.success ? 'SUCESSO' : 'FALHA'}`,
+      `Efeito aplicado pelo motor: ${o.quickhack.summary}`,
+    );
     return lines.join('\n');
   }
   const dice = c.d10.crit ? `${c.d10.rolls.join('+')} (CRÍTICO)` : c.d10.fumble ? `${c.d10.rolls[0]}−${c.d10.rolls[1]} (FALHA CRÍTICA)` : `${c.d10.natural}`;
@@ -228,7 +295,10 @@ export function describeEngineResult(r: EngineResult | null): string {
   if (!r) return '(sem mecânica neste turno)';
   const lines: string[] = [];
   if (r.intent) lines.push(`Intenção: ${r.intent.type} — ${r.intent.summary}`);
-  for (const t of r.tools) lines.push(`${t.ok ? '✓' : '✗'} ${t.tool}: ${t.summary}${t.data ? ` ${JSON.stringify(t.data).slice(0, 600)}` : ''}`);
+  for (const t of r.tools) {
+    if (t.tool === 'enemy_phase') lines.push(`TURNO DOS INIMIGOS (já resolvido pelo motor, na ordem de iniciativa — narre EXATAMENTE isto, sem enemyActions): ${t.summary}`);
+    else lines.push(`${t.ok ? '✓' : '✗'} ${t.tool}: ${t.summary}${t.data ? ` ${JSON.stringify(t.data).slice(0, 600)}` : ''}`);
+  }
   if (r.roll) lines.push(describeOutcome(r.roll));
   if (!lines.length) lines.push('(nenhuma ação mecânica: apenas narre a reação)');
   if (r.offscreen.length) lines.push(`ACONTECEU FORA DE CENA (incorpore se fizer sentido): ${r.offscreen.join(' | ')}`);
@@ -237,7 +307,7 @@ export function describeEngineResult(r: EngineResult | null): string {
 
 function contextSections(ctx: GameContext): string {
   const quests = ctx.quests
-    .map(m => `  - [${m.id}] ${m.title} (${m.status})${m.status === 'ACTIVE' ? `: ${m.objective}` : ''}${m.rewardEddies ? ` · paga €$${m.rewardEddies}` : ''}${m.giverId ? ` · de ${m.giverId}` : ''}`)
+    .map(m => `  - [${m.id}] ${m.title} (${m.status})${m.status === 'ACTIVE' ? `: ${m.objective}` : ''}${m.rewardEddies ? (m.status === 'COMPLETED' ? ` · €$${m.rewardEddies} JÁ PAGOS (não pague de novo)` : ` · paga €$${m.rewardEddies}`) : ''}${m.giverId ? ` · de ${m.giverId}` : ''}`)
     .join('\n');
   const memories = ctx.memories.map(m => `  - (${m.type}, imp ${m.importance}) ${m.subject}: ${m.content}`).join('\n');
   const summaries = ctx.summaries.map(s => `  - Turnos ${s.fromTurn}–${s.toTurn}: ${s.text}`).join('\n');
@@ -258,6 +328,12 @@ ${quests || '  (nenhuma)'}
 
 # MUNDO
 ${describeWorld(ctx)}
+
+# NA CIDADE (tramas que andam sozinhas)
+${describeFronts(ctx)}
+
+# EQUIPE (lutam ao seu lado; o motor decide o que aceitam)
+${ctx.party?.length ? ctx.party.map(m => `  - [${m.npcId}] ${m.name} · PV ${m.hp} · lealdade ${m.loyalty}/100 · ${m.share ? `${m.share}% de cada trabalho` : 'sem cobrar'} · ${m.stance}${m.present ? '' : ' · NÃO está na cena'}`).join('\n') : '  (sozinho)'}
 
 # MEMÓRIAS RELEVANTES
 ${memories || '  (nenhuma)'}
@@ -306,16 +382,47 @@ Narre a consequência exatamente como o motor determinou.`;
 ${turnBlock}${correction ? `\n\n# CORREÇÃO OBRIGATÓRIA\nSua narração anterior contradisse o motor: ${correction}\nReescreva respeitando o resultado.` : ''}`;
 }
 
+/** Costura do mundo: o personagem e os textos crus das frentes. */
+export function buildWorldgenPrompt(req: WorldgenRequest): string {
+  const p = req.player;
+  return `PERSONAGEM: ${p.handle}, ${p.role}, ${p.occupation} em ${p.district}. Pressão: ${p.debtReason || '—'}. Laço: ${p.familyTie || '—'}. Sonho: ${p.personalAnchor || '—'}.
+
+FRENTES (reescreva o texto, mantendo a estrutura):
+${JSON.stringify(req.fronts, null, 1)}`;
+}
+
+/** Pedido de perfil (fora do turno): quem é o NPC, o que já se viu dele e o mundo do jogador. */
+export function buildProfilePrompt(req: NpcProfileRequest): string {
+  const n = req.npc;
+  const p = req.player;
+  const current = n.profile?.traits.length ? `${n.profile.traits.join(', ')}${n.profile.voice ? ` · voz: ${n.profile.voice}` : ''}` : 'nenhum';
+  const ask = req.needs === 'both' ? 'perfil completo + DEPTH (goal e secret)' : req.needs === 'depth' ? 'só DEPTH (goal e secret); traits pode repetir o perfil atual' : 'perfil (traits, voice, motivation, fear, lines)';
+  return `
+NPC: [${n.id}] ${n.name} — ${n.role}${n.faction ? ` (${n.faction})` : ''} · importância: ${n.importance === 'core' ? 'CENTRAL' : 'recorrente'}
+Descrição: ${n.description || '—'}
+Quer agora: ${n.currentGoal || '—'}
+Perfil atual: ${current}
+PEDIDO: ${ask}
+
+JOGADOR: ${p.handle}, ${p.role}, ${p.occupation} em ${p.district}. Pressão: ${p.debtReason || '—'}. Laço: ${p.familyTie || '—'}.
+
+OUTROS (para bond; use o id): ${req.others.map(o => `[${o.id}] ${o.name} (${o.role})`).join('; ') || '—'}
+
+EVIDÊNCIA:
+${req.evidence || '(quase nada: só o nome e o papel)'}
+`.trim();
+}
+
 export function buildPhonePrompt(ctx: GameContext, npcId: string, message: string): string {
   const npc = ctx.npcs.find(n => n.id === npcId);
   const thread = ctx.phone.find(t => t.npcId === npcId);
   const t = formatGameTime(ctx.world.time);
-  const secrets = npc?.knowledge.filter(k => k.secret).map(k => k.fact) ?? [];
   return `
 CONTATO: [${npcId}] ${npc?.name ?? npcId} — ${npc?.role ?? 'Contato'}
 Relação: confiança ${npc?.trust ?? 0} · respeito ${npc?.respect ?? 0} · medo ${npc?.fear ?? 0} · raiva ${npc?.anger ?? 0}
-Objetivo atual: ${npc?.currentGoal ?? '—'} · Pendente: ${npc?.pendingMatters ?? '—'}
-${secrets.length ? `Segredos que ele guarda (só revela se tiver motivo): ${secrets.join(' | ')}` : ''}
+Pendente: ${npc?.pendingMatters ?? '—'}
+${npc ? describeNpcDepth(npc, ctx, '').join('\n') : ''}
+O que é "SÓ VOCÊ SABE" só sai se o contato tiver motivo; se sair, chame reveal_npc.
 
 JOGADOR: ${ctx.character.bio.handle}, €$${ctx.character.money}, PV ${ctx.character.hp.current}/${ctx.character.hp.max}, em ${ctx.world.location.district} (${ctx.world.location.spot}) às ${t.time}
 Missões: ${ctx.quests.filter(q => q.status === 'ACTIVE').map(q => `[${q.id}] ${q.title}`).join('; ') || 'nenhuma'}

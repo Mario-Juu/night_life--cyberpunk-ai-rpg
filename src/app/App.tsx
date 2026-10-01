@@ -3,6 +3,7 @@ import { ToastHost } from '../ui';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import { fetchStatus } from '../services/api';
+import { recoverInterruptedTurn } from '../store/turnController';
 import { CreationScreen } from '../features/creation/CreationScreen';
 import { GameLayout } from '../features/layout/GameLayout';
 import { SaveLoadModal } from '../features/system/SaveLoadModal';
@@ -26,6 +27,11 @@ export default function App() {
   const geminiKey = useUiStore(s => s.geminiKey);
   // Só decide se pede a chave depois de perguntar ao servidor (ele pode ter uma chave própria).
   const [statusChecked, setStatusChecked] = useState(false);
+
+  // Turno que ficou no meio quando a página recarregou: fecha e avisa (senão a ação fica pendurada).
+  useEffect(() => {
+    recoverInterruptedTurn().catch(err => console.warn('[turn] retomada falhou:', err));
+  }, []);
 
   useEffect(() => {
     void fetchStatus().then(status => {

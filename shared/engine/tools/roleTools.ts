@@ -22,6 +22,10 @@ import { drugItem } from '../drugs';
 import { unlockedDrugs, surgeryValue } from '../roles';
 import { NET_ACTION_KINDS, endNetTurn, generateArchitecture, jackIn, makeProgram, netAction, type NetActionKind } from '../net';
 import { defineTool, fail, ok } from './registry';
+import { QUICKHACKS, QUICKHACK_KEYS, type QuickhackKey } from '../../rules/quickhacks';
+import { buildQuickhackRequest, quickhackRolls, useQuickhack } from '../quickhacks';
+import { findCombatantLoose } from '../combatants';
+import { findNpc } from './helpers';
 import { addToInventory, buildItem, findItem } from './helpers';
 import type { Rng } from '../dice';
 
@@ -69,6 +73,35 @@ export const ROLE_TOOLS = [
       );
       const s = emit({ ...s0, net: { ...s0.net, architecture } }, 'SCENE_CHANGED', `Ponto de acesso: ${architecture.name} (${architecture.floors.length} andares)`, { data: { architectureId: architecture.id } });
       return ok(s, `Arquitetura ${architecture.name} disponível (${architecture.floors.length} andares, dificuldade ${NET_DIFFICULTY_LABEL[a.difficulty as 'basic']}).`, { id: architecture.id });
+    },
+  }),
+  defineTool({
+    name: 'quickhack',
+    kind: 'action',
+    origins: PLAYER,
+    description:
+      'Trilheiro usa um QUICKHACK no espaço físico (sem entrar numa arquitetura), gastando RAM do deck: Interface + 1d10 contra a defesa do alvo. Em combate é a Ação do turno. ping (sem alvo); memory_wipe também num NPC fora de combate. Só os desbloqueados na ficha.',
+    params: {
+      hack: { type: 'string', desc: 'qual quickhack', required: true, enum: QUICKHACK_KEYS },
+      targetId: { type: 'string', desc: 'id ou nome do inimigo (combate) ou do NPC (memory_wipe fora de combate)', max: 80 },
+    },
+    run: (s0, a, ctx) => {
+      const foe = a.targetId ? findCombatantLoose(s0.combat.combatants, a.targetId) : undefined;
+      const npc = !foe && a.targetId ? findNpc(s0, a.targetId) : undefined;
+      // Alvo informado que não existe não vira "o primeiro inimigo": o hack iria para a pessoa errada.
+      if (a.targetId && !foe && !npc) return fail(s0, `Alvo "${a.targetId}" não está em combate nem é um NPC conhecido.`);
+      // Em combate sem alvo informado (hack de alvo único): o primeiro inimigo ativo.
+      const auto = !foe && !npc && s0.combat.active && QUICKHACKS[a.hack as QuickhackKey].target !== 'none' ? s0.combat.combatants.find(t => t.status === 'active' && t.side !== 'ally') : undefined;
+      const key = a.hack as QuickhackKey;
+      const target = { combatantId: (foe ?? auto)?.id, npcId: npc?.id };
+      // Ping não tem teste. Os outros: teste de Interface na tela (com Sorte), como um ataque.
+      if (!quickhackRolls(key)) {
+        const res = useQuickhack(s0, key, target, ctx.rng);
+        return res.ok ? ok(res.state, res.summary, res.data) : fail(s0, res.summary);
+      }
+      const request = buildQuickhackRequest(s0, key, target, 'gm');
+      if (typeof request === 'string') return fail(s0, request);
+      return { state: s0, ok: true, summary: `${request.reason}: teste de Interface pendente.`, pendingRoll: request };
     },
   }),
   defineTool({

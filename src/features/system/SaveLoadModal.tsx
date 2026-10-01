@@ -14,7 +14,12 @@ export function SaveLoadModal({ game }: { game: GameState }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const refresh = () => setSlots(listSlots());
 
+  const busy = useUiStore(s => s.gmBusy);
   const load = (state: GameState, label: string) => {
+    if (useUiStore.getState().gmBusy) {
+      toast({ title: 'Turno em andamento', body: 'Espere o Mestre terminar antes de carregar outra campanha.', tone: 'warning' });
+      return;
+    }
     useGameStore.getState().setGame(state);
     useUiStore.setState({ activeThread: null, phoneOpen: false });
     toast({ title: 'Campanha carregada', body: label, tone: 'success' });
@@ -63,7 +68,7 @@ export function SaveLoadModal({ game }: { game: GameState }) {
                 >
                   Salvar
                 </Button>
-                <Button size="sm" variant="ghost" disabled={!info} onClick={() => guard(() => window.confirm('Carregar este slot? O progresso atual não salvo será perdido.') && load(loadFromSlot(slot), `Slot ${slot}`))}>
+                <Button size="sm" variant="ghost" disabled={!info || busy} title={busy ? 'O Mestre está narrando…' : undefined} onClick={() => guard(() => window.confirm('Carregar este slot? O progresso atual não salvo será perdido.') && load(loadFromSlot(slot), `Slot ${slot}`))}>
                   Carregar
                 </Button>
                 <Button
@@ -89,7 +94,7 @@ export function SaveLoadModal({ game }: { game: GameState }) {
           <Button variant="ghost" icon={<Download className="w-4 h-4" />} onClick={() => exportSave(game)}>
             Exportar arquivo
           </Button>
-          <Button variant="ghost" icon={<Upload className="w-4 h-4" />} onClick={() => fileRef.current?.click()}>
+          <Button variant="ghost" icon={<Upload className="w-4 h-4" />} disabled={busy} title={busy ? 'O Mestre está narrando…' : undefined} onClick={() => fileRef.current?.click()}>
             Importar arquivo
           </Button>
           <input

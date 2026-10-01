@@ -13,7 +13,6 @@ import serverless from 'serverless-http';
 import { createApp } from '../../server/app';
 import { createGameMaster } from '../../server/gamemaster/gameMaster';
 import { defaultMode, geminiProvider, getApiKey } from '../../server/gamemaster/llmClient';
-import { createMistralProvider, mistralKey, withNarrationBackup } from '../../server/gamemaster/mistralClient';
 
 /** Folga entre o fim do orçamento do Mestre e o corte da Netlify (resposta + rede). */
 const SAFETY_MS = 6_000;
@@ -23,10 +22,9 @@ const FALLBACK_BUDGET_MS = 52_000;
 const fixedBudget = process.env.GM_BUDGET_MS;
 
 const app = createApp({
-  gm: createGameMaster(withNarrationBackup(geminiProvider, createMistralProvider())),
+  gm: createGameMaster(geminiProvider),
   hasKey: () => getApiKey() !== null,
   defaultMode,
-  backupLabel: () => (mistralKey() ? 'Mistral Medium' : 'Flash-Lite'),
 });
 
 // Pelo redirect, o caminho pode chegar como /.netlify/functions/api/gm/... — o app espera /api/gm/...

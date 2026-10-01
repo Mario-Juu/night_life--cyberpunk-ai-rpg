@@ -15,6 +15,9 @@ import { makeId } from './ids';
 import { allocate, improveRole, type RoleSection } from './roles';
 import { applyDrug } from './drugs';
 import { ROLE_ABILITY } from '../rules/roles';
+import { QUICKHACKS, type QuickhackKey } from '../rules/quickhacks';
+import { unlockQuickhack, useQuickhack } from './quickhacks';
+import { cryptoRng, sequenceRng } from './dice';
 
 export type GameAction =
   | { type: 'rollResolved'; outcome: RollOutcome }
@@ -28,6 +31,7 @@ export type GameAction =
   | { type: 'improveSkill'; skillId: string }
   | { type: 'manualHp'; delta: number }
   | { type: 'improveRole' }
+  | { type: 'unlockQuickhack'; key: QuickhackKey }
   | { type: 'allocateRole'; section: RoleSection; key: string; delta: number }
   | { type: 'useDrug'; itemId: string }
   | { type: 'systemMessage'; text: string; kind?: ChatKind }
@@ -131,6 +135,11 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       if (outcome.attack) {
         s = applyAttackOutcome(s, outcome);
         if (outcome.followUp?.attack) s = applyAttackOutcome(s, outcome.followUp);
+      } else if (outcome.quickhack) {
+        const q = outcome.quickhack;
+        const rolls = q.effectRolls.length ? sequenceRng(q.effectRolls) : cryptoRng;
+        const res = useQuickhack(s, q.key as QuickhackKey, { combatantId: req.targetId, npcId: req.targetNpcId }, rolls, { d10: outcome.check.d10, luck: outcome.check.luckSpent });
+        if (res.ok) s = res.state;
       } else if (outcome.deathSave) {
         const c = s.character;
         s = { ...s, character: { ...c, deathSavePenalty: c.deathSavePenalty + 1, dead: !outcome.deathSave.success } };
@@ -157,7 +166,6 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       }
 
       s = appendChat(s, { kind: 'roll', text: req.reason, roll: outcome });
-      if (s.combat.active && req.kind === 'attack') s = { ...s, combat: { ...s.combat, round: s.combat.round + 1 } };
       return { ...s, pendingRoll: null };
     }
 
@@ -193,8 +201,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       if (res.application) s = { ...s, character: applyDamageApplication(s.character, res.application) };
       s = secondHeart(s);
       if (res.deflected) s = { ...s, combat: { ...s.combat, roleUsage: { ...s.combat.roleUsage, deflectionRound: s.combat.round } } };
+      const hpLost = res.application?.hpDamage ?? 0;
       const summary = res.hit
-        ? `${res.attackerName} acertou você: −${res.application?.hpDamage ?? 0} PV${res.deflected ? ` (Desvio de Dano evitou ${res.deflected})` : ''}${res.reduced ? ` (o cromo absorveu ${res.reduced})` : ''}${res.application?.criticalInjury ? ` e ${res.application.criticalInjury.name}` : ''}.`
+        ? `${res.attackerName} acertou você${hpLost ? `: −${hpLost} PV` : ', mas a armadura segurou tudo'}${res.deflected ? ` (Desvio de Dano evitou ${res.deflected})` : ''}${res.reduced ? ` (o cromo absorveu ${res.reduced})` : ''}${res.application?.criticalInjury ? ` e ${res.application.criticalInjury.name}` : ''}.`
         : `${res.attackerName} errou${res.defenseKind === 'evasion' ? ' — você esquivou' : ''}.`;
       // Totais e defesa ficam em `data` (o texto é visível ao jogador).
       s = appendChat(s, { kind: 'combat', text: summary });
@@ -275,6 +284,13 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       const cost = state.character.ip - next.ip;
       const info = ROLE_ABILITY[next.bio.role];
       return emit({ ...state, character: next }, 'ROLE_IMPROVED', `${info.name} → rank ${next.roleRank} (−${cost} PM)`, { value: next.roleRank });
+    }
+
+    case 'unlockQuickhack': {
+      const next = unlockQuickhack(state.character, action.key);
+      if (typeof next === 'string') return appendChat(state, { kind: 'system', text: next });
+      const def = QUICKHACKS[action.key];
+      return emit({ ...state, character: next }, 'ROLE_IMPROVED', `Quickhack desbloqueado: ${def.name}${def.ipCost ? ` (−${def.ipCost} PM)` : ''}`, { data: { quickhack: action.key } });
     }
 
     case 'allocateRole': {

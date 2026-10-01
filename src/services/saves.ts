@@ -18,28 +18,52 @@ interface SlotData extends SlotInfo {
   state: GameState;
 }
 
-/** Validação estrutural mínima de um save v2 (saves v1 são rejeitados). */
+/** Número de verdade (NaN/Infinity vindos de JSON quebrado não passam). */
+const num = z.number().refine(Number.isFinite, 'número inválido');
+/** Lista de objetos: nenhum item nulo (o motor percorre sem checar item a item). */
+const list = z.array(z.looseObject({}));
+
+/**
+ * Validação estrutural de um save v3 (saves v1 são rejeitados).
+ * Cobre tudo que o motor percorre sem defesa: listas, objetos aninhados e números.
+ * Um save que passa aqui tem de aguentar um turno inteiro sem lançar.
+ */
 const SaveSchema = z.looseObject({
   version: z.literal(STATE_VERSION),
   id: z.string(),
-  turn: z.number(),
+  turn: num,
   character: z.looseObject({
     bio: z.looseObject({ name: z.string(), handle: z.string() }),
-    hp: z.object({ current: z.number(), max: z.number() }),
-    inventory: z.array(z.any()),
-    skills: z.record(z.string(), z.number()),
+    hp: z.object({ current: num, max: num }),
+    humanity: z.object({ current: num, max: num }),
+    luck: z.object({ current: num, max: num }),
+    money: num,
+    stats: z.record(z.string(), num),
+    inventory: list,
+    skills: z.record(z.string(), num),
+    cyberware: list,
+    criticalInjuries: list,
   }),
-  world: z.looseObject({ time: z.string() }),
-  npcs: z.array(z.any()),
-  missions: z.array(z.any()),
-  chat: z.array(z.any()),
-  phone: z.array(z.any()),
-  combat: z.looseObject({ active: z.boolean() }),
-  session: z.looseObject({ version: z.number(), branchId: z.string() }),
+  world: z.looseObject({ time: z.string(), location: z.looseObject({}) }),
+  npcs: list,
+  missions: list,
+  chat: list,
+  phone: z.array(z.looseObject({ npcId: z.string(), messages: list })),
+  combat: z.looseObject({ active: z.boolean(), combatants: list, round: num }),
+  session: z.looseObject({ version: num, branchId: z.string() }),
   scene: z.looseObject({ presentNpcIds: z.array(z.string()) }),
   flags: z.record(z.string(), z.any()),
-  scheduled: z.array(z.any()),
-  history: z.looseObject({ summaries: z.array(z.any()), summarizedUpToTurn: z.number() }),
+  scheduled: z.array(z.looseObject({ action: z.looseObject({ kind: z.string() }) })),
+  history: z.looseObject({ summaries: list, summarizedUpToTurn: num }),
+  activeEffects: list,
+  memories: list,
+  events: list,
+  discoveries: list,
+  factions: list,
+  // Campos novos: ausentes em saves antigos (a migração preenche), mas se vierem têm de ser válidos.
+  fronts: z.array(z.looseObject({ id: z.string(), stages: z.array(z.looseObject({ effects: z.array(z.any()) })) })).optional(),
+  news: list.optional(),
+  party: z.looseObject({ members: z.array(z.looseObject({ npcId: z.string() })) }).optional(),
 });
 
 /** Valida e, se for de uma versão anterior compatível (v2), migra para a atual. */

@@ -1,3 +1,4 @@
+import { unreadNews } from '@shared/engine/fronts';
 import { BookOpen, MessageSquare, Radar, ScrollText, Swords, User, Users } from 'lucide-react';
 import { NetPanel } from '../net/NetPanel';
 import { useTutorial } from '../tutorial/TutorialModal';
@@ -27,7 +28,7 @@ function SidePanel({ game }: { game: GameState }) {
         onChange={setTab}
         items={[
           { id: 'journal', label: 'Diário', icon: <BookOpen className="w-3.5 h-3.5" /> },
-          { id: 'combat', label: 'Combate', icon: <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.combat.active ? game.combat.combatants.filter(c => c.status === 'active').length : undefined },
+          { id: 'combat', label: 'Combate', icon: <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.combat.active ? game.combat.combatants.filter(c => c.status === 'active' && c.side !== 'ally').length : undefined },
           ...(showNet ? [{ id: 'net' as const, label: 'Rede', icon: <Radar className={cn('w-3.5 h-3.5', game.net.run && 'text-neon-cyan')} />, badge: game.net.architecture && !game.net.run ? 1 : undefined }] : []),
           { id: 'contacts', label: 'Contatos', icon: <Users className="w-3.5 h-3.5" /> },
         ]}
@@ -77,7 +78,7 @@ export function GameLayout({ game }: { game: GameState }) {
   const setMobileTab = useUiStore(s => s.setMobileTab);
   const phoneOpen = useUiStore(s => s.phoneOpen);
   const closePhone = useUiStore(s => s.closePhone);
-  const unread = game.phone.reduce((s, t) => s + t.unread, 0);
+  const unread = game.phone.reduce((s, t) => s + t.unread, 0) + unreadNews(game);
   // Tutoriais de primeira vez (cada sistema se apresenta quando aparece). Esperam a narração terminar.
   const idle = !concealed;
   useTutorial('sandbox', idle && !!game.sandbox);

@@ -73,3 +73,38 @@ export function weaveDialogues(narration: string, dialogues: Dialogue[]): string
   while (di < pending.length) out.splice(Math.max(1, out.length - 1), 0, block(pending[di++]));
   return out.join('\n\n');
 }
+
+const fold = (t: string) =>
+  t
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+
+/** Primeiro nome útil do falante ('Rafa "Zero-Um"' → 'rafa'). */
+function speakerKey(speaker: string): string {
+  return (fold(speaker).replace(/["“”'()]/g, ' ').trim().split(/\s+/)[0] ?? '').replace(/[^a-z0-9]/g, '');
+}
+
+/** A fala chama o próprio falante pelo nome ("E aí, Rafa.", "Rafa, preciso de grana"): é dirigida A ele. */
+export function addressesSelf(speaker: string, text: string): boolean {
+  const name = speakerKey(speaker);
+  if (name.length < 3) return false;
+  const t = fold(text).replace(/["“”«»]/g, '').trim();
+  return new RegExp(String.raw`(^|[,;!?.]\s*|\b(e ai|ei|oi|fala|ow|o)\s+)${name}\s*[,.!?;]`).test(t);
+}
+
+/**
+ * O modelo às vezes rotula a fala do JOGADOR com o nome de quem a recebe
+ * ([DIALOGUE: Rafa] "E aí, Rafa…"). Fala que chama o próprio falante pelo nome passa a ser do jogador.
+ */
+export function fixSelfAddressedSpeakers(narration: string, dialogues: Dialogue[], player: string): { narration: string; dialogues: Dialogue[]; fixed: number } {
+  if (!player.trim()) return { narration, dialogues, fixed: 0 };
+  let fixed = 0;
+  const out = narration.replace(/\[(DIALOGUE|FALA):\s*([^\]]+)\]([\s\S]*?)(?=\[\/\s*(?:DIALOGUE|FALA)\s*\]|\[(?:DIALOGUE|FALA):|\n\s*\n|$)/gi, (all, tag: string, speaker: string, body: string) => {
+    if (!addressesSelf(speaker, body)) return all;
+    fixed++;
+    return `[${tag}: ${player}]${body}`;
+  });
+  const fixedDialogues = dialogues.map(d => (addressesSelf(d.speaker, d.text) ? { ...d, speaker: player } : d));
+  return { narration: out, dialogues: fixedDialogues, fixed };
+}

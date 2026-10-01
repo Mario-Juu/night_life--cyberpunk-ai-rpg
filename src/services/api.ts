@@ -7,6 +7,10 @@ import type {
   NarrateResponse,
   PhoneResponse,
   SummarizeResponse,
+  NpcProfileRequest,
+  NpcProfileResponse,
+  WorldgenRequest,
+  WorldgenResponse,
 } from '@shared/types/gm';
 import type { EngineResult } from '@shared/types/turn';
 import { useUiStore } from '../store/uiStore';
@@ -48,7 +52,11 @@ async function post<T>(path: string, body: unknown): Promise<GmEnvelope<T>> {
       const cut = res.status === 502 || res.status === 504 || res.status === 503;
       throw new ApiError(data.error || (cut ? 'A hospedagem cortou a resposta do Mestre (tempo limite do servidor).' : `Erro do servidor (${res.status})`), res.status);
     }
-    return data as GmEnvelope<T>;
+    // O corpo tem de ser um envelope ({payload, meta}): uma página de erro da hospedagem com 200
+    // viraria "Cannot read properties of undefined" lá na frente.
+    const env = data as Partial<GmEnvelope<T>>;
+    if (!env || typeof env !== 'object' || !env.payload || !env.meta) throw new ApiError('O Mestre respondeu algo que o jogo não entendeu (resposta fora do formato).');
+    return env as GmEnvelope<T>;
   } catch (err) {
     if (err instanceof ApiError) throw err;
     if ((err as Error).name === 'AbortError') throw new ApiError('O Mestre demorou demais para responder.');
@@ -86,4 +94,6 @@ export const api = {
     post<NarrateResponse>('/api/gm/narrate', { context, ...input, model }),
   phone: (context: GameContext, npcId: string, message: string, model: ModelMode) => post<PhoneResponse>('/api/gm/phone', { context, npcId, message, model }),
   summarize: (req: { sessionId: string; turnId: string; fromTurn: number; toTurn: number; transcript: string }) => post<SummarizeResponse>('/api/gm/summarize', req),
+  profile: (req: NpcProfileRequest) => post<NpcProfileResponse>('/api/gm/profile', req),
+  worldgen: (req: WorldgenRequest) => post<WorldgenResponse>('/api/gm/worldgen', req),
 };

@@ -18,7 +18,7 @@ import {
   type CyberwareDef,
   type FoundationKind,
 } from '../rules/cyberware';
-import { computeMaxHp } from '../rules/stats';
+import { computeMaxHp, humanityAfter } from '../rules/stats';
 import { WEAPONS } from '../rules/weapons';
 import { getSkill } from '../rules/skills';
 import type { Rng } from './dice';
@@ -212,7 +212,7 @@ export function installCyberware(s0: GameState, key: string, rng: Rng, opts: Ins
     cyberware: [...c.cyberware, ...added],
     // A peça solta (se era sua) vira implante.
     inventory: [...c.inventory.filter(i => i.id !== access.owned?.id), ...items],
-    humanity: { current: Math.max(0, c.humanity.current - loss), max: Math.max(0, c.humanity.max - maxHumanityPenalty(def) * copies) },
+    humanity: humanityAfter(c.humanity, loss, maxHumanityPenalty(def) * copies),
   };
   s = { ...s0, character };
   if (!opts.free) s = emit(s, 'MONEY_CHANGED', `−${price} €$ (${def.name})`, { value: -price });
@@ -268,7 +268,9 @@ export function activateOs(s0: GameState, rng: Rng): RemoveResult {
   let s: GameState = s0;
   if (s.combat.active) {
     const init = s.combat.playerInitiative;
-    s = { ...s, combat: { ...s.combat, os: { key: def.key, startRound: s.combat.round, rounds: os.rounds }, playerInitiative: init === null ? null : init + os.initiative } };
+    // A ativação já gasta a Ação desta rodada e a fase inimiga vira a rodada em seguida: a janela conta
+    // a partir da PRÓXIMA rodada, senão um Mk.1 (1 rodada) não daria nenhuma ação turbinada.
+    s = { ...s, combat: { ...s.combat, os: { key: def.key, startRound: s.combat.round + 1, rounds: os.rounds }, playerInitiative: init === null ? null : init + os.initiative } };
   } else {
     s = { ...s, activeEffects: [...s.activeEffects, { id: makeId('eff'), name: osOnName(def), source: 'cyberware', description: def.effect, penalties: {}, expiresAt: at(1) }] };
   }

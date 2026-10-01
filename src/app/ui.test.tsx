@@ -10,6 +10,8 @@ import { Modal } from '../ui';
 import { useGameStore } from '../store/gameStore';
 import { useUiStore } from '../store/uiStore';
 import { GameLayout } from '../features/layout/GameLayout';
+import { createSandboxState } from '@shared/engine/sandbox';
+import { createMemoryRepository, setRepository } from '../services/repository';
 
 function makeGame(): GameState {
   const c = buildCharacter({
@@ -29,6 +31,7 @@ function makeGame(): GameState {
 }
 
 beforeEach(() => {
+  setRepository(createMemoryRepository());
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as typeof window.matchMedia;
   Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
   Element.prototype.scrollIntoView = vi.fn();
@@ -55,6 +58,14 @@ describe('Modal', () => {
 });
 
 describe('GameLayout', () => {
+  it('não oferece regenerar uma narração sem snapshot pós-motor (Sandbox)', async () => {
+    const game = createSandboxState();
+    useGameStore.setState({ game });
+    render(<GameLayout game={game} />);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.queryByRole('button', { name: /Regenerar narração/i })).toBeNull();
+  });
+
   it('mostra UM único botão de rolar e a fala do NPC formatada', () => {
     const game = makeGame();
     useGameStore.setState({ game });

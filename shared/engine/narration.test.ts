@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseNarration } from './narration';
+import { fixSelfAddressedSpeakers, parseNarration } from './narration';
 
 describe('parseNarration', () => {
   it('blocos bem formados', () => {
@@ -29,5 +29,23 @@ describe('parseNarration', () => {
       { kind: 'text', text: 'O carro arranca.' },
       { kind: 'text', text: 'A chuva cai.' },
     ]);
+  });
+});
+
+describe('fixSelfAddressedSpeakers', () => {
+  it('fala do jogador rotulada com o nome de quem ouve (relato do T89) vira do jogador', () => {
+    const n =
+      'Você abre o canal de mensagens para\n\n[DIALOGUE: Rafa "Zero-Um"]\n“E aí, Rafa. Consegui dar uma respirada aqui no conapt. Tem mais algum corre?”\n[/DIALOGUE]\n\nSegundos depois, o comunicador vibra.';
+    const res = fixSelfAddressedSpeakers(n, [{ speaker: 'Rafa "Zero-Um"', text: 'E aí, Rafa. Consegui dar uma respirada' }], 'The High');
+    expect(res.fixed).toBe(1);
+    expect(res.narration).toContain('[DIALOGUE: The High]');
+    expect(res.dialogues[0].speaker).toBe('The High');
+  });
+
+  it('o NPC falando com o jogador (ou citando outro) fica como está', () => {
+    const n = '[DIALOGUE: Rafa]\nE aí, choom. O Kiro, aquele, quer te ver.\n[/DIALOGUE]\n\n[DIALOGUE: Kiro]\nRafa, cala a boca.\n[/DIALOGUE]';
+    const res = fixSelfAddressedSpeakers(n, [], 'The High');
+    expect(res.fixed).toBe(0);
+    expect(res.narration).toBe(n);
   });
 });

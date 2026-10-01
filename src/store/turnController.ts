@@ -10,6 +10,7 @@ import type { EngineResult, TurnRecord } from '@shared/types/turn';
 import type { GameContext, GmEnvelope, NarrateResponse } from '@shared/types/gm';
 import { buildGameContext } from '@shared/engine/context';
 import { createInitialState } from '@shared/engine/initialState';
+import { applyWorldgen, buildWorldgenRequest, markNewsRead, markPolishTried, needsPolish, unreadNews } from '@shared/engine/fronts';
 import { createSandboxState } from '@shared/engine/sandbox';
 import { attackBlocker, buildAttackRequest, getPlayerWeapon, type AttackOptions } from '@shared/engine/combat';
 import { activeOs } from '@shared/engine/cyberBonus';
@@ -17,8 +18,13 @@ import { newSeed, rollDie, seededRng } from '@shared/engine/dice';
 import { makeId } from '@shared/engine/ids';
 import { turnIdOf } from '@shared/engine/events';
 import { canUsePhone } from '@shared/engine/npcs';
+import { leaveAccessPoint } from '@shared/engine/net';
+import { buildQuickhackRequest, quickhackRolls } from '@shared/engine/quickhacks';
+import type { QuickhackKey } from '@shared/rules/quickhacks';
+import { applyGeneratedProfile, buildProfileRequest, markProfileTried, nextProfileCandidate } from '@shared/engine/npcProfile';
 import { humanityBand, isCyberpsycho } from '@shared/rules/humanity';
-import { applyInterpretation, applyNarration, applyPhoneReply, applyRoll, beginTurn, buildEngineResult, finalizeTurn, type Step } from '@shared/engine/turn';
+import { appendChat } from '@shared/engine/reducer';
+import { applyEnemyPhase, applyInterpretation, applyNarration, applyPhoneReply, applyRoll, beginTurn, buildEngineResult, finalizeTurn, type Step } from '@shared/engine/turn';
 import { REGISTRY, executeTool, validateToolCalls } from '@shared/engine/tools';
 import { api, isGatewayCut } from '../services/api';
 import { sound } from '../services/audio';
@@ -30,14 +36,22 @@ import { toast } from '../ui/toastStore';
 import { diceShowFrom, playDice } from './diceStore';
 import { vfx } from './vfxStore';
 
+/** O jogo mudou embaixo do turno (carregar save, nova campanha, rewind)? */
+class TurnAbandoned extends Error {}
+
 let queue: Promise<unknown> = Promise.resolve();
 
 /** Executa fn com exclusividade sobre o Mestre. */
 function exclusive<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const run = async () => {
-    useUiStore.getState().setBusy(true, label);
     try {
+      // setBusy dentro do try: se a escrita do store falhar, a entrada não trava ligada.
+      useUiStore.getState().setBusy(true, label);
       return await fn();
+    } catch (err) {
+      // A campanha mudou no meio (carregar save, rewind, nova campanha): o turno antigo só é descartado.
+      if (err instanceof TurnAbandoned) return undefined as T;
+      throw err;
     } finally {
       useUiStore.getState().setBusy(false);
     }
@@ -53,6 +67,7 @@ const model = () => useUiStore.getState().model;
 export const AUTO_RETRY_DELAY_MS = 8_000;
 
 function reportError(err: unknown, context: string) {
+  if (err instanceof TurnAbandoned) return;
   const message = (err as Error)?.message ?? String(err);
   dispatch({ type: 'systemMessage', text: `⚠ ${context}: ${message}` });
   toast({ title: context, body: message, tone: 'danger' });
@@ -74,9 +89,15 @@ function commitStep(step: Step): Step {
   return { state: requireGame(), record: step.record };
 }
 
+function assertSameGame(record: TurnRecord): GameState {
+  const game = requireGame();
+  if (game.id !== record.gameId || game.session.branchId !== record.branchId) throw new TurnAbandoned('A campanha mudou durante o turno.');
+  return game;
+}
+
 /** Passo a partir do estado ATUAL do store (mudanças da UI durante a espera não se perdem). */
 function current(record: TurnRecord): Step {
-  return { state: requireGame(), record };
+  return { state: assertSameGame(record), record };
 }
 
 function feedback(before: GameState, after: GameState) {
@@ -86,6 +107,8 @@ function feedback(before: GameState, after: GameState) {
     vfx('combat');
   }
   if (after.discoveries.length > before.discoveries.length) sound.playDiscovery();
+  const fresh = (after.news ?? []).filter(n => !(before.news ?? []).some(b => b.id === n.id));
+  if (fresh.length) toast({ title: `NCNet · ${fresh[fresh.length - 1].source}`, body: fresh[fresh.length - 1].headline, tone: 'info', action: { label: 'Ler', run: () => openNews() } });
   const unread = (s: GameState) => s.phone.reduce((n, t) => n + t.unread, 0);
   if (unread(after) > unread(before)) {
     sound.playNotification();
@@ -121,7 +144,7 @@ async function closeTurn(record: TurnRecord) {
   const game = getGame();
   if (game) {
     pruneSnapshots(game).catch(() => undefined);
-    void maybeSummarize();
+    void backgroundWork();
   }
 }
 
@@ -182,11 +205,29 @@ async function narrateWithChoice(
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** Deixa o navegador pintar o resultado do ataque antes de iniciar a reação inimiga. */
+async function paintPlayerAttack(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return;
+  await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
 /** Quanto esperar antes de tentar o Flash de novo quando o jogador escolhe "esperar". */
 const LITE_WAIT_S = 20;
 
 /** Narra o resultado mecânico, aplica consequências e fecha o turno. */
-async function narrateAndFinish(step0: Step, outcome: RollOutcome | null): Promise<void> {
+async function narrateAndFinish(stepIn: Step, outcome: RollOutcome | null): Promise<void> {
+  // Combate: os inimigos agem na ordem de iniciativa antes da narração (seed registrada; o resultado fica
+  // escondido até a narração chegar, como nos ataques do jogador).
+  let step0 = stepIn;
+  if (stepIn.state.combat.active && stepIn.record.kind !== 'prologue') {
+    const seed = takeSeed();
+    const phased = applyEnemyPhase(stepIn, seededRng(seed));
+    if (phased !== stepIn) {
+      if (!useUiStore.getState().concealedGame) useUiStore.getState().setConcealedGame(stepIn.state);
+      const calls = phased.record.toolCalls.map(t => (t.tool === 'enemy_phase' ? { ...t, data: { ...(t.data as object), seed } } : t));
+      step0 = commitStep({ state: phased.state, record: { ...phased.record, toolCalls: calls } });
+    }
+  }
   const engineResult = buildEngineResult(step0, outcome);
   const postEngineSnapshotId = await takeSnapshot(step0.state, 'post_engine', `Motor resolvido (turno ${step0.state.turn})`);
   let step: Step = { ...step0, record: { ...step0.record, engineResult, postEngineSnapshotId, phase: 'narrating' } };
@@ -328,7 +369,7 @@ export function rollPending(luckSpent: number): Promise<RollOutcome | null> {
     if (!active || active.turn !== game.turn || active.phase !== 'awaiting_roll') {
       await takeSnapshot(game, 'turn_start', request.reason);
       const opened = beginTurn(game, request.origin === 'player' ? request.reason : null);
-      opened.record.parsedIntent = { type: request.kind === 'attack' ? 'attack' : 'skill', summary: request.reason, confidence: 1 };
+      opened.record.parsedIntent = { type: request.kind === 'attack' || request.kind === 'quickhack' ? 'attack' : 'skill', summary: request.reason, confidence: 1 };
       active = commitStep(opened).record;
     }
 
@@ -338,8 +379,9 @@ export function rollPending(luckSpent: number): Promise<RollOutcome | null> {
     const preview = applyRoll(current(active), luckSpent, seed).outcome!;
     useUiStore.getState().setBusy(true, 'Rolando os dados…');
     const animated = await playDice(diceShowFrom(preview));
-    // O desfecho só é revelado com a narração: os painéis mostram o estado de antes da rolagem.
-    if (request.kind !== 'initiative') useUiStore.getState().setConcealedGame(requireGame());
+    // Testes sociais seguem ocultos até a narração. Ataques, porém, mostram dano/queda antes da
+    // reação inimiga: a ordem de iniciativa fica explícita para quem está jogando.
+    if (request.kind !== 'initiative' && request.kind !== 'attack' && request.kind !== 'quickhack') useUiStore.getState().setConcealedGame(requireGame());
     const stepped = applyRoll(current(active), luckSpent, seed);
     const outcome = stepped.outcome!;
     commitStep(stepped);
@@ -348,6 +390,8 @@ export function rollPending(luckSpent: number): Promise<RollOutcome | null> {
       if (outcome.check.d10.crit) sound.playCrit();
       else if (outcome.check.d10.fumble) sound.playFumble();
     }
+
+    if (request.kind === 'attack') await paintPlayerAttack();
 
     if (request.kind === 'initiative') {
       const done = finalizeTurn(current(stepped.record), []);
@@ -427,6 +471,13 @@ async function closeNetTurn(step0: Step) {
  * Ação de Rede pelo painel (jack_in, net_action). Resolve na hora; quando as Ações de Rede
  * acabam (ou a conexão cai), o turno fecha sozinho.
  */
+/** Botão do painel: o jogador se afasta do ponto de acesso (sem conexão ativa; não precisa do Mestre). */
+export function leaveNetAccess(): void {
+  const game = getGame();
+  if (!game?.net.architecture || game.net.run) return;
+  commit(leaveAccessPoint(game, seededRng(newSeed())));
+}
+
 export function netPanelAction(tool: 'jack_in' | 'net_action', args: Record<string, unknown> = {}): Promise<void> {
   return exclusive('Na Rede…', async () => {
     const game = requireGame();
@@ -461,12 +512,27 @@ export function endNetTurnPanel(): Promise<void> {
 export function prepareAttack(targetId: string | null, weaponId: string | undefined, opts: AttackOptions): string | null {
   const game = requireGame();
   if (game.pendingRoll?.origin === 'gm') return 'Resolva primeiro o teste pendente.';
-  const target = targetId ? game.combat.combatants.find(c => c.id === targetId && c.status === 'active') : undefined;
+  const target = targetId ? game.combat.combatants.find(c => c.id === targetId && c.status === 'active' && c.side !== 'ally') : undefined;
   if (targetId && !target) return 'Alvo indisponível.';
   const weapon = getPlayerWeapon(game.character, weaponId);
   const err = attackBlocker(game.character, weapon, target, opts, activeOs(game));
   if (err) return err;
   const request = buildAttackRequest(game.character, weapon, target, opts, 'player');
+  dispatch({ type: 'setPendingRoll', request });
+  useUiStore.getState().setMobileTab('story');
+  return null;
+}
+
+/** Painel de combate: quickhack vira teste de Interface na tela (Ping resolve na hora, sem teste). */
+export function prepareQuickhack(key: QuickhackKey, targetId: string): string | null {
+  const game = requireGame();
+  if (game.pendingRoll?.origin === 'gm') return 'Resolva primeiro o teste pendente.';
+  if (!quickhackRolls(key)) {
+    void quickTool('quickhack', { hack: key }, 'Dou um ping na área.');
+    return null;
+  }
+  const request = buildQuickhackRequest(game, key, { combatantId: targetId }, 'player');
+  if (typeof request === 'string') return request;
   dispatch({ type: 'setPendingRoll', request });
   useUiStore.getState().setMobileTab('story');
   return null;
@@ -505,27 +571,60 @@ export function regenerateNarration(): Promise<void> {
   });
 }
 
+/**
+ * A página recarregou no meio de um turno (interpretando ou narrando): nada mais vai terminá-lo.
+ * Fecha como falho e deixa um aviso no chat. Se o motor já tinha resolvido (snapshot pós-motor),
+ * o aviso oferece "Tentar narrar de novo"; senão, o jogador reenvia a ação.
+ * Rolagem pendente e turno na Rede continuam como estão: a interface já sabe retomá-los.
+ */
+export async function recoverInterruptedTurn(): Promise<void> {
+  const active = useGameStore.getState().activeTurn;
+  const game = getGame();
+  if (!active || !game || (active.phase !== 'interpreting' && active.phase !== 'narrating')) return;
+  if (active.gameId !== game.id || active.branchId !== game.session.branchId) {
+    useGameStore.getState().setActiveTurn(null);
+    return;
+  }
+  const resolved = !!active.postEngineSnapshotId;
+  await closeTurn({ ...active, phase: 'failed' });
+  commit(
+    appendChat(requireGame(), {
+      kind: 'system',
+      text: resolved
+        ? 'A página recarregou antes de o Mestre narrar este turno. A ação já foi resolvida — peça a narração de novo.'
+        : 'A página recarregou antes de o Mestre entender a sua ação. Nada aconteceu: envie de novo.',
+    }),
+  );
+}
+
 export async function canRegenerate(): Promise<boolean> {
   const game = getGame();
   if (!game) return false;
   const turns = await getRepository().listTurns(game.id, game.session.branchId);
-  return turns.some(t => t.turn === game.turn && t.postEngineSnapshotId && t.phase === 'complete');
+  return turns.some(t => t.turn === game.turn && t.postEngineSnapshotId && (t.phase === 'complete' || t.phase === 'failed'));
 }
 
 // ---------------------------------------------------------------- inventário direto
 
 export function reload(weaponId: string) {
   const before = requireGame();
+  // Em combate, recarregar/destravar é a Ação do turno: os inimigos respondem e o Mestre narra.
+  if (before.combat.active) {
+    const weapon = before.character.inventory.find(i => i.id === weaponId);
+    const name = weapon?.name ?? 'a arma';
+    return void quickTool('reload', { weaponId }, weapon?.weapon?.jammed ? `Gasto minha ação destravando ${name}.` : `Gasto minha ação recarregando ${name}.`);
+  }
   dispatch({ type: 'reload', weaponId });
   if (requireGame().character.inventory !== before.character.inventory) sound.playClick();
   else sound.playAlert();
 }
 
 export function consumeItem(itemId: string) {
-  const item = requireGame().character.inventory.find(i => i.id === itemId);
+  const game = requireGame();
+  const item = game.character.inventory.find(i => i.id === itemId);
   if (!item) return;
-  // Droga de rua tem teste de vício: vira ação narrada.
-  if (item.streetDrug) return void quickTool('use_item', { itemId }, `Uso ${item.name}.`);
+  // Droga de rua tem teste de vício: vira ação narrada. Em combate, usar qualquer item gasta a Ação do turno.
+  if (item.streetDrug || game.combat.active) return void quickTool('use_item', { itemId }, `Uso ${item.name}.`);
   if (item.drug) dispatch({ type: 'useDrug', itemId });
   else dispatch({ type: 'useConsumable', itemId, healed: item.heal ? rollDie(item.heal) : 0 });
   sound.playSuccess();
@@ -544,7 +643,25 @@ export function openPhoneThread(npcId: string | null) {
   if (npcId) dispatch({ type: 'phoneRead', npcId });
 }
 
+/** "Conversa" especial do Agent que mostra o feed NCNet (manchetes e boatos das frentes). */
+export const NEWS_THREAD = '__ncnet';
+
+export function openNews() {
+  const ui = useUiStore.getState();
+  if (window.matchMedia?.('(min-width: 1024px)').matches) ui.openPhone(NEWS_THREAD);
+  else {
+    ui.setActiveThread(NEWS_THREAD);
+    ui.setMobileTab('phone');
+  }
+}
+
 /** Seleciona uma conversa dentro do telefone já aberto e a marca como lida. */
+/** Abriu o NCNet: as manchetes contam como lidas. */
+export function markNewsSeen() {
+  const game = getGame();
+  if (game && unreadNews(game)) commit(markNewsRead(game));
+}
+
 export function selectThread(npcId: string | null) {
   useUiStore.getState().setActiveThread(npcId);
   if (npcId) dispatch({ type: 'phoneRead', npcId });
@@ -568,6 +685,7 @@ export function sendPhoneMessage(npcId: string, text: string): Promise<void> {
       const read = (ui.phoneOpen || ui.mobileTab === 'phone') && ui.activeThread === npcId;
       const before = requireGame();
       commit(applyPhoneReply(before, npcId, reply, read).state);
+      void backgroundWork();
       sound.playNotification();
       if (reply.degraded) toast({ title: 'Sinal fraco', body: 'O contato não respondeu de verdade. Tente de novo.', tone: 'warning' });
       else if (!read) toast({ title: `Resposta de ${before.npcs.find(n => n.id === npcId)?.name ?? 'contato'}`, body: reply.replyText.slice(0, 120), tone: 'info' });
@@ -577,6 +695,83 @@ export function sendPhoneMessage(npcId: string, text: string): Promise<void> {
       useUiStore.getState().setPhoneTyping(null);
     }
   });
+}
+
+// ---------------------------------------------------------------- trabalho de fundo
+
+let background: Promise<void> = Promise.resolve();
+
+/**
+ * Resumo, perfil de NPC e costura do mundo em FILA (um de cada vez), nunca em paralelo:
+ * várias chamadas juntas estouram a cota por minuto do plano gratuito e esfriam os modelos da narração.
+ */
+function backgroundWork(): Promise<void> {
+  background = background.then(async () => {
+    await maybeSummarize();
+    await maybeProfileNpc();
+    await maybePolishWorld();
+  });
+  return background;
+}
+
+// ---------------------------------------------------------------- profundidade de NPCs
+
+let profiling: string | null = null;
+
+/**
+ * NPC que ganhou importância e ainda é casca vazia: pede ao Mestre personalidade (e, se for central,
+ * objetivo e segredo). Fora do turno, um por vez; se falhar, tenta de novo daqui a alguns turnos.
+ */
+async function maybeProfileNpc(): Promise<void> {
+  const game = getGame();
+  if (!game || profiling || game.sandbox) return;
+  const npc = nextProfileCandidate(game);
+  const req = npc && buildProfileRequest(game, npc.id);
+  if (!npc || !req) return;
+  profiling = npc.id;
+  try {
+    const env = await api.profile(req);
+    getRepository().saveLlmRun(env.meta).catch(() => undefined);
+    const latest = getGame();
+    // Trocou de campanha no meio: o perfil não é desta.
+    if (!latest || latest.id !== game.id) return;
+    commit(env.payload.degraded ? markProfileTried(latest, npc.id) : applyGeneratedProfile(latest, npc.id, env.payload));
+  } catch (err) {
+    console.warn('[npc] perfil falhou:', err);
+    const latest = getGame();
+    if (latest?.id === game.id) commit(markProfileTried(latest, npc.id));
+  } finally {
+    profiling = null;
+  }
+}
+
+// ---------------------------------------------------------------- costura do mundo
+
+let polishing = false;
+
+/**
+ * As frentes saem do sorteio com texto cru: o Mestre reescreve (uma vez por campanha, fora do turno),
+ * ligando-as ao personagem. Falhou: seguem com o texto da mistura e tenta de novo depois.
+ */
+export async function maybePolishWorld(): Promise<void> {
+  const game = getGame();
+  if (!game || polishing || game.sandbox || !needsPolish(game)) return;
+  const req = buildWorldgenRequest(game);
+  if (!req) return;
+  polishing = true;
+  try {
+    const env = await api.worldgen(req);
+    getRepository().saveLlmRun(env.meta).catch(() => undefined);
+    const latest = getGame();
+    if (!latest || latest.id !== game.id) return;
+    commit(env.payload.degraded || !env.payload.fronts.length ? markPolishTried(latest) : applyWorldgen(latest, env.payload));
+  } catch (err) {
+    console.warn('[mundo] costura falhou:', err);
+    const latest = getGame();
+    if (latest?.id === game.id) commit(markPolishTried(latest));
+  } finally {
+    polishing = false;
+  }
 }
 
 // ---------------------------------------------------------------- memória longa
@@ -600,7 +795,9 @@ async function maybeSummarize(): Promise<void> {
   try {
     const env = await api.summarize({ sessionId: game.id, turnId: turnIdOf(game), fromTurn, toTurn, transcript: lines.join('\n').slice(0, 55_000) });
     getRepository().saveLlmRun(env.meta).catch(() => undefined);
-    const latest = requireGame();
+    const latest = getGame();
+    // Trocou de campanha, de linha do tempo ou voltou no tempo enquanto o resumo vinha: ele não é mais deste jogo.
+    if (!latest || latest.id !== game.id || latest.session.branchId !== game.session.branchId || latest.turn < game.turn) return;
     if (latest.history.summarizedUpToTurn >= toTurn) return;
     commit({
       ...latest,
