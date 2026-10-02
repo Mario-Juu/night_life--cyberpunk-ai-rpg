@@ -8,9 +8,11 @@ import {
   MAKER_SPECIALTIES,
   MAX_ROLE_RANK,
   MEDICINE_SPECIALTIES,
+  NOMAD_UPGRADES,
   ROLE_ABILITY,
   familyVehicle,
   makerPointsTotal,
+  nomadUpgradeSlots,
   operatorPerks,
   roleUpgradeCost,
 } from '@shared/rules/roles';
@@ -81,6 +83,7 @@ export function RoleTab({ game }: { game: GameState }) {
   const c = game.character;
   const [quickhackShopOpen, setQuickhackShopOpen] = useState(false);
   const [ordersOpen, setOrdersOpen] = useState(false);
+  const [soloDraft, setSoloDraft] = useState<Partial<Record<(typeof COMBAT_AWARENESS)[number]['key'], number>> | null>(null);
   const info = ROLE_ABILITY[c.bio.role];
   const d = c.roleData;
   useTutorial('role', true);
@@ -90,6 +93,18 @@ export function RoleTab({ game }: { game: GameState }) {
   const alloc = (section: RoleSection, key: string, delta: number) => {
     sound.playClick();
     dispatch({ type: 'allocateRole', section, key, delta });
+  };
+  const awareness = game.combat.active ? (soloDraft ?? d.combatAwareness ?? {}) : (d.combatAwareness ?? {});
+  const awarenessFree = c.roleRank - Object.values(awareness).reduce((n, v) => n + (v ?? 0), 0);
+  const adjustAwarenessDraft = (key: (typeof COMBAT_AWARENESS)[number]['key'], delta: number) => {
+    const option = COMBAT_AWARENESS.find(o => o.key === key)!;
+    setSoloDraft(prev => {
+      const draft = { ...(prev ?? d.combatAwareness) };
+      const next = Math.max(0, Math.min(option.max, (draft[key] ?? 0) + Math.sign(delta) * option.step));
+      if (delta > 0 && c.roleRank - Object.values(draft).reduce((n, v) => n + (v ?? 0), 0) < option.step) return prev ?? d.combatAwareness ?? {};
+      draft[key] = next;
+      return draft;
+    });
   };
 
   return (
@@ -130,26 +145,41 @@ export function RoleTab({ game }: { game: GameState }) {
         <section className="space-y-1">
           <div className="flex items-center justify-between">
             <p className="eyebrow">Consciência de Combate</p>
-            <Badge tone={free > 0 ? 'yellow' : 'muted'}>{free} livre(s)</Badge>
+            <Badge tone={(game.combat.active ? awarenessFree : free) > 0 ? 'yellow' : 'muted'}>{game.combat.active ? awarenessFree : free} livre(s)</Badge>
           </div>
-          {game.combat.active && <p className="text-[11px] text-neon-yellow">Em combate, redistribuir custa sua Ação — ajuste depois da luta.</p>}
+          {game.combat.active && <p className="text-[11px] text-neon-yellow">Monte uma nova distribuição e aplique-a: isso gasta sua Ação desta rodada.</p>}
           <ul className="divide-y divide-line-soft">
             {COMBAT_AWARENESS.map(o => {
-              const v = d.combatAwareness?.[o.key] ?? 0;
+              const v = awareness[o.key] ?? 0;
               return (
                 <Stepper
                   key={o.key}
                   label={o.label}
                   value={v}
                   hint={v > 0 ? o.describe(v) : `passo de ${o.step} ponto(s)`}
-                  onMinus={() => alloc('combatAwareness', o.key, -1)}
-                  onPlus={() => alloc('combatAwareness', o.key, +1)}
-                  disabledMinus={v === 0 || game.combat.active}
-                  disabledPlus={free < o.step || v >= o.max || game.combat.active}
+                  onMinus={() => game.combat.active ? adjustAwarenessDraft(o.key, -1) : alloc('combatAwareness', o.key, -1)}
+                  onPlus={() => game.combat.active ? adjustAwarenessDraft(o.key, 1) : alloc('combatAwareness', o.key, 1)}
+                  disabledMinus={v === 0}
+                  disabledPlus={(game.combat.active ? awarenessFree : free) < o.step || v >= o.max}
                 />
               );
             })}
           </ul>
+          {game.combat.active && (
+            <Button
+              size="sm"
+              variant="ghost"
+              tone="yellow"
+              disabled={!soloDraft || awarenessFree !== 0}
+              onClick={() => {
+                const values = soloDraft ?? {};
+                setSoloDraft(null);
+                void quickTool('reconfigure_awareness', values, 'Redistribuo minha Consciência de Combate.');
+              }}
+            >
+              Aplicar distribuição · gastar Ação
+            </Button>
+          )}
         </section>
       )}
 
@@ -223,18 +253,41 @@ export function RoleTab({ game }: { game: GameState }) {
         <section className="space-y-2 text-sm">
           <p className="eyebrow">Operador</p>
           <p>Alcance de mercado: <span className="text-neon-cyan">{operatorPerks(c.roleRank).reach}</span></p>
-          <p>Pechincha: −{Math.round(operatorPerks(c.roleRank).discount * 100)}% nas compras{operatorPerks(c.roleRank).bulkBonus ? ' · leve 6, pague 5 em munição/consumíveis' : ''}</p>
-          {operatorPerks(c.roleRank).jobBonus > 0 && <p>Trabalhos pagam +{Math.round(operatorPerks(c.roleRank).jobBonus * 100)}%</p>}
+          <p>Pechincha: até −{Math.round(operatorPerks(c.roleRank).haggleDiscount * 100)}% ao vencer a negociação · em 5+ iguais, +1 unidade</p>
+          {operatorPerks(c.roleRank).canHostNightMarket && <p>{operatorPerks(c.roleRank).canHostMidnightMarket ? 'Pode organizar Mercado da Meia-Noite.' : 'Pode organizar um Mercado Noturno mensal.'}</p>}
           <Button size="sm" variant="ghost" tone="yellow" block icon={<ShoppingBag className="w-3.5 h-3.5" />} onClick={() => setOrdersOpen(true)}>Abrir encomendas de cromo</Button>
         </section>
       )}
       {c.bio.role === 'fixer' && <FixerOrderModal game={game} open={ordersOpen} onClose={() => setOrdersOpen(false)} />}
 
       {c.bio.role === 'nomad' && (
-        <section className="space-y-1 text-sm">
+        <section className="space-y-2 text-sm">
           <p className="eyebrow">Moto</p>
           <p>+{c.roleRank} em Pilotar Veículo e Tec. de Veículos</p>
-          <p>Veículo da família: <span className="text-neon-cyan">{familyVehicle(c.roleRank)}</span></p>
+          <p>Veículo da família: <span className="text-neon-cyan">{familyVehicle(c.roleRank, c.nomadUpgrades)}</span></p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="eyebrow">Melhorias do veículo</p>
+            <Badge tone={(c.nomadUpgrades?.length ?? 0) < nomadUpgradeSlots(c.roleRank) ? 'yellow' : 'muted'}>{c.nomadUpgrades?.length ?? 0}/{nomadUpgradeSlots(c.roleRank)}</Badge>
+          </div>
+          <div className="grid gap-1.5">
+            {NOMAD_UPGRADES.map(upgrade => {
+              const active = c.nomadUpgrades?.includes(upgrade.key) ?? false;
+              const full = (c.nomadUpgrades?.length ?? 0) >= nomadUpgradeSlots(c.roleRank);
+              return (
+                <button
+                  key={upgrade.key}
+                  type="button"
+                  title={upgrade.description}
+                  disabled={!active && full}
+                  onClick={() => dispatch({ type: 'toggleNomadUpgrade', key: upgrade.key })}
+                  className={cn('border px-2 py-2 text-left transition-colors disabled:opacity-35', active ? 'border-neon-cyan bg-neon-cyan/10 text-fg' : 'border-line text-muted hover:border-neon-cyan/60')}
+                >
+                  <span className="block text-xs">{upgrade.label}</span>
+                  <span className="block mt-0.5 text-[10px] leading-snug text-dim">{upgrade.description}</span>
+                </button>
+              );
+            })}
+          </div>
         </section>
       )}
     </div>

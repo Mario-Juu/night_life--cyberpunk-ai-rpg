@@ -35,8 +35,28 @@ export function findNpcLoose(state: Pick<GameState, 'npcs'>, name: string): Npc 
   if (byNorm) return byNorm;
   const first = firstToken(name);
   if (first.length < 3) return undefined;
-  const byFirst = state.npcs.filter(n => firstToken(n.name) === first);
+  const byFirst = state.npcs.filter(n => firstToken(n.name) === first && sameAlias(n.name, name));
   return byFirst.length === 1 ? byFirst[0] : undefined;
+}
+
+/**
+ * Mesmo primeiro nome só é a mesma pessoa se um nome estende o outro ("Jax" ⊂ "Jax Kettle",
+ * "Rafa (holo)" = "Rafa"). "Rafa Lima" e 'Rafa "Zero-Um"' são duas pessoas — antes eram fundidas.
+ */
+function sameAlias(a: string, b: string): boolean {
+  // Só nomes próprios (maiúscula) depois do primeiro contam: "Rafa, o canal" ainda é a Rafa.
+  const proper = (s: string) =>
+    normalizeName(
+      s
+        .replace(/\([^)]*\)/g, ' ')
+        .split(/[\s,]+/)
+        .slice(1)
+        .filter(w => /^["'“‘]?\p{Lu}/u.test(w))
+        .join(' '),
+    );
+  const x = proper(a);
+  const y = proper(b);
+  return !x || !y || x === y || x.startsWith(`${y} `) || y.startsWith(`${x} `);
 }
 
 const GENERIC = /^(voz|vozes|narrador|sistema|r[aá]dio|an[uú]ncio|alto[- ]?falante|tv|holo|holograma|interfone|comunicador|agent|agente|ia|computador|terminal|multid[aã]o|todos|algu[eé]m|desconhecid[oa]|estranh[oa]|voc[eê])(?=[\s,.:;!?-]|$)/i;
@@ -106,7 +126,10 @@ export function registerSpeakers(state: GameState, speakers: string[]): { state:
     s = res.state;
     if (res.created) created.push(res.npc.id);
     ids.push(res.npc.id);
-    if (res.npc.status !== 'dead') present.add(res.npc.id);
+    // Contato do Agent que não estava na cena fala por ligação/mensagem: não "entra" nela só por falar
+    // (Rafa aparecia presente numa perseguição). Se ele chegar de verdade, o narrador usa update_scene.
+    const remote = !res.created && res.npc.isContact && !present.has(res.npc.id);
+    if (res.npc.status !== 'dead' && !remote) present.add(res.npc.id);
   }
   const presentNpcIds = [...present].filter(id => s.npcs.some(n => n.id === id && n.status !== 'dead'));
   return { state: { ...s, scene: { ...s.scene, presentNpcIds } }, created, ids };

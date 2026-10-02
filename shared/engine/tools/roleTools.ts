@@ -4,7 +4,7 @@
  */
 import type { GameState, InventoryItem, RollOutcome, RollRequest, StatKey } from '../../types/game';
 import { ADDICTION_THERAPY_PRICE, STREET_DRUGS } from '../../rules/streetDrugs';
-import { DRUGS, PRICE_CATEGORIES, priceCategoryFor, type PriceCategory } from '../../rules/roles';
+import { DRUGS, PRICE_CATEGORIES, makerRankRequired, priceCategoryFor, type PriceCategory } from '../../rules/roles';
 import { DECKS, NET_DIFFICULTY_LABEL, PROGRAMS } from '../../rules/net';
 import { THERAPY_LABEL } from '../../rules/labels';
 import { getSkill } from '../../rules/skills';
@@ -19,12 +19,13 @@ import { emit } from '../events';
 import { makeId } from '../ids';
 import { advanceTime } from '../world';
 import { drugItem } from '../drugs';
-import { unlockedDrugs, surgeryValue } from '../roles';
+import { setCombatAwareness, unlockedDrugs, surgeryValue } from '../roles';
 import { NET_ACTION_KINDS, endNetTurn, generateArchitecture, jackIn, makeProgram, netAction, type NetActionKind } from '../net';
 import { defineTool, fail, ok } from './registry';
 import { QUICKHACKS, QUICKHACK_KEYS, type QuickhackKey } from '../../rules/quickhacks';
 import { buildQuickhackRequest, quickhackRolls, useQuickhack } from '../quickhacks';
 import { findCombatantLoose } from '../combatants';
+import { setCondition } from '../conditions';
 import { findNpc } from './helpers';
 import { addToInventory, buildItem, findItem } from './helpers';
 import type { Rng } from '../dice';
@@ -47,6 +48,28 @@ function netChat(s: GameState, lines: string[]): GameState {
 }
 
 export const ROLE_TOOLS = [
+  // ---------------------------------------------------------------- Solo
+  defineTool({
+    name: 'reconfigure_awareness',
+    kind: 'action',
+    origins: ['player'],
+    description: 'Solo: redistribui toda a Consciência de Combate durante uma luta. Consome a Ação do turno; os seis valores devem somar o rank do Solo.',
+    params: {
+      deflection: { type: 'number', desc: 'Desvio de Dano', min: 0, max: 10 },
+      fumbleRecovery: { type: 'number', desc: 'Recuperação de Falha', min: 0, max: 4 },
+      initiative: { type: 'number', desc: 'Reação de Iniciativa', min: 0, max: 10 },
+      precision: { type: 'number', desc: 'Ataque Preciso', min: 0, max: 9 },
+      spotWeakness: { type: 'number', desc: 'Ponto Fraco', min: 0, max: 10 },
+      threatDetection: { type: 'number', desc: 'Detecção de Ameaça', min: 0, max: 10 },
+    },
+    run: (s0, a) => {
+      if (!s0.combat.active) return fail(s0, 'Fora de combate, ajuste os pontos diretamente na ficha.');
+      const character = setCombatAwareness(s0.character, a);
+      if (typeof character === 'string') return fail(s0, character);
+      const s = emit({ ...s0, character }, 'ROLE_IMPROVED', 'Consciência de Combate redistribuída (Ação gasta).', { target: 'player', data: { awareness: true } });
+      return ok(s, 'Você recalibra a Consciência de Combate e gasta sua Ação.');
+    },
+  }),
   // ---------------------------------------------------------------- Rede
   defineTool({
     name: 'net_architecture',
@@ -60,7 +83,7 @@ export const ROLE_TOOLS = [
       accessPoint: { type: 'string', desc: 'onde fica o ponto de acesso físico', max: 120 },
       difficulty: { type: 'string', desc: 'basic (DV6) · standard (DV8) · uncommon (DV10) · advanced (DV12)', required: true, enum: ['basic', 'standard', 'uncommon', 'advanced'] },
       floors: { type: 'number', desc: 'andares (vazio = 3d6)', min: 3, max: 18 },
-      files: { type: 'string', desc: 'arquivos relevantes, separados por ";"', max: 300 },
+      files: { type: 'string', desc: 'arquivos que ESTE sistema guarda (do dono do ponto de acesso), separados por ";"; vazio = o motor cria pelo tipo de lugar', max: 300 },
       controls: { type: 'string', desc: 'sistemas controláveis (câmeras, portas, torretas), separados por ";"', max: 300 },
       daemonName: { type: 'string', desc: 'daemon defensivo desta arquitetura (nome; vazio = não há)', max: 80 },
       daemonDirective: { type: 'string', desc: 'o que o daemon faz (vigiar, caçar, apagar intrusos, proteger torretas)', max: 160 },
@@ -96,7 +119,8 @@ export const ROLE_TOOLS = [
       targetId: { type: 'string', desc: 'id ou nome do inimigo (combate) ou do NPC (memory_wipe fora de combate)', max: 80 },
     },
     run: (s0, a, ctx) => {
-      const foe = a.targetId ? findCombatantLoose(s0.combat.combatants, a.targetId) : undefined;
+      // Sobreviventes da luta passada continuam na lista depois de end_combat: fora de combate, o alvo é o NPC.
+      const foe = a.targetId && s0.combat.active ? findCombatantLoose(s0.combat.combatants, a.targetId) : undefined;
       const npc = !foe && a.targetId ? findNpc(s0, a.targetId) : undefined;
       // Alvo informado que não existe não vira "o primeiro inimigo": o hack iria para a pessoa errada.
       if (a.targetId && !foe && !npc) return fail(s0, `Alvo "${a.targetId}" não está em combate nem é um NPC conhecido.`);
@@ -172,6 +196,9 @@ export const ROLE_TOOLS = [
       if (a.program.startsWith('deck_')) {
         const quality = a.program.slice(5) as 'poor';
         const info = DECKS[quality];
+        // Só troca para cima: deck igual/pior cobrava, rebaixava os slots e apagava programas em silêncio.
+        const current = DECKS[deck.quality] ?? DECKS.poor;
+        if (info.slots <= current.slots) return fail(s0, `Seu ${deck.name} (${deck.slots} slots) já é igual ou melhor que ${info.name}. Só vale comprar um deck superior.`);
         if (s0.character.money < info.price) return fail(s0, `Eddies insuficientes (€$${info.price}).`);
         let s = spendMoney(s0, info.price, info.name);
         s = { ...s, character: { ...s.character, deck: { ...deck, name: info.name, quality, slots: info.slots, programs: deck.programs.slice(0, info.slots) } } };
@@ -179,6 +206,8 @@ export const ROLE_TOOLS = [
       }
       const prof = PROGRAMS[a.program as keyof typeof PROGRAMS];
       const installed = deck.programs.filter(p => !p.destroyed);
+      // Cópia de um programa ativo só gasta slot e eddies: recusa (destruído pode ser recomprado).
+      if (installed.some(p => p.key === prof.key)) return fail(s0, `${prof.name} já está instalado no deck.`);
       if (installed.length >= deck.slots) return fail(s0, `Deck cheio (${deck.slots} slots).`);
       if (s0.character.money < prof.price) return fail(s0, `Eddies insuficientes: ${prof.name} custa €$${prof.price}.`);
       let s = spendMoney(s0, prof.price, prof.name);
@@ -199,7 +228,7 @@ export const ROLE_TOOLS = [
       itemId: { type: 'string', desc: 'upgrade: id do item a aprimorar', max: 80 },
       name: { type: 'string', desc: 'fabricate/invent: nome do item', max: 80 },
       category: { type: 'string', desc: 'fabricate/invent: categoria', enum: ITEM_CATEGORIES },
-      priceCategory: { type: 'string', desc: 'invent: categoria de preço (expensive ou acima)', enum: PRICE_KEYS },
+      priceCategory: { type: 'string', desc: 'invent: categoria de preço (expensive ou acima); fabricate de item SEM preço de tabela (engenhoca, granada caseira, ferramenta): cheap/everyday/costly/premium', enum: PRICE_KEYS },
       description: { type: 'string', desc: 'o que o item faz', max: 200 },
       weaponClass: { type: 'string', desc: 'classe da arma', max: 30 },
       damage: { type: 'string', desc: 'dano (ex.: 3d6)', max: 10 },
@@ -227,7 +256,10 @@ export const ROLE_TOOLS = [
       } else if (a.mode === 'fabricate') {
         if (!a.name || !a.category) return fail(s0, 'Diga o nome e a categoria do item.');
         item = buildItem({ name: a.name, category: a.category, description: a.description, weaponClass: a.weaponClass, damage: a.damage, armorSP: a.armorSP, armorSlot: a.armorSlot, ammoKind: a.ammoKind, quantity: a.quantity ?? 1 });
-        const price = priceFor({ category: item.category, quantity: 1, weaponClass: item.weapon?.weaponClass, armorSP: item.armor?.sp, ammoKind: item.ammoKind, proposedPrice: 100 }).total;
+        // Item sem preço de tabela (bomba de fumaça caseira, ferramenta) usa a categoria pedida; o padrão era
+        // 100 (Premium, Fabricação 3), o que tornava qualquer engenhoca barata impossível no começo.
+        const proposed = PRICE_CATEGORIES.find(c => c.key === a.priceCategory && c.price <= 100)?.price ?? 50;
+        const price = priceFor({ category: item.category, quantity: 1, weaponClass: item.weapon?.weaponClass, armorSP: item.armor?.sp, ammoKind: item.ammoKind, proposedPrice: proposed }).total;
         item.value = price;
         cat = priceCategoryFor(price);
       } else {
@@ -240,6 +272,11 @@ export const ROLE_TOOLS = [
 
       // Materiais: uma categoria de preço abaixo (Superluxo: metade).
       const idx = PRICE_CATEGORIES.indexOf(cat);
+      const requiredRank = makerRankRequired(cat.key);
+      // Aprimorar é limitado pelo item (uma vez só) e pelo rank da própria especialidade; os
+      // degraus de acesso protegem criação/fabricação, onde nasce o salto de poder econômico.
+      if (a.mode !== 'upgrade' && rank < requiredRank)
+        return fail(s0, `${label} ${rank} não domina ${cat.label}: precisa de ${label} ${requiredRank}. O dado resolve o trabalho, mas não substitui treinamento e oficina.`);
       const materials = (cat.key === 'super_luxury' ? Math.round(cat.price / 2) : PRICE_CATEGORIES[Math.max(0, idx - 1)].price) * (a.mode === 'fabricate' ? item.quantity : 1);
       if (s0.character.money < materials) return fail(s0, `Materiais custam €$${materials} e você tem €$${s0.character.money}.`);
       let s = spendMoney(s0, materials, `materiais: ${label}`);
@@ -404,22 +441,46 @@ export const ROLE_TOOLS = [
     },
   }),
   defineTool({
+    name: 'cryo_stasis',
+    kind: 'action',
+    origins: PLAYER,
+    description: 'Medicânico com Criossistemas estabiliza um personagem a 0 PV numa criobomba por até uma semana. Enquanto estiver em estase, não faz Testes de Morte; não cura ferimentos.',
+    params: {},
+    run: s0 => {
+      const c = s0.character;
+      if (c.bio.role !== 'medtech') return fail(s0, ROLE_DENIED('Medicânico'));
+      if ((c.roleData.medicine?.cryo ?? 0) <= 0) return fail(s0, 'Você não tem pontos em Criossistemas nem uma criobomba operacional.');
+      if (c.dead) return fail(s0, 'Criossistemas preservam alguém vivo; não trazem um flatline de volta.');
+      if (c.hp.current > 0) return fail(s0, 'Criobomba é emergência: use-a em alguém com 0 PV.');
+      if (c.cryoStasis) return fail(s0, `Você já está em criostase até ${c.cryoStasis.until}.`);
+      const until = new Date(new Date(s0.world.time).getTime() + 7 * 24 * 60 * 60_000).toISOString();
+      const character = {
+        ...c,
+        stabilized: true,
+        cryoStasis: { until, source: 'Criobomba do Medicânico' },
+        conditions: setCondition(c.conditions, 'unconscious', true, s0.turn, 'Criobomba'),
+      };
+      const s = emit({ ...s0, pendingRoll: null, character }, 'CONDITION_CHANGED', 'Criobomba ativada: Testes de Morte suspensos por até uma semana.', { target: 'player', data: { cryo: 'active', until } });
+      return ok(s, 'Criobomba ativada. Você fica estável e inconsciente; a estase segura o corpo por até uma semana.');
+    },
+  }),
+  defineTool({
     name: 'brew_drug',
     kind: 'action',
     origins: PLAYER,
-    description: 'Medicânico (Farmacêutica) fabrica doses de uma droga médica liberada: €$200 de insumos, 1 hora, DV 13.',
+    description: 'Medicânico (Farmacêutica) sintetiza 2 doses de uma droga médica liberada: €$100 de insumos, 1 hora, DV 13 de Tecnologia Médica.',
     params: { drug: { type: 'string', desc: 'droga', required: true, enum: Object.keys(DRUGS) } },
     run: (s0, a, ctx) => {
       if (s0.character.bio.role !== 'medtech') return fail(s0, ROLE_DENIED('Medicânico'));
       const drug = a.drug as keyof typeof DRUGS;
       if (!unlockedDrugs(s0.character.roleData).includes(drug)) return fail(s0, `${DRUGS[drug].label} ainda não foi liberada (Farmacêutica).`);
-      if (s0.character.money < 200) return fail(s0, 'Insumos custam €$200.');
-      let s = advanceTime(spendMoney(s0, 200, `insumos: ${DRUGS[drug].label}`), 60);
+      if (s0.character.money < 100) return fail(s0, 'Insumos custam €$100.');
+      let s = advanceTime(spendMoney(s0, 100, `insumos: ${DRUGS[drug].label}`), 60);
       const pharma = s.character.roleData.medicine?.pharma ?? 0;
-      const res = instantCheck(s, { reason: `Farmacêutica: ${DRUGS[drug].label}`, stat: 'TECH', skillId: 'paramedic', dv: 13, bonus: { label: 'Farmacêutica', value: pharma } }, ctx.rng);
+      const res = instantCheck(s, { reason: `Farmacêutica: ${DRUGS[drug].label}`, stat: 'TECH', skillId: 'medical_tech', dv: 13, bonus: { label: 'Farmacêutica', value: pharma } }, ctx.rng);
       s = res.state;
       if (!res.outcome.check.success) return ok(s, `A síntese de ${DRUGS[drug].label} falhou; insumos perdidos.`, { success: false });
-      const doses = Math.max(1, s.character.skills.paramedic ?? 1);
+      const doses = 2;
       s = addToInventory(s, drugItem(drug, doses));
       return ok(emit(s, 'ITEM_ACQUIRED', `${doses}× ${DRUGS[drug].label}`), `Fabricou ${doses} dose(s) de ${DRUGS[drug].label}.`, { success: true });
     },

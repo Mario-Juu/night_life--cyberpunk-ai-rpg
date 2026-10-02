@@ -166,7 +166,7 @@ export function SettingsModal() {
         <section className="space-y-2 border-t border-line-soft pt-4">
           <Toggle
             label="Tutoriais"
-            description="Cada sistema (Rede, combate, papel, Humanidade) se apresenta na primeira vez que aparece."
+            description="O primeiro corre e cada sistema (Rede, combate, papel, Humanidade) se apresentam quando aparecem."
             checked={tutorialsOn}
             onChange={v => useUiStore.getState().setTutorialsOn(v)}
           />

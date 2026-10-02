@@ -8,6 +8,12 @@ import type { GameState } from '@shared/types/game';
 import { makeId } from '@shared/engine/ids';
 import { getRepository, snapshotsToPrune, type SnapshotKind, type SnapshotMeta, type SnapshotRecord } from '../services/repository';
 import { requireGame, useGameStore, sanitizeGame } from './gameStore';
+import { isPermadead } from '../services/saves';
+
+/** Hardcore: depois da morte, a linha do tempo não volta. */
+function assertTimelineOpen(): void {
+  if (isPermadead(requireGame())) throw new Error('Modo hardcore: a morte é definitiva. A linha do tempo não volta.');
+}
 
 const lineName = (id: string) => (id === 'main' ? 'principal' : id);
 
@@ -53,6 +59,7 @@ export async function pruneSnapshots(state: GameState): Promise<void> {
  * (turnos e snapshots posteriores). Para preservar o futuro, use createBranch.
  */
 export async function rewindTo(snapshotIdToLoad: string): Promise<GameState> {
+  assertTimelineOpen();
   const repo = getRepository();
   const snap = await repo.getSnapshot(snapshotIdToLoad);
   if (!snap) throw new Error('Ponto de retorno não encontrado.');
@@ -72,6 +79,7 @@ export async function rewindTo(snapshotIdToLoad: string): Promise<GameState> {
  * (a ponta atual é salva para poder ser retomada depois).
  */
 export async function createBranch(fromSnapshotId: string): Promise<GameState> {
+  assertTimelineOpen();
   const repo = getRepository();
   const snap = await repo.getSnapshot(fromSnapshotId);
   if (!snap) throw new Error('Ponto de retorno não encontrado.');
@@ -89,6 +97,7 @@ export async function createBranch(fromSnapshotId: string): Promise<GameState> {
 
 /** Retoma a ponta mais recente de outra linha do tempo. */
 export async function switchBranch(branchId: string): Promise<GameState> {
+  assertTimelineOpen();
   const repo = getRepository();
   const current = requireGame();
   if (branchId === current.session.branchId) return current;

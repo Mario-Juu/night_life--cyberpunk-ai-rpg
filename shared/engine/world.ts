@@ -1,13 +1,13 @@
 /**
  * Mundo vivo: flags, relógio, fila de eventos agendados, efeitos temporários e missões ligadas a flags.
  */
-import type { FlagValue, GameState, ScheduledEvent, ThreatLevel } from '../types/game';
+import type { FlagValue, GameState, Mission, ScheduledEvent, ThreatLevel } from '../types/game';
 import { advanceGameTime, formatGameTime, gameDay } from '../rules/world';
 import { emit, turnIdOf } from './events';
 import { makeId } from './ids';
-import { operatorPerks } from '../rules/roles';
 import { syncWithdrawal } from './withdrawal';
 import { fulfillCyberOrders } from './citySystems';
+import { setCondition } from './conditions';
 
 export const FLAG_KEY_RE = /^[a-z0-9_]{2,60}$/;
 
@@ -81,6 +81,48 @@ export function paymentMatchesQuest(state: GameState, quest: { rewardEddies: num
   return first.length >= 3 && norm(payment.source).includes(first);
 }
 
+/** Valor em eddies vindo do estado (save antigo/corrompido): só inteiro finito > 0 conta. */
+export function eddies(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+}
+
+/** "Metade agora, metade na entrega": o adiantamento vai até metade da recompensa. */
+export const MAX_ADVANCE_SHARE = 0.5;
+
+/** Quanto ainda dá para adiantar desta missão. */
+export function advanceRoom(quest: Pick<Mission, 'rewardEddies' | 'advancePaid'>): number {
+  return Math.max(0, Math.floor(quest.rewardEddies * MAX_ADVANCE_SHARE) - eddies(quest.advancePaid));
+}
+
+/**
+ * Adiantamento de uma missão ativa: entra agora e é DESCONTADO da recompensa na conclusão
+ * (o total pago pelo trabalho continua sendo rewardEddies).
+ */
+export function payQuestAdvance(state: GameState, questId: string, amount: number, reason?: string): { state: GameState; error?: string } {
+  const quest = state.missions.find(m => m.id === questId);
+  if (!quest || quest.status !== 'ACTIVE') return { state, error: `Missão ${questId} não está ativa: não há o que adiantar.` };
+  if (!(quest.rewardEddies > 0)) return { state, error: `"${quest.title}" não tem recompensa em eddies para adiantar.` };
+  if (!Number.isInteger(amount) || amount <= 0) return { state, error: 'Adiantamento precisa ser um valor positivo em eddies.' };
+  const room = advanceRoom(quest);
+  if (amount > room)
+    return {
+      state,
+      error: `Adiantamento de €$${amount} passa do limite: no máximo metade da recompensa (€$${Math.floor(quest.rewardEddies * MAX_ADVANCE_SHARE)}) e já foram adiantados €$${eddies(quest.advancePaid)}. Disponível agora: €$${room}.`,
+    };
+  const advancePaid = eddies(quest.advancePaid) + amount;
+  let s: GameState = {
+    ...state,
+    character: { ...state.character, money: state.character.money + amount },
+    missions: state.missions.map(m => (m.id === quest.id ? { ...m, advancePaid } : m)),
+  };
+  s = emit(s, 'MONEY_CHANGED', `+${amount} €$ (adiantamento: ${quest.title}${reason ? ` — ${reason}` : ''}; faltam €$${quest.rewardEddies - advancePaid} na entrega)`, {
+    source: quest.giverId ?? quest.id,
+    value: amount,
+    data: { kind: 'quest_advance', questId: quest.id },
+  });
+  return { state: s };
+}
+
 export function resolveQuest(state: GameState, questId: string, status: 'COMPLETED' | 'FAILED' | 'ABANDONED', reason?: string): GameState {
   const quest = state.missions.find(m => m.id === questId);
   if (!quest || quest.status !== 'ACTIVE') return state;
@@ -96,14 +138,14 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
       // (Cada transferência só abate UMA recompensa.)
       const used = new Set(recentPayments(s, 'quest_reward', 0).flatMap(p => p.offsetIds ?? []));
       const advances = recentPayments(s, 'transfer', quest.startedTurn).filter(p => !used.has(p.id) && paymentMatchesQuest(s, quest, p));
-      const already = Math.min(quest.rewardEddies, advances.reduce((n, p) => n + p.value, 0));
+      // Adiantamento registrado (quest_advance) também já saiu do bolso do contratante.
+      const advance = Math.min(quest.rewardEddies, eddies(quest.advancePaid));
+      const already = Math.min(quest.rewardEddies, advance + advances.reduce((n, p) => n + p.value, 0));
       const offsetIds = advances.map(p => p.id);
-      // Operador (Canal, rank 5+): negocia +20% no pagamento do trabalho.
-      const bonus = s.character.bio.role === 'fixer' ? Math.round(quest.rewardEddies * operatorPerks(s.character.roleRank).jobBonus) : 0;
-      const paid = quest.rewardEddies - already + bonus;
+      const paid = quest.rewardEddies - already;
       if (paid > 0) {
         s = { ...s, character: { ...s.character, money: s.character.money + paid } };
-        s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${bonus ? `, +${bonus} negociados pelo Operador` : ''}${already ? `; €$${already} já pagos na cena` : ''})`, {
+        s = emit(s, 'MONEY_CHANGED', `+${paid} €$ (recompensa: ${quest.title}${already ? `; €$${already} já pagos ${advance ? 'adiantados' : 'na cena'}` : ''})`, {
           source: quest.giverId ?? quest.id,
           value: paid,
           data: { kind: 'quest_reward', questId: quest.id, reward: quest.rewardEddies, offsetIds },
@@ -114,7 +156,7 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
       // Equipe: cada membro leva a parte combinada do trabalho inteiro (o jogador repassa na hora) e fica mais leal.
       for (const m of s.party?.members ?? []) {
         if (s.npcs.find(n => n.id === m.npcId)?.status !== 'alive') continue;
-        const cut = Math.min(s.character.money, Math.round(((quest.rewardEddies + bonus) * m.share) / 100));
+        const cut = Math.min(s.character.money, Math.round((quest.rewardEddies * m.share) / 100));
         if (cut <= 0) continue;
         const name = s.npcs.find(n => n.id === m.npcId)?.name ?? m.npcId;
         s = { ...s, character: { ...s.character, money: s.character.money - cut }, party: { members: (s.party?.members ?? []).map(x => (x.npcId === m.npcId ? { ...x, loyalty: Math.min(100, x.loyalty + 5) } : x)) } };
@@ -123,6 +165,13 @@ export function resolveQuest(state: GameState, questId: string, status: 'COMPLET
     }
   } else {
     s = emit(s, 'QUEST_FAILED', `Missão ${status === 'FAILED' ? 'falhou' : 'abandonada'}: ${quest.title}`, { target: quest.id, data: { reason } });
+    // O adiantamento fica com o jogador; se o contratante cobrar de volta, a dívida fica registrada com ele.
+    const advance = eddies(quest.advancePaid);
+    const giver = quest.giverId ? s.npcs.find(n => n.id === quest.giverId) : undefined;
+    if (advance && giver && giver.status !== 'dead') {
+      s = { ...s, npcs: s.npcs.map(n => (n.id === giver.id ? { ...n, playerOwes: eddies(n.playerOwes) + advance } : n)) };
+      s = emit(s, 'NPC_UPDATED', `${giver.name} quer de volta o adiantamento de €$${advance} (${quest.title})`, { target: giver.id, value: advance, data: { kind: 'debt', questId: quest.id } });
+    }
   }
   // Trabalho encerrado: o que o contratante "oferecia/queria" sobre ele deixa de valer (senão o narrador paga de novo).
   if (quest.giverId) s = clearStaleGiverState(s, quest);
@@ -240,7 +289,7 @@ export function setNpcStatus(state: GameState, npcId: string, status: 'alive' | 
   return s;
 }
 
-/** Avança o relógio: dispara agendados, expira efeitos, recarrega Sorte na virada do dia. */
+/** Avança o relógio: dispara agendados, expira efeitos, recarrega Sorte na virada do dia (dormir também recarrega: ferramenta rest). */
 export function advanceTime(state: GameState, minutes: number): GameState {
   if (minutes <= 0) return state;
   const time = advanceGameTime(state.world.time, minutes);
@@ -267,6 +316,11 @@ export function advanceTime(state: GameState, minutes: number): GameState {
   if (s.world.market?.endsAt && new Date(s.world.market.endsAt).getTime() <= new Date(s.world.time).getTime()) {
     const market = s.world.market;
     s = emit({ ...s, world: { ...s.world, market: undefined } }, 'SCENE_CHANGED', `Mercado Noturno encerrou: ${market.name}`, { target: market.id, data: { nightMarket: 'closed' } });
+  }
+  if (s.character.cryoStasis && new Date(s.character.cryoStasis.until).getTime() <= now) {
+    const source = s.character.cryoStasis.source;
+    s = { ...s, character: { ...s.character, cryoStasis: undefined, conditions: setCondition(s.character.conditions, 'unconscious', false, s.turn) } };
+    s = emit(s, 'CONDITION_CHANGED', `Criobomba encerrou: ${source}`, { target: 'player', data: { cryo: 'ended' } });
   }
   return s;
 }

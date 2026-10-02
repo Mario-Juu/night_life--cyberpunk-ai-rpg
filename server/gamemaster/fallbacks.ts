@@ -27,16 +27,24 @@ export function fallbackInterpret(text: string): InterpretResponse {
   return { intent: { type: 'other', summary: text.slice(0, 200), confidence: 0 }, toolCalls: [] };
 }
 
+/** Corta no fim de uma palavra (sugestão não pode terminar em "dentr"). */
+const shorten = (t: string, max: number) => (t.length <= max ? t : `${t.slice(0, max).replace(/\s+\S*$/, '')}…`);
+
 export function fallbackNarrate(ctx: GameContext, kind: 'action' | 'prologue', engineResult: EngineResult | null, playerInput?: string, failure?: FailureKind): NarrateResponse {
   const base = { dialogues: [], toolCalls: [], discoveries: [], enemyActions: [], degraded: true };
   if (kind === 'prologue') {
     const c = ctx.character;
-    const d = getDistrict(ctx.world.location.district);
+    const l = ctx.world.location;
     const weapon = c.inventory.find(i => i.weapon)?.name ?? 'sua arma';
+    // A reserva segue a abertura sorteada (lugar, cena, quem mandou a 1ª mensagem) — antes era sempre o
+    // cubículo e o Rafa, mesmo numa campanha que começa num bar ou nas Badlands.
+    const first = ctx.phone[0];
+    const sender = first?.npcName;
+    const place = l.district === 'BADLANDS' ? `${l.subDistrict}` : `${getDistrict(l.district).name}`;
     return {
       ...base,
-      narration: `${d.name}, ${formatGameTime(ctx.world.time).time}. O cheiro de chuva ácida entra pela fresta da janela. Na bancada, a tela da administração pisca em vermelho: ${c.bio.debtReason || 'aviso de despejo'}.\n\nVocê confere a ${weapon}. Restam €$${c.money}. No Agent, uma mensagem nova de Rafa "Zero-Um" brilha na tela trincada.\n\nO que você faz, choom?`,
-      suggestedActions: ['Ler a mensagem do Rafa', 'Checar a janela e a rota de fuga', 'Descer até a rua'],
+      narration: `${l.spot}, ${place} — ${formatGameTime(ctx.world.time).time}. ${ctx.scene.description || ''}${ctx.scene.description ? '.' : ''}\n\n${ctx.world.situation}\n\nVocê confere a ${weapon}. Restam €$${c.money}.${sender ? ` No Agent, uma mensagem nova de ${sender}.` : ''}\n\nO que você faz, choom?`.replace(/\.\./g, '.'),
+      suggestedActions: [sender ? `Ler a mensagem de ${sender}` : 'Olhar em volta', 'Avaliar a saída mais próxima', shorten(ctx.world.objective, 60)],
     };
   }
   const mechanics = engineResult ? playerFacingResult(engineResult) : '';

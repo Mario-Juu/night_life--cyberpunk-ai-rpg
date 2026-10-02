@@ -43,7 +43,7 @@ describe('Cyberpunk RED — Teste de Morte', () => {
 describe('Cyberpunk RED — armadura pesada', () => {
   it('SP 12+ dá −2 em REF/DEX/MOVE; SP 15+ dá −4; leve não penaliza', () => {
     expect([armorPenalty(7), armorPenalty(11), armorPenalty(12), armorPenalty(13), armorPenalty(15), armorPenalty(18)]).toEqual([0, 0, -2, -2, -4, -4]);
-    const sc = scenario().tool('narrator', 'give_item', { name: 'Armorjack médio', category: 'armor', armorSP: 12, armorSlot: 'body' });
+    const sc = scenario().tool('narrator', 'give_item', { name: 'Armorjack médio', category: 'armor', catalogKey: 'armor_12_body' });
     const jacket = sc.item('Armorjack médio')!;
     sc.tool('interpreter', 'equip_item', { itemId: jacket.id, equipped: true });
     expect(checkPenalties(sc.state.character, 'REF')).toContainEqual({ label: 'Armadura pesada', value: -2 });

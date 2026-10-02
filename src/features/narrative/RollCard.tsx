@@ -102,7 +102,7 @@ export function RollCard({ game }: { game: GameState }) {
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         {luckAllowed ? (
-          <div className="flex items-center gap-1.5" title="Gaste pontos de Sorte para somar ao teste. Recarregam a cada dia.">
+          <div className="flex items-center gap-1.5" title="Gaste pontos de Sorte para somar ao teste. Recarregam quando você dorme (6h+) ou na virada do dia.">
             <Clover className="w-4 h-4 text-neon-green" />
             <span className="text-xs text-muted">Sorte</span>
             <button type="button" aria-label="Menos sorte" disabled={luck <= 0} onClick={() => setLuck(l => l - 1)} className="w-6 h-6 border border-line grid place-items-center disabled:opacity-30">

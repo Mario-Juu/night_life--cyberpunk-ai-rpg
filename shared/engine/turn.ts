@@ -4,7 +4,7 @@
  * Cada etapa devolve o novo estado e o TurnRecord atualizado. Nada aqui chama rede.
  */
 import type { GameState, RollOutcome } from '../types/game';
-import type { CheckRecord, EngineResult, TurnKind, TurnRecord } from '../types/turn';
+import type { CheckRecord, EngineResult, ToolCallRecord, TurnKind, TurnRecord } from '../types/turn';
 import type { InterpretResponse, NarrateResponse, PhoneResponse } from '../types/gm';
 import { getSkill } from '../rules/skills';
 import { recordingRng, seededRng, toRollRecord, cryptoRng, type Rng } from './dice';
@@ -20,6 +20,9 @@ import { noteInteraction, syncImportance } from './npcProfile';
 import { processFronts, replenishFronts } from './fronts';
 import { CYBERPSYCHO_ACTIONS, isCyberpsycho } from '../rules/humanity';
 import { runEnemyPhase } from './initiative';
+
+/** Causas de dano que não são ataque de combatente (o motor não as cobre na fase inimiga). */
+const ENVIRONMENTAL = /queda|ca[iíi]u|despenc|fogo|chama|inc[eê]ndio|queima|explos|granada|estilha|desab|choque|el[eé]tric|veneno|g[aá]s|t[oó]xic|[aá]cido|radia|afog|atropel|batida|colis|vidro/i;
 
 export interface Step {
   state: GameState;
@@ -120,11 +123,24 @@ export function applyRoll(step: Step, luckSpent: number, seed: string): Step & {
 }
 
 /**
+ * O jogador gastou a vez? Rolou algo, ou alguma ferramenta dele (texto ou painel) que não é consulta
+ * funcionou — ou descreveu algo sem ferramenta (o tempo passa). Perguntar o saldo (get_character) ou
+ * tentar algo que o motor recusou NÃO dá a vez aos inimigos: antes, o jogador levava tiro por isso.
+ */
+export function playerActed(record: Pick<TurnRecord, 'toolCalls' | 'diceRolls'>): boolean {
+  if (record.diceRolls.length) return true;
+  const mine = record.toolCalls.filter(t => t.origin === 'interpreter' || t.origin === 'player');
+  if (!mine.length) return true;
+  return mine.some(t => t.ok && REGISTRY.get(t.tool)?.kind !== 'query');
+}
+
+/**
  * Em combate, depois da Ação do jogador: os inimigos agem na ordem de iniciativa (motor), ANTES da
  * narração — o Mestre narra o que já aconteceu. Fora de combate ou no prólogo, nada.
  */
 export function applyEnemyPhase(step: Step, rng: Rng = cryptoRng): Step {
   if (step.record.kind === 'prologue' || !step.state.combat.active || step.state.character.dead) return step;
+  if (!playerActed(step.record)) return step;
   if (step.record.toolCalls.some(t => t.tool === 'enemy_phase')) return step;
   const phase = runEnemyPhase(step.state, rng);
   const summary = phase.lines.length ? phase.lines.join(' ') : 'Nenhum inimigo consegue agir nesta rodada.';
@@ -157,13 +173,24 @@ export function applyNarration(step: Step, narr: NarrateResponse, rng: Rng = cry
     s = noteInteraction(reg.state, reg.ids);
   }
   for (const d of narr.discoveries) {
-    if (s.discoveries.some(x => x.title === d.title)) continue;
+    // Mesma descoberta com caixa/acento/pontuação diferente não repete (enchia "O jogador sabe" de cópias).
+    const key = (t: string) => t.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '');
+    if (s.discoveries.some(x => key(x.title) === key(d.title) || key(x.description) === key(d.description))) continue;
     s = appendChat({ ...s, discoveries: [...s.discoveries, d].slice(-60) }, { kind: 'discovery', text: d.description, discovery: d });
   }
-  const run = runToolCalls(REGISTRY, s, narr.toolCalls, { rng, origin: 'narrator' }, 20);
-  s = run.state;
   // Com a fase dos inimigos resolvida pelo motor, enemyActions do narrador só vale no turno em que ELE iniciou o combate.
   const enginePhase = step.record.toolCalls.some(t => t.tool === 'enemy_phase');
+  // Os tiros/golpes da fase inimiga já tiraram PV: um `damage` do narrador "descrevendo" o mesmo ataque
+  // cobrava duas vezes (37 → 0 em vez de 37 → 7). Nesse turno só passa dano de causa ambiental.
+  const blocked: ToolCallRecord[] = [];
+  const calls = narr.toolCalls.filter(c => {
+    if (!enginePhase || c.tool !== 'damage' || ENVIRONMENTAL.test(String(c.args?.reason ?? ''))) return true;
+    blocked.push({ ...c, origin: 'narrator', ok: false, summary: 'Dano recusado: os ataques dos inimigos deste turno já foram aplicados pelo motor. Use damage só para causas ambientais (queda, fogo, explosão, choque, veneno).', error: 'dano duplicado' });
+    return false;
+  });
+  const run = runToolCalls(REGISTRY, s, calls, { rng, origin: 'narrator' }, 20);
+  run.records.unshift(...blocked);
+  s = run.state;
   // Um ataque por atacante: o narrador repetindo o mesmo id descreve o MESMO ataque.
   const attackers = enginePhase ? [] : [...new Set(narr.enemyActions.map(a => a.attackerId))].slice(0, 6);
   for (const attackerId of attackers) {

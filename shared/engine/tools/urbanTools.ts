@@ -1,7 +1,8 @@
 /** Ferramentas dos sistemas urbanos: disponibilidade, perseguição e pressão de facção. */
 import { CYBERWARE } from '../../rules/cyberware';
 import { getSkill } from '../../rules/skills';
-import { buyMarketCyberware, openNightMarket, orderCyberware, resolveChase, startChase } from '../citySystems';
+import { buyMarketCyberware, chaseDv, openNightMarket, orderCyberware, resolveChase, startChase } from '../citySystems';
+import { playerCannotAct } from '../conditions';
 import { instantCheck } from '../instant';
 import { defineTool, fail, ok } from './registry';
 
@@ -72,9 +73,14 @@ export const URBAN_TOOLS = [
     params: { action: { type: 'string', desc: 'manobra', required: true, enum: ['drive', 'evade', 'ram', 'shoot', 'escape'] } },
     run: (s, a, ctx) => {
       if (!s.world.chase) return fail(s, 'Não há perseguição em curso.');
+      if (s.character.dead) return fail(s, 'O personagem está morto.');
+      const cannot = playerCannotAct(s.character);
+      if (cannot) return fail(s, cannot);
       const skillId = a.action === 'shoot' ? 'handgun' : 'drive';
       const skill = getSkill(skillId)!;
-      const r = instantCheck(s, { reason: `Perseguição: ${a.action}`, stat: skill.stat, skillId, dv: 13 }, ctx.rng);
+      // O mesmo DV que resolveChase usa: antes o teste rolava contra 13 fixo e dizia "sucesso" enquanto a
+      // perseguição, com DV maior pela pressão, contava falha.
+      const r = instantCheck(s, { reason: `Perseguição: ${a.action}`, stat: skill.stat, skillId, dv: chaseDv(s.world.chase) }, ctx.rng);
       const total = r.outcome.check.total;
       const resolved = resolveChase(r.state, a.action as 'drive' | 'evade' | 'ram' | 'shoot' | 'escape', total);
       return ok(resolved.state, resolved.summary, { success: r.outcome.check.success });

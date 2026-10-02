@@ -9,7 +9,7 @@ export const STAT_INFO: Record<StatKey, { label: string; description: string }> 
   TECH: { label: 'Técnica', description: 'Habilidade com ferramentas, máquinas e implantes.' },
   COOL: { label: 'Autocontrole', description: 'Compostura sob pressão e presença social.' },
   WILL: { label: 'Vontade', description: 'Determinação e resistência mental.' },
-  LUCK: { label: 'Sorte', description: 'Pontos gastáveis para somar em qualquer teste. Recarregam a cada dia.' },
+  LUCK: { label: 'Sorte', description: 'Pontos gastáveis para somar em qualquer teste. Recarregam ao dormir (6h+) ou na virada do dia.' },
   MOVE: { label: 'Movimento', description: 'Velocidade de deslocamento.' },
   BODY: { label: 'Corpo', description: 'Constituição, força e resistência a dano.' },
   EMP: { label: 'Empatia', description: 'Conexão humana. Cai junto com a Humanidade.' },

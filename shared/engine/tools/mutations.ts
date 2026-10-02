@@ -26,22 +26,43 @@ import { advanceGameTime, formatGameTime } from '../../rules/world';
 import { applyDamageToCharacter, healCharacter } from '../health';
 import { makeId, slugId } from '../ids';
 import { emit } from '../events';
-import { advanceTime, normalizeFlagKey, PAYMENT_WINDOW_TURNS, paymentMatchesQuest, recentPayments, resolveQuest, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
+import { advanceRoom, advanceTime, eddies, MAX_ADVANCE_SHARE, normalizeFlagKey, PAYMENT_WINDOW_TURNS, paymentMatchesQuest, payQuestAdvance, recentPayments, resolveQuest, scheduleEvent, setFlag, setNpcStatus, deliverMessage } from '../world';
 import { defineTool, fail, ok } from './registry';
 import { ensureNpc } from '../npcs';
 import { changeFront, type FrontChange } from '../fronts';
 import { BOND_LABEL, NPC_BOND_KINDS, addKnowsAboutPlayer, revealNpcItem, setNpcProfile, targetName, upsertNpcBond, upsertNpcGoal } from '../npcProfile';
-import { addToInventory, buildCombatant, buildItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, recentAcquisition, sameName } from './helpers';
+import { addToInventory, buildCombatant, buildItem, buildMerchantItem, clamp, DEFAULT_COVER_HP, findItem, findNpc, dropExpiredOffer, normKey, recentAcquisition, relevantSuccessThisTurn, sameName } from './helpers';
+import { MERCHANT_ITEM_KEYS, merchantItem } from '../../rules/merchantCatalog';
 
 const NARR = ['narrator', 'engine'] as const;
 const NARR_PHONE = ['narrator', 'phone', 'engine'] as const;
 const ITEM_CATEGORIES = ['weapon', 'armor', 'ammo', 'consumable', 'gear', 'datashard'] as const;
+/** Shard guarda a origem junto do conteúdo: lido turnos depois, o Mestre sabe de quem/de onde veio. */
+const shardDescription = (description?: string, source?: string) => {
+  const d = (description ?? '').trim();
+  if (!source || /origem:/i.test(d)) return d || undefined;
+  return `${d ? `${d.replace(/\.?$/, '.')} ` : ''}Origem: ${source}.`.slice(0, 300);
+};
 const MEMORY_TYPES = ['CHARACTER_MEMORY', 'CAMPAIGN_MEMORY', 'NPC_MEMORY', 'WORLD_MEMORY', 'PLAYER_MEMORY', 'SCENE_MEMORY'] as const;
 const CYBER = ['Neuralware', 'Ciberóptico', 'Ciberáudio', 'Membro Cibernético', 'Implante Interno', 'Implante Dérmico', 'Borgware'] as const;
 
 /** Maior valor de item que o narrador pode entregar de graça. */
 export const MAX_GIFT_VALUE = 1000;
 export { MAX_TRANSFER_IN };
+
+/** Títulos que falam do mesmo trabalho ("Entrega no Porto" × "Entrega da carga no porto"). */
+function similarTitle(a: string, b: string): boolean {
+  const words = (t: string) => new Set(normKey(t).split(/[^a-z0-9]+/).filter(w => w.length >= 4));
+  const wa = words(a);
+  const wb = words(b);
+  const shared = [...wa].filter(w => wb.has(w)).length;
+  return shared >= 2 && shared / Math.min(wa.size, wb.size) >= 0.6;
+}
+
+/** Recompensa de missões abertas E concluídas neste mesmo turno (trabalho "instantâneo"). */
+function instantRewardsThisTurn(s: GameState): number {
+  return s.missions.filter(m => m.status === 'COMPLETED' && m.startedTurn === s.turn && m.resolvedTurn === s.turn).reduce((n, m) => n + Math.max(0, m.rewardEddies), 0);
+}
 
 export const MUTATION_TOOLS = [
   // ---------------------------------------------------------------- relações
@@ -147,7 +168,7 @@ export const MUTATION_TOOLS = [
     origins: NARR,
     description: 'Atualiza a cena: descrição curta, NPCs presentes (ids separados por vírgula) e ameaça.',
     params: {
-      description: { type: 'string', desc: 'descrição curta da cena', max: 200 },
+      description: { type: 'string', desc: 'o LUGAR em 1 frase: formato e o que fica onde, entradas/saídas (ex.: "salão comprido, balcão à direita, saída dos fundos pela cozinha") — não clima nem cheiro', max: 240 },
       presentNpcIds: { type: 'string', desc: 'ids dos NPCs fisicamente presentes, separados por vírgula', max: 400 },
       threat: { type: 'string', desc: 'nível de ameaça', enum: ['low', 'medium', 'high', 'extreme'] },
       situation: { type: 'string', desc: 'situação atual (1 frase)', max: 300 },
@@ -532,11 +553,17 @@ export const MUTATION_TOOLS = [
       giverId: { type: 'string', desc: 'id do NPC contratante', max: 60 },
       completeFlag: { type: 'string', desc: 'flag que conclui a missão', max: 60 },
       failFlag: { type: 'string', desc: 'flag que falha a missão', max: 60 },
+      advanceEddies: { type: 'number', desc: 'adiantamento pago AGORA ("metade agora"): até metade de rewardEddies, descontado na conclusão', min: 0, max: 2500 },
     },
     run: (s0, a) => {
       const existing = s0.missions.find(m => m.id === a.id || sameName(m.title, a.title));
       if (existing) return fail(s0, `Missão já existe (${existing.id}). Use update_quest.`);
       const giver = findNpc(s0, a.giverId);
+      // O mesmo trabalho registrado de novo com outro título (ex.: renegociado por SMS) pagaria duas vezes.
+      const twin = giver && s0.missions.find(m => m.status === 'ACTIVE' && m.giverId === giver.id && ((m.rewardEddies > 0 && m.rewardEddies === a.rewardEddies) || similarTitle(m.title, a.title)));
+      if (twin) return fail(s0, `${giver.name} já tem um trabalho ativo parecido com o jogador ("${twin.title}", ${twin.id}, €$${twin.rewardEddies}). Se é o mesmo, use update_quest (objetivo/recompensa) em vez de abrir outro.`);
+      if (a.advanceEddies && a.advanceEddies > Math.floor((a.rewardEddies ?? 0) * MAX_ADVANCE_SHARE))
+        return fail(s0, `Adiantamento de €$${a.advanceEddies} passa de metade da recompensa (€$${Math.floor((a.rewardEddies ?? 0) * MAX_ADVANCE_SHARE)}).`);
       const base = a.id && /^m_[a-z0-9_]+$/.test(a.id) ? a.id : slugId('m', a.title);
       const mission: Mission = {
         id: s0.missions.some(m => m.id === base) ? `${base}_${s0.missions.length}` : base,
@@ -555,6 +582,12 @@ export const MUTATION_TOOLS = [
       let s = emit({ ...s0, missions: [...s0.missions, mission] }, 'QUEST_STARTED', `Nova missão: ${mission.title}`, { target: mission.id, source: giver?.id, value: mission.rewardEddies });
       const flag = normalizeFlagKey(`quest_${mission.id.replace(/^m_/, '')}_started`);
       if (flag) s = { ...s, flags: { ...s.flags, [flag]: { key: flag, value: true, visibility: 'public', setTurn: s.turn } } };
+      if (a.advanceEddies) {
+        const adv = payQuestAdvance(s, mission.id, a.advanceEddies, 'combinado ao fechar o trabalho');
+        if (adv.error) return fail(s0, adv.error);
+        s = adv.state;
+        return ok(s, `Missão ${mission.id}: ${mission.title} (adiantou €$${a.advanceEddies}; faltam €$${mission.rewardEddies - a.advanceEddies} na entrega)`, { id: mission.id, advance: a.advanceEddies });
+      }
       return ok(s, `Missão ${mission.id}: ${mission.title}`, { id: mission.id });
     },
   }),
@@ -562,17 +595,49 @@ export const MUTATION_TOOLS = [
     name: 'update_quest',
     kind: 'mutation',
     origins: NARR_PHONE,
-    description: 'Atualiza objetivo ou adiciona nota a uma missão ativa.',
+    description: 'Atualiza objetivo, nota ou a recompensa RENEGOCIADA de uma missão ativa (não abra outra missão para o mesmo trabalho).',
     params: {
       questId: { type: 'string', desc: 'id da missão', required: true, max: 60 },
       objective: { type: 'string', desc: 'novo objetivo', max: 300 },
       note: { type: 'string', desc: 'nota', max: 300 },
+      rewardEddies: { type: 'number', desc: 'nova recompensa total combinada (até +50% da original; nunca abaixo do já adiantado)', min: 0, max: 5000 },
     },
     run: (s0, a) => {
       const m = s0.missions.find(q => q.id === a.questId);
       if (!m) return fail(s0, `Missão ${a.questId} não existe.`);
-      const next = { ...m, objective: a.objective ?? m.objective, notes: a.note ? [...m.notes, a.note].slice(-10) : m.notes };
-      return ok(emit({ ...s0, missions: s0.missions.map(q => (q.id === m.id ? next : q)) }, 'QUEST_UPDATED', `${m.title}: ${next.objective}`, { target: m.id }), 'Missão atualizada');
+      let reward = m.rewardEddies;
+      let originalReward = m.originalReward;
+      if (a.rewardEddies !== undefined && a.rewardEddies !== m.rewardEddies) {
+        if (m.status !== 'ACTIVE') return fail(s0, `"${m.title}" já foi encerrada: a recompensa não muda mais.`);
+        // Renegociar não vira torneira: sobe no máximo 50% sobre o combinado no início; desce até o já adiantado.
+        const base = eddies(m.originalReward) || m.rewardEddies;
+        const ceiling = Math.min(5000, Math.floor(base * 1.5));
+        const floor = eddies(m.advancePaid);
+        if (a.rewardEddies > ceiling) return fail(s0, `Renegociação de "${m.title}" passa do teto: combinado €$${base}, no máximo €$${ceiling}. Pechincha de Canal é haggle_quest.`);
+        if (a.rewardEddies < floor) return fail(s0, `"${m.title}" já teve €$${floor} adiantados: a recompensa total não pode ficar abaixo disso.`);
+        reward = Math.round(a.rewardEddies);
+        originalReward = base;
+      }
+      const next = { ...m, objective: a.objective ?? m.objective, notes: a.note ? [...m.notes, a.note].slice(-10) : m.notes, rewardEddies: reward, originalReward, reward: reward !== m.rewardEddies ? `€$${reward}` : m.reward };
+      const changed = reward !== m.rewardEddies ? ` · recompensa €$${m.rewardEddies} → €$${reward}` : '';
+      return ok(emit({ ...s0, missions: s0.missions.map(q => (q.id === m.id ? next : q)) }, 'QUEST_UPDATED', `${m.title}: ${next.objective}${changed}`, { target: m.id, value: changed ? reward : undefined }), `Missão atualizada${changed}`);
+    },
+  }),
+  defineTool({
+    name: 'quest_advance',
+    kind: 'mutation',
+    origins: NARR_PHONE,
+    description: 'Contratante adianta parte do pagamento de uma missão ATIVA ("metade agora, metade na entrega"). Até metade da recompensa; complete_quest paga só o restante.',
+    params: {
+      questId: { type: 'string', desc: 'id da missão ativa', required: true, max: 60 },
+      amount: { type: 'number', desc: 'valor adiantado agora', required: true, min: 0, max: 2500 },
+      reason: { type: 'string', desc: 'contexto curto', max: 200 },
+    },
+    run: (s0, a) => {
+      const res = payQuestAdvance(s0, a.questId, Math.round(a.amount), a.reason);
+      if (res.error) return fail(s0, res.error);
+      const m = res.state.missions.find(q => q.id === a.questId)!;
+      return ok(res.state, `Adiantamento de €$${Math.round(a.amount)} (${m.title}); na entrega faltam €$${m.rewardEddies - eddies(m.advancePaid)}. Saldo €$${res.state.character.money}.`, { advancePaid: m.advancePaid, remaining: m.rewardEddies - eddies(m.advancePaid), room: advanceRoom(m) });
     },
   }),
   defineTool({
@@ -584,8 +649,19 @@ export const MUTATION_TOOLS = [
     run: (s0, a) => {
       const m = s0.missions.find(q => q.id === a.questId);
       if (!m || m.status !== 'ACTIVE') return fail(s0, `Missão ${a.questId} não está ativa.`);
+      // Trabalho combinado e pago no MESMO turno é um bico na hora: vale até o teto de entradas avulsas
+      // (somando os do turno). Trabalho maior precisa acontecer em cena antes de pagar.
+      if (m.startedTurn === s0.turn && m.rewardEddies > 0) {
+        const instant = instantRewardsThisTurn(s0);
+        if (instant + m.rewardEddies > MAX_TRANSFER_IN)
+          return fail(
+            s0,
+            `"${m.title}" foi combinada NESTE turno: bico pago na hora vale até €$${MAX_TRANSFER_IN} por turno (já foram €$${instant}). Um trabalho de €$${m.rewardEddies} precisa acontecer em cena — deixe a missão ativa e conclua quando o jogador cumprir.`,
+          );
+      }
       const s = resolveQuest(s0, m.id, 'COMPLETED');
-      return ok(s, `Concluída: ${m.title} (+€$${s.character.money - s0.character.money})`);
+      const advance = eddies(m.advancePaid);
+      return ok(s, `Concluída: ${m.title} (+€$${s.character.money - s0.character.money}${advance ? `; €$${advance} já tinham sido adiantados` : ''})`);
     },
   }),
   defineTool({
@@ -624,9 +700,15 @@ export const MUTATION_TOOLS = [
       armorSlot: { type: 'string', desc: 'head/body', enum: ['head', 'body'] },
       ammoKind: { type: 'string', desc: 'tipo de munição', enum: ['M_PISTOL', 'H_PISTOL', 'VH_PISTOL', 'SLUG', 'RIFLE', 'ARROW'] },
       heal: { type: 'number', desc: 'cura (consumível)', min: 1, max: 12 },
+      catalogKey: { type: 'string', desc: 'chave do catálogo para arma, armadura, munição ou consumível', enum: MERCHANT_ITEM_KEYS },
       cyberKey: { type: 'string', desc: 'PEÇA DE CROMO solta (chave do catálogo): achada num corpo, roubada, recompensa. Um ripperdoc instala cobrando só a cirurgia — único jeito de ter protótipos.', max: 40 },
     },
-    run: (s0, a) => {
+    run: (sIn, a) => {
+      // Oferta vencida não conta mais como negociação aberta.
+      const s0 = dropExpiredOffer(sIn);
+      // Uma oferta comercial aberta ainda não é uma compra. Impede que a narração "entregue" a
+      // mercadoria por fora antes da confirmação, mesmo que o modelo erre a ferramenta.
+      if (s0.world.tradeOffer) return fail(s0,`Há uma negociação aberta por ${s0.world.tradeOffer.item.name}. Não entregue item por narrativa: espere o jogador confirmar ou recusar a proposta.`);
       const source = a.source ?? 'cena';
       // O jogador acabou de COMPRAR (ou já recebeu) este item neste turno: o narrador descrevendo o
       // vendedor entregando é a MESMA coisa — não entra de novo na mochila.
@@ -635,9 +717,20 @@ export const MUTATION_TOOLS = [
       // Implante entregue pela cena (mesmo sem cyberKey) vira PEÇA SOLTA: só funciona depois de instalado.
       const cyber = a.cyberKey ? findCyberware(a.cyberKey) : implantFromName(a.name);
       if (a.cyberKey && !cyber) return fail(s0, `Cromo "${a.cyberKey}" não existe no catálogo.`);
+      const catalog = a.catalogKey ? merchantItem(a.catalogKey) : undefined;
+      if (a.catalogKey && !catalog) return fail(s0, `Mercadoria "${a.catalogKey}" não existe no catálogo.`);
+      if (catalog && catalog.category !== a.category) return fail(s0, `${catalog.name} é da categoria ${catalog.category}, não ${a.category}.`);
+      if (!cyber && ['weapon', 'armor', 'ammo', 'consumable'].includes(a.category) && !catalog)
+        return fail(s0, 'Armas, armaduras, munição e consumíveis recebidos pela cena precisam usar uma chave do catálogo; itens sem mecânica podem ser gear ou datashard.');
+      // O teto de presente vale para o VALOR TOTAL (valor × quantidade), senão 30 × €$1000 vira €$15.000 na revenda.
+      const qty = a.quantity ?? 1;
+      const catalogQty = catalog ? Math.min(qty, Math.max(1, Math.floor(MAX_GIFT_VALUE / Math.max(1, catalog.price)))) : qty;
+      const unitValue = a.estimatedValue === undefined ? undefined : Math.min(a.estimatedValue, Math.floor(MAX_GIFT_VALUE / qty));
       const item = cyber
         ? { id: makeId('item'), name: `${cyber.name}${cyber.brand ? ` (${cyber.brand})` : ''} — peça solta`, category: 'gear' as const, quantity: 1, description: `${cyber.effect} Precisa de um ripperdoc para instalar.`, value: 0, cyberKey: cyber.key }
-        : buildItem({ ...a, value: a.estimatedValue });
+        : catalog
+          ? buildMerchantItem(catalog.key, a.name, catalogQty)!
+          : buildItem({ ...a, value: unitValue, description: a.category === 'datashard' ? shardDescription(a.description, a.source) : a.description });
       const s = addToInventory(s0, item);
       return ok(emit(s, 'ITEM_ACQUIRED', `Recebeu ${item.quantity}× ${item.name} (${source})`, { target: item.id, source, value: item.quantity, data: { name: item.name, via: 'give' } }), `+${item.quantity}× ${item.name}`);
     },
@@ -662,44 +755,110 @@ export const MUTATION_TOOLS = [
     },
   }),
   defineTool({
-    name: 'transfer_money',
+    name: 'receive_payment',
     kind: 'mutation',
     origins: NARR_PHONE,
-    description: `Pagamento ou cobrança atribuída a alguém. Entradas: máx. €$${MAX_TRANSFER_IN}. NUNCA pague por aqui um trabalho que é missão: complete_quest já paga a recompensa (não chame os dois). Saídas até €$5000, limitadas ao saldo.`,
+    description:
+      'Registra um recebimento menor e não comercial: gift (presente/ajuda), service (gorjeta ≤500), refund (devolução do que o jogador PAGOU a essa pessoa), loan (EMPRÉSTIMO: vira dívida do jogador com ela), repayment (a pessoa quita o que DEVIA ao jogador), found/robbery (com teste bem-sucedido). Missões usam complete_quest/quest_advance; venda usa sell_item.',
     params: {
-      amount: { type: 'number', desc: 'positivo = jogador recebe; negativo = paga', required: true, min: -5000, max: MAX_TRANSFER_IN },
+      // min 0 (não 1): o clamp do registro transformava −50/0 em €$1 creditado; ≤0 é recusado no run.
+      amount: { type: 'number', desc: 'eddies recebidos (1..1000)', required: true, min: 0, max: MAX_TRANSFER_IN },
+      counterpart: { type: 'string', desc: 'quem entregou/perdeu o dinheiro', required: true, max: 80 },
+      kind: { type: 'string', desc: 'origem do dinheiro', required: true, enum: ['gift', 'service', 'refund', 'loan', 'repayment', 'found', 'robbery'] },
+      reason: { type: 'string', desc: 'causa curta e concreta', required: true, max: 200 },
+    },
+    run: (s0, a, ctx) => {
+      const purpose = a.kind as 'gift' | 'service' | 'refund' | 'loan' | 'repayment' | 'found' | 'robbery';
+      if (!(a.amount > 0)) return fail(s0, 'Recebimento de €$0 ou negativo não é recebimento: se o jogador PERDEU dinheiro, não use receive_payment.');
+      // Pelo Agent o contato só TRANSFERE: não há roubo nem dinheiro achado numa conversa de SMS.
+      if (ctx.origin === 'phone' && (purpose === 'robbery' || purpose === 'found')) return fail(s0, 'Por mensagem só existe transferência (presente, serviço, reembolso, empréstimo ou quitação): roubo/achado acontecem em cena.');
+      const npc = findNpc(s0, a.counterpart);
+      if (npc?.status === 'dead') return fail(s0, `${npc.name} está morto — não entrega dinheiro.`);
+      const counterpartKey = normKey(a.counterpart);
+      const sameCounterpart = (who: unknown) => typeof who === 'string' && (normKey(who) === counterpartKey || (!!npc && (who === npc.id || sameName(who, npc.name))));
+      // Quitação só do que a pessoa DEVE ao jogador (empréstimo que ele fez com pay_money loan:true).
+      if (purpose === 'repayment' && eddies(npc?.owesPlayer) < a.amount)
+        return fail(s0, `${npc?.name ?? a.counterpart} deve €$${eddies(npc?.owesPlayer)} ao jogador: não dá para "quitar" €$${a.amount}. Se o jogador diz que alguém lhe deve sem isso ter acontecido na história, não pague.`);
+      // Reembolso devolve o que o jogador pagou a essa pessoa — não cria dinheiro do nada.
+      if (purpose === 'refund') {
+        const paid = s0.events.filter(e => e.type === 'MONEY_CHANGED' && e.source === 'player' && typeof e.value === 'number' && e.value < 0 && sameCounterpart(e.target)).reduce((n, e) => n - (e.value as number), 0);
+        const refunded = s0.events.filter(e => e.type === 'MONEY_CHANGED' && (e.data as { paymentKind?: string } | undefined)?.paymentKind === 'refund' && sameCounterpart(e.source)).reduce((n, e) => n + (e.value as number), 0);
+        if (a.amount > paid - refunded) return fail(s0, `Reembolso de €$${a.amount}: o jogador só pagou €$${Math.max(0, paid - refunded)} (ainda não devolvidos) a ${npc?.name ?? a.counterpart}. Reembolso devolve o que ele pagou, não mais.`);
+      }
+      // Eco com o sinal trocado: o jogador acabou de PAGAR esse valor a essa pessoa; não é uma entrada.
+      if (purpose === 'gift' || purpose === 'service') {
+        const echo = s0.events.find(e => e.type === 'MONEY_CHANGED' && e.source === 'player' && e.turn >= s0.turn - 1 && e.value === -a.amount && sameCounterpart(e.target));
+        if (echo) return fail(s0, `Isso é o pagamento que o JOGADOR fez (${echo.summary}): ele pagou, não recebeu. Se a pessoa devolveu, use kind "refund".`);
+        // O mesmo valor da mesma pessoa há pouco (SMS "te mandei" + cena "o dinheiro cai") é o MESMO dinheiro.
+        const repeat = s0.events.find(e => e.type === 'MONEY_CHANGED' && e.turn >= s0.turn - PAYMENT_WINDOW_TURNS && e.turn < s0.turn && e.value === a.amount && sameCounterpart(e.source) && ['gift', 'service'].includes((e.data as { paymentKind?: string } | undefined)?.paymentKind ?? ''));
+        if (repeat) return fail(s0, `Pagamento duplicado: €$${a.amount} de ${a.counterpart} já entrou no turno ${repeat.turn} (${repeat.summary}). Narre esse dinheiro, não registre de novo.`);
+      }
+      if (purpose === 'service' && a.amount > 500) return fail(s0, 'Pagamento de serviço acima de €$500 deve virar missão com recompensa controlada.');
+      // Roubo/achado precisa de um sucesso que SUSTENTE a ação (furto, arrombamento, ataque, busca…): uma pechincha não vale.
+      if ((purpose === 'robbery' || purpose === 'found') && !relevantSuccessThisTurn(s0, purpose))
+        return fail(s0, `${purpose === 'robbery' ? 'Roubo' : 'Dinheiro achado'} exige um teste bem-sucedido DESSA ação neste turno (${purpose === 'robbery' ? 'furto, arrombamento, intimidação, ataque' : 'busca, percepção, arrombamento'}) — ou use loot em um corpo.`);
+      // Empréstimo vira dívida e quitação/reembolso já foram conferidos: não são pagamento de trabalho.
+      const questLike = purpose !== 'loan' && purpose !== 'repayment' && purpose !== 'refund';
+      const questPayment = questLike && s0.missions.find(q => q.status === 'ACTIVE' && paymentMatchesQuest(s0, q, { value: a.amount, source: a.counterpart }));
+      if (questPayment)
+        return fail(s0, `Esse valor parece pagamento de "${questPayment.title}". Na entrega, complete_quest (o motor paga uma vez só); se é adiantamento ("metade agora"), quest_advance (até €$${advanceRoom(questPayment)} agora).`);
+      // Missão concluída há pouco já pagou o trabalho (mesma regra de transfer_money).
+      const reward = questLike && recentPayments(s0, 'quest_reward', s0.turn - PAYMENT_WINDOW_TURNS).find(p => {
+        const quest = s0.missions.find(m => m.id === p.questId);
+        return quest && paymentMatchesQuest(s0, quest, { value: a.amount, source: a.counterpart });
+      });
+      if (reward) {
+        const quest = s0.missions.find(m => m.id === reward.questId)!;
+        return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" já foi paga pelo motor quando a missão foi concluída. Narre esse pagamento, não pague de novo.`);
+      }
+      const minorThisTurn = s0.events.filter(e => e.turn === s0.turn && e.type === 'MONEY_CHANGED' && (e.data as { kind?: string } | undefined)?.kind === 'minor_payment');
+      const duplicate = minorThisTurn.some(e => typeof e.source === 'string' && sameCounterpart(e.source) && (e.data as { paymentKind?: string } | undefined)?.paymentKind === purpose);
+      if (duplicate) return fail(s0, 'Esse recebimento já foi registrado neste turno.');
+      // Teto por TURNO somando todas as contrapartes: cinco "presentes" de €$1000 não viram €$5000.
+      const receivedThisTurn = minorThisTurn.reduce((sum, e) => sum + (typeof e.value === 'number' && e.value > 0 ? e.value : 0), 0);
+      if (receivedThisTurn + a.amount > MAX_TRANSFER_IN)
+        return fail(s0, `Teto de recebimentos menores neste turno: já entraram €$${receivedThisTurn} de €$${MAX_TRANSFER_IN}. Dinheiro maior vem de missão (complete_quest) ou venda (sell_item).`);
+      let s: GameState = { ...s0, character: { ...s0.character, money: s0.character.money + a.amount } };
+      // Empréstimo e quitação mexem no livro de dívidas do NPC (o Mestre vê e pode cobrar depois).
+      let debtNote = '';
+      if (purpose === 'loan') {
+        const ensured = npc ? { state: s, npc } : ensureNpc(s, a.counterpart);
+        s = ensured.state;
+        const owes = eddies(ensured.npc.playerOwes) + a.amount;
+        s = { ...s, npcs: s.npcs.map(n => (n.id === ensured.npc.id ? { ...n, playerOwes: owes } : n)) };
+        debtNote = ` Dívida do jogador com ${ensured.npc.name}: €$${owes}.`;
+      } else if (purpose === 'repayment' && npc) {
+        const left = eddies(npc.owesPlayer) - a.amount;
+        s = { ...s, npcs: s.npcs.map(n => (n.id === npc.id ? { ...n, owesPlayer: left || undefined } : n)) };
+        debtNote = left ? ` ${npc.name} ainda deve €$${left}.` : ` ${npc.name} quitou a dívida.`;
+      }
+      return ok(
+        emit(s, 'MONEY_CHANGED', `+${a.amount} €$ — ${a.reason} (${a.counterpart})${debtNote}`, { source: npc?.id ?? a.counterpart, value: a.amount, data: { kind: 'minor_payment', paymentKind: purpose } }),
+        `Recebeu €$${a.amount} de ${a.counterpart}.${debtNote}`,
+      );
+    },
+  }),
+  defineTool({
+    name: 'transfer_money',
+    kind: 'mutation',
+    // Crédito/débito livre não pode vir da IA: trabalho paga por complete_quest e comércio por settle_trade.
+    origins: ['player'],
+    description: 'Saída de dinheiro atribuída a alguém (só débito, até €$5000, limitada ao saldo). Entradas não passam por aqui.',
+    params: {
+      amount: { type: 'number', desc: 'negativo = jogador paga (positivo é recusado)', required: true, min: -5000, max: MAX_TRANSFER_IN },
       counterpart: { type: 'string', desc: 'quem paga/recebe', required: true, max: 80 },
       reason: { type: 'string', desc: 'motivo', max: 200 },
     },
     run: (s0, a) => {
       const money = s0.character.money;
       if (!a.amount) return fail(s0, 'Transferência de €$0 não é transferência: mande o valor que mudou de mão (ou não chame a ferramenta).');
-      if (a.amount < 0 && money < -a.amount) return fail(s0, `Saldo insuficiente: tem €$${money}, precisa pagar €$${-a.amount}.`);
-      if (a.amount > 0) {
-        // Missão concluída há pouco (neste turno ou nos últimos) já pagou o trabalho: não pagar de novo pela cena.
-        const reward = recentPayments(s0, 'quest_reward', s0.turn - PAYMENT_WINDOW_TURNS).find(p => {
-          const quest = s0.missions.find(m => m.id === p.questId);
-          return quest && paymentMatchesQuest(s0, quest, { value: a.amount, source: a.counterpart });
-        });
-        if (reward) {
-          const quest = s0.missions.find(m => m.id === reward.questId)!;
-          return fail(s0, `Pagamento duplicado: a recompensa de "${quest.title}" (€$${reward.reward ?? reward.value}) já foi paga pelo motor quando a missão foi concluída. Narre esse pagamento, não pague de novo.`);
-        }
-        // Eco com o sinal trocado: o JOGADOR acabou de pagar este valor a esta pessoa (pay_money) — não é uma entrada.
-        const giver = findNpc(s0, a.counterpart);
-        const echo = s0.events.find(
-          e =>
-            e.type === 'MONEY_CHANGED' &&
-            e.source === 'player' &&
-            e.turn >= s0.turn - 1 &&
-            e.value === -a.amount &&
-            (e.target === giver?.id || (typeof e.target === 'string' && sameName(e.target, a.counterpart))),
-        );
-        if (echo) return fail(s0, `Isso é o pagamento que o JOGADOR fez (${echo.summary}): ele pagou, não recebeu. Não registre de novo; narre a entrega do dinheiro.`);
-      }
+      // Nenhuma tela credita por aqui: entrada livre de dinheiro seria uma torneira para quem forjar a origem.
+      // Dinheiro entra por missão, venda, saque ou receive_payment (com as regras deles).
+      if (a.amount > 0) return fail(s0, 'transfer_money não credita: entradas vêm de complete_quest/quest_advance, sell_item, loot ou receive_payment.');
+      if (money < -a.amount) return fail(s0, `Saldo insuficiente: tem €$${money}, precisa pagar €$${-a.amount}.`);
       const s = { ...s0, character: { ...s0.character, money: money + a.amount } };
       return ok(
-        emit(s, 'MONEY_CHANGED', `${a.amount > 0 ? '+' : ''}${a.amount} €$ — ${a.reason ?? 'sem motivo informado'} (${a.counterpart})`, { source: a.counterpart, value: a.amount, data: { kind: 'transfer' } }),
+        emit(s, 'MONEY_CHANGED', `${a.amount} €$ — ${a.reason ?? 'sem motivo informado'} (${a.counterpart})`, { source: 'player', target: findNpc(s0, a.counterpart)?.id ?? a.counterpart, value: a.amount, data: { kind: 'transfer' } }),
         `Saldo €$${s.character.money}`,
       );
     },
@@ -767,9 +926,25 @@ export const MUTATION_TOOLS = [
     name: 'heal',
     kind: 'mutation',
     origins: NARR,
-    description: 'Cura narrativa (tratamento, descanso), máx. 20.',
-    params: { amount: { type: 'number', desc: 'PV', required: true, min: 1, max: 20 }, reason: { type: 'string', desc: 'motivo', max: 200 } },
+    description: 'Cura narrativa (tratamento, descanso), máx. 20. targetId vazio = o jogador; id/nome de um ALIADO da equipe cura o aliado.',
+    params: {
+      amount: { type: 'number', desc: 'PV', required: true, min: 1, max: 20 },
+      reason: { type: 'string', desc: 'motivo', max: 200 },
+      targetId: { type: 'string', desc: 'vazio/"player" = jogador; id ou nome de um membro da equipe', max: 80 },
+    },
     run: (s0, a) => {
+      // Aliado: antes a cura só valia para o jogador, e a aliada "estabilizada" na narração seguia caída no motor.
+      if (a.targetId && a.targetId !== 'player') {
+        const npc = findNpc(s0, a.targetId) ?? s0.npcs.find(n => n.id === s0.combat.combatants.find(t => t.id === a.targetId)?.npcId);
+        if (!npc?.combat || !s0.party?.members.some(m => m.npcId === npc.id)) return fail(s0, `Só dá para curar o jogador ou um membro da equipe (com ficha de combate).`);
+        if (npc.status !== 'alive') return fail(s0, `${npc.name} não pode ser curado (${npc.status}).`);
+        const hp = npc.combat.hp;
+        const next = Math.min(hp.max, hp.current + a.amount);
+        let s: GameState = { ...s0, npcs: s0.npcs.map(n => (n.id === npc.id ? { ...n, combat: { ...n.combat!, hp: { ...hp, current: next } } } : n)) };
+        // Em luta, o combatente aliado é quem leva o PV (e volta a ficar de pé se estava caído).
+        s = { ...s, combat: { ...s.combat, combatants: s.combat.combatants.map(t => (t.npcId === npc.id && t.side === 'ally' && t.status !== 'dead' ? { ...t, hp: { ...t.hp, current: Math.min(t.hp.max, t.hp.current + a.amount) }, status: t.status === 'down' ? 'active' : t.status } : t)) } };
+        return ok(emit(s, 'HEALED', `${npc.name}: +${next - hp.current} PV (${a.reason ?? 'cura'})`, { target: npc.id, value: next - hp.current }), `${npc.name}: +${next - hp.current} PV`);
+      }
       const character = healCharacter(s0.character, a.amount);
       const gained = character.hp.current - s0.character.hp.current;
       return ok(emit({ ...s0, character }, 'HEALED', `+${gained} PV (${a.reason ?? 'cura'})`, { value: gained }), `+${gained} PV`);

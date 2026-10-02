@@ -161,6 +161,8 @@ export interface Character {
   criticalInjuries: CriticalInjury[];
   deathSavePenalty: number;
   stabilized: boolean;
+  /** Criobomba do Medicânico: suspende Testes de Morte até o prazo indicado. */
+  cryoStasis?: { until: string; source: string };
   dead: boolean;
   /** Condições (imobilizado, agarrado, inconsciente). Ausente = nenhuma. */
   conditions?: Condition[];
@@ -170,6 +172,8 @@ export interface Character {
   roleRank: number;
   /** Alocações da habilidade de papel (Solo, Técnico, Medicânico). */
   roleData: RoleData;
+  /** Melhorias escolhidas para o veículo emprestado pelo clã (Moto). */
+  nomadUpgrades?: NomadUpgradeKey[];
   /** Ciberdeck (Trilheiro). */
   deck?: Cyberdeck;
   /** Quickhacks desbloqueados (chaves de shared/rules/quickhacks.ts). */
@@ -187,6 +191,7 @@ export interface Character {
 export type CombatAwarenessKey = 'deflection' | 'fumbleRecovery' | 'initiative' | 'precision' | 'spotWeakness' | 'threatDetection';
 export type MakerKey = 'field' | 'upgrade' | 'fabrication' | 'invention';
 export type MedicineKey = 'surgery' | 'pharma' | 'cryo';
+export type NomadUpgradeKey = 'seating' | 'heavy_chassis' | 'housing';
 export type DrugKey = 'antibiotic' | 'rapidetox' | 'speedheal' | 'stim' | 'surge';
 export type StreetDrugKey = 'black_lace' | 'blue_glass' | 'boost' | 'smash' | 'synthcoke';
 
@@ -281,6 +286,14 @@ export interface NetDaemon {
   owner: 'system' | 'player';
 }
 
+/** Daemon do jogador que continua ligado a uma arquitetura mesmo depois de sair da cena. */
+export interface PersistentDaemon extends NetDaemon {
+  architectureId: string;
+  architectureName: string;
+  accessPoint: string;
+  plantedTurn: number;
+}
+
 export interface IceInstance {
   id: string;
   key: IceKey;
@@ -348,6 +361,13 @@ export interface Mission {
   failFlag?: string;
   startedTurn: number;
   resolvedTurn?: number;
+  /** Pechincha de um Canal antes de aceitar/encerrar o trabalho. */
+  haggleAttempted?: boolean;
+  negotiatedBonus?: number;
+  /** Adiantamento já pago ("metade agora"): a conclusão paga só rewardEddies − advancePaid. */
+  advancePaid?: number;
+  /** Recompensa combinada no início (teto para renegociar no meio do trabalho). */
+  originalReward?: number;
 }
 
 export type NpcStatus = 'alive' | 'missing' | 'dead';
@@ -418,6 +438,10 @@ export interface Npc {
   status: NpcStatus;
   faction?: string;
   pendingMatters?: string;
+  /** Dívida em aberto: quanto o JOGADOR deve a este NPC (empréstimo recebido). */
+  playerOwes?: number;
+  /** Quanto este NPC deve ao jogador (empréstimo que o jogador fez). */
+  owesPlayer?: number;
   lastInteraction?: string;
   /** Aparece nos contatos do telefone. */
   isContact: boolean;
@@ -1044,9 +1068,41 @@ export interface ChaseState {
   reason: string;
 }
 
+/** Proposta comercial: a IA pode apresentá-la, mas só o motor a liquida após confirmação do jogador. */
+export interface TradeOffer {
+  id: string;
+  seller: string;
+  item: InventoryItem;
+  /** Preço final, calculado no momento da proposta e imutável até aceitar/recusar. */
+  price: number;
+  priceSource: 'catalog' | 'proposed';
+  createdTurn: number;
+  expiresTurn: number;
+  /** Um Canal só pode fazer uma Pechincha por transação. */
+  haggle?: { attempted: true; success: boolean; discount: number };
+}
+
+/** Estoque concreto de uma banca/NPC. O catálogo só contém chaves de mercadorias canônicas. */
+export interface MerchantCatalogState {
+  id: string;
+  seller: string;
+  merchantType: 'street' | 'medical' | 'weapons' | 'armor' | 'general';
+  stock: string[];
+  openedTurn: number;
+  expiresTurn?: number;
+}
+
 export interface WorldState {
   /** Data/hora no jogo em ISO (UTC). */
   time: string;
+  /** Abertura da campanha (shared/engine/openings.ts): o prólogo é escrito a partir do hook. */
+  opening?: {
+    key: string;
+    title: string;
+    hook: string;
+    /** Direção do primeiro corre: mantém a introdução alinhada ao papel e à vida criada pelo jogador. */
+    tutorial?: { focus: string; roleLesson: string; characterFit: string; suggestedApproaches: string[] };
+  };
   location: { district: string; subDistrict: string; spot: string };
   weather: string;
   heat: number; // 0..5
@@ -1055,6 +1111,12 @@ export interface WorldState {
   market?: NightMarket;
   cyberOrders?: CyberOrder[];
   chase?: ChaseState;
+  /** Agentes plantados pelo Trilheiro; não somem ao trocar de cena ou salvar/carregar. */
+  daemons?: PersistentDaemon[];
+  /** Banca ou catálogo do mercador presente na cena. */
+  merchantCatalog?: MerchantCatalogState;
+  /** Só existe uma negociação aberta por vez; não altera dinheiro ou inventário sozinha. */
+  tradeOffer?: TradeOffer;
 }
 
 export interface GameState {
@@ -1085,6 +1147,8 @@ export interface GameState {
   suggestedActions: string[];
   /** Modo Sandbox (debug): estado manipulável pelo painel, sem limitadores de roleplay. */
   sandbox?: boolean;
+  /** Modo hardcore: morreu, acabou — sem voltar pela linha do tempo nem carregar saves antigos da campanha. */
+  hardcore?: boolean;
   /** Tramas do mundo desta run (ausente em saves antigos até o carregamento gerar). */
   fronts?: Front[];
   /** Feed NCNet do Agent: manchetes e rumores. */

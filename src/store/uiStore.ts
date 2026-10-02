@@ -8,7 +8,7 @@ export type MobileTab = 'story' | 'sheet' | 'journal' | 'phone';
 export type SideTab = 'combat' | 'journal' | 'contacts' | 'net';
 export type ModalId = 'saves' | 'log' | 'rules' | 'settings' | 'newGame' | 'sandbox' | null;
 export type LogTab = 'events' | 'turns' | 'timeline';
-export type TutorialId = 'net' | 'combat' | 'role' | 'humanity' | 'cyber' | 'sandbox';
+export type TutorialId = 'opening' | 'net' | 'combat' | 'role' | 'humanity' | 'cyber' | 'sandbox';
 
 export type LiteChoice = 'lite' | 'wait' | 'always' | 'insist' | 'cancel';
 /** Como agir quando todos os modelos Flash de narração falharem. */
@@ -35,6 +35,8 @@ interface UiStore {
   lastDegraded: boolean;
   model: ModelMode;
   hasKey: boolean;
+  /** Sandbox liberado pelo servidor (NIGHTLIFE_DEBUG). Não persiste: vem do /api/gm/status a cada carga. */
+  debug: boolean;
   /** Mostrar DVs ao jogador (modo transparente/depuração). Padrão: escondido, como numa mesa real. */
   revealDv: boolean;
   animateDice: boolean;
@@ -76,6 +78,7 @@ interface UiStore {
   setDegraded: (v: boolean) => void;
   setModel: (m: ModelMode) => void;
   setHasKey: (v: boolean) => void;
+  setDebug: (v: boolean) => void;
   setRevealDv: (v: boolean) => void;
   setAnimateDice: (v: boolean) => void;
   setVfx: (v: boolean) => void;
@@ -110,6 +113,7 @@ export const useUiStore = create<UiStore>()(
       lastDegraded: false,
       model: 'flash',
       hasKey: true,
+      debug: false,
       revealDv: false,
       animateDice: true,
       vfx: true,
@@ -138,6 +142,7 @@ export const useUiStore = create<UiStore>()(
       setDegraded: lastDegraded => set({ lastDegraded }),
       setModel: model => set({ model }),
       setHasKey: hasKey => set({ hasKey }),
+      setDebug: debug => set({ debug }),
       setRevealDv: revealDv => set({ revealDv }),
       setAnimateDice: animateDice => set({ animateDice }),
       setVfx: vfx => set({ vfx }),

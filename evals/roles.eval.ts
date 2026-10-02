@@ -11,6 +11,7 @@ import { SKILLS } from '../shared/rules/skills';
 import { VEHICLE_ITEM_ID } from '../shared/engine/roles';
 import { buildGameContext } from '../shared/engine/context';
 import { buildNarratePrompt } from '../server/gamemaster/promptBuilder';
+import { startChase } from '../shared/engine/citySystems';
 import type { GameState, RoleData } from '../shared/types/game';
 
 const withRole = (s: GameState, roleData: RoleData): GameState => ({ ...s, character: { ...s.character, roleData } });
@@ -37,7 +38,7 @@ describe('Rank de papel', () => {
 });
 
 describe('Solo — Consciência de Combate', () => {
-  it('alocação respeita passos, total = rank e é travada em combate', () => {
+  it('alocação respeita passos; em combate a redistribuição é uma Ação atômica', () => {
     const sc = scenario({ role: 'solo' }).edit(s => withRole(s, {}));
     sc.edit(s => gameReducer(s, { type: 'allocateRole', section: 'combatAwareness', key: 'precision', delta: 1 }));
     expect(sc.state.character.roleData.combatAwareness?.precision).toBe(3); // passo de 3
@@ -46,8 +47,9 @@ describe('Solo — Consciência de Combate', () => {
     sc.edit(s => gameReducer(s, { type: 'allocateRole', section: 'combatAwareness', key: 'initiative', delta: 1 }));
     expect(sc.state.character.roleData.combatAwareness?.initiative).toBe(1);
     sc.tool('narrator', 'start_combat', { combatants: [{ name: 'Ganger' }] });
-    sc.edit(s => gameReducer(s, { type: 'allocateRole', section: 'combatAwareness', key: 'initiative', delta: -1 }));
-    expect(sc.state.character.roleData.combatAwareness?.initiative).toBe(1);
+    sc.tool('player', 'reconfigure_awareness', { deflection: 2, initiative: 1, spotWeakness: 1 });
+    expect(sc.last().ok).toBe(true);
+    expect(sc.state.character.roleData.combatAwareness).toMatchObject({ deflection: 2, initiative: 1, spotWeakness: 1 });
   });
 
   it('Ataque Preciso soma no ataque; Recuperação de Falha anula o 1 natural', () => {
@@ -111,12 +113,15 @@ describe('Técnico — Fabricante', () => {
 });
 
 describe('Medicânico — Medicina', () => {
-  it('fabrica Speedheal (DV13, €$200) e a droga cura CORPO + VONTADE uma vez por dia', () => {
+  it('fabrica 2 doses de Speedheal (DV13 de Tecnologia Médica, €$100) e a droga cura CORPO + VONTADE uma vez por dia', () => {
     const sc = scenario({ role: 'medtech' }).edit(s => ({ ...s, character: { ...s.character, hp: { ...s.character.hp, current: 5 } } }));
+    const money = sc.state.character.money;
     sc.tool('interpreter', 'brew_drug', { drug: 'speedheal' }, [9]);
     expect(sc.last().ok).toBe(true);
     const dose = sc.item('Speedheal')!;
     expect(dose.drug).toBe('speedheal');
+    expect(dose.quantity).toBe(2);
+    expect(sc.state.character.money).toBe(money - 100);
     sc.tool('interpreter', 'use_item', { itemId: dose.id });
     const { BODY, WILL } = sc.state.character.stats;
     expect(sc.state.character.hp.current).toBe(Math.min(sc.state.character.hp.max, 5 + BODY + WILL));
@@ -136,29 +141,55 @@ describe('Medicânico — Medicina', () => {
     sc.tool('interpreter', 'treat_injury', { injuryId: inj.id, method: 'treatment' }, [9]);
     expect(sc.state.character.criticalInjuries).toHaveLength(0);
   });
+
+  it('Criossistemas estabiliza a 0 PV, suspende o Teste de Morte e expira em uma semana', () => {
+    const sc = scenario({ role: 'medtech' }).edit(s => ({ ...s, character: { ...s.character, hp: { ...s.character.hp, current: 0 }, stabilized: false } }));
+    sc.tool('player', 'cryo_stasis');
+    expect(sc.last().ok).toBe(true);
+    expect(sc.state.character.cryoStasis).toBeDefined();
+    expect(sc.state.character.stabilized).toBe(true);
+    sc.advance(7 * 24 * 60 + 1);
+    expect(sc.state.character.cryoStasis).toBeUndefined();
+    expect(sc.state.character.conditions?.some(c => c.key === 'unconscious')).toBe(false);
+  });
 });
 
 describe('Canal — Operador e Nômade — Moto', () => {
-  it('Canal pechincha 10% e leva brinde em munição', () => {
+  it('Canal só recebe Pechincha após vencer a disputa; compra de 5+ iguais rende uma unidade', () => {
     const sc = scenario({ role: 'fixer' });
     const money = sc.state.character.money;
-    sc.tool('interpreter', 'buy_item', { name: 'Munição de pistola pesada', category: 'ammo', ammoKind: 'H_PISTOL', quantity: 10 });
-    expect(sc.last().summary).toMatch(/Operador/);
-    expect(money - sc.state.character.money).toBeLessThan(10 * 5 + 1);
-    expect(sc.last().summary).toMatch(/12× /); // leve 12, pague 10
+    sc.tool('narrator', 'propose_trade', { seller: 'Vendedor', merchantType: 'weapons', catalogKey: 'ammo_H_PISTOL', quantity: 10 });
+    const offerId = sc.state.world.tradeOffer!.id;
+    sc.tool('player', 'haggle_trade', { offerId }, [10]);
+    expect(sc.last().ok).toBe(true);
+    expect(sc.state.world.tradeOffer?.item.quantity).toBe(11);
+    sc.tool('player', 'settle_trade', { offerId });
+    expect(money - sc.state.character.money).toBe(9); // preço de tabela 10 − 10%
+    expect(sc.last().summary).toMatch(/11× /);
   });
 
-  it('Canal rank 5 recebe +20% nos trabalhos', () => {
+  it('Canal negocia o pagamento uma vez e a missão paga exatamente o valor negociado', () => {
     const sc = scenario({ role: 'fixer' }).edit(s => ({ ...s, character: { ...s.character, roleRank: 5 } }));
     sc.tool('narrator', 'start_quest', { id: 'm_job', title: 'Entrega', objective: 'Entregar o pacote', rewardEddies: 500 });
+    sc.tool('player', 'haggle_quest', { questId: 'm_job' }, [10]);
+    expect(sc.last().ok).toBe(true);
     const money = sc.state.character.money;
     sc.tool('narrator', 'complete_quest', { questId: 'm_job' });
-    expect(sc.state.character.money - money).toBe(600);
+    expect(sc.state.character.money - money).toBe(550);
   });
 
   it('Nômade soma o rank em Condução', () => {
     const c = scenario({ role: 'nomad' }).state.character;
     expect(resolveCheck(c, { stat: 'REF', skillId: 'drive', dv: 13 }, sequenceRng([5])).modifiers).toContainEqual({ label: 'Moto', value: 4 });
+  });
+
+  it('Nômade escolhe melhorias da Moto e o chassi pesado fortalece a perseguição', () => {
+    let state = scenario({ role: 'nomad' }).state;
+    state = gameReducer(state, { type: 'toggleNomadUpgrade', key: 'heavy_chassis' });
+    expect(state.character.nomadUpgrades).toContain('heavy_chassis');
+    expect(state.character.inventory.find(i => i.id === 'item_family_vehicle')?.name).toMatch(/Chassi pesado/);
+    state = startChase(state, { opponent: 'Interceptor', reason: 'teste', vehicleIntegrity: 4, opponentIntegrity: 4 });
+    expect(state.world.chase?.vehicleIntegrity).toBe(6);
   });
 });
 
@@ -167,5 +198,17 @@ describe('Contexto do Mestre', () => {
     const sc = scenario({ role: 'solo' });
     const prompt = buildNarratePrompt(buildGameContext(sc.state, ''), { kind: 'action', playerInput: 'olho em volta', engineResult: null });
     expect(prompt).toMatch(/HABILIDADE DE PAPEL: Consciência de Combate rank 4/);
+  });
+
+  it('expõe daemons plantados para a narração seguinte', () => {
+    const sc = scenario({ role: 'netrunner' }).edit(s => ({
+      ...s,
+      world: {
+        ...s.world,
+        daemons: [{ name: 'Imp', directive: 'atacar intrusos', alert: 0, controlledNodes: ['porta'], owner: 'player', architectureId: 'net_test', architectureName: 'Cofre', accessPoint: 'terminal', plantedTurn: 1 }],
+      },
+    }));
+    const prompt = buildNarratePrompt(buildGameContext(sc.state, ''), { kind: 'action', playerInput: 'saio do local', engineResult: null });
+    expect(prompt).toMatch(/DAEMONS PLANTADOS PELO JOGADOR: Imp em Cofre/);
   });
 });

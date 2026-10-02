@@ -1,11 +1,11 @@
 import type { GameState, Modifier, RollOutcome, RollRequest } from '../types/game';
 import { cryptoRng, recordingRng, rollD10, type Rng } from './dice';
-import { resolveCheck, statValue } from './checks';
+import { clampLuck, resolveCheck, statValue } from './checks';
 import { applyPlayerAttack, getPlayerWeapon, isActiveEnemy, resolvePlayerAttack, rollInitiative } from './combat';
 import { WEAPONS } from '../rules/weapons';
 import { activeOs } from './cyberBonus';
 import { effectPenalties, resolveDeathSave } from './health';
-import { useQuickhack } from './quickhacks';
+import { quickhackModifiers, useQuickhack } from './quickhacks';
 import type { QuickhackKey } from '../rules/quickhacks';
 
 /** Modificadores do pedido + efeitos ativos (penalidades de ferimento vêm do próprio resolveCheck). */
@@ -99,13 +99,18 @@ export function resolveRoll(state: GameState, request: RollRequest, luckSpent: n
       const key = request.quickhack as QuickhackKey;
       const target = { combatantId: request.targetId, npcId: request.targetNpcId };
       const { rng: effectRng, log } = recordingRng(rng);
-      const res = useQuickhack(state, key, target, effectRng, { d10, luck: luckSpent });
+      // Sorte limitada ao que o jogador tem (a tela limita; o motor também).
+      const luck = clampLuck(state.character, luckSpent);
+      const res = useQuickhack(state, key, target, effectRng, { d10, luck });
+      // Hack recusado no resolve (alvo caiu antes do dado, RAM acabou): sem efeito, sem RAM — e sem Sorte.
+      const spent = res.ok ? luck : 0;
       const rank = state.character.roleRank;
-      const total = rank + d10.total + luckSpent;
+      const modifiers = quickhackModifiers(state);
+      const total = rank + d10.total + spent + modifiers.reduce((n, m) => n + m.value, 0);
       const success = res.ok && res.data?.success === true;
       return {
         request,
-        check: { stat: 'INT', statValue: rank, skillId: null, skillValue: 0, d10, modifiers: [], luckSpent, total, dv: request.dv, success, margin: total - request.dv },
+        check: { stat: 'INT', statValue: rank, skillId: null, skillValue: 0, d10, modifiers, luckSpent: spent, total, dv: request.dv, success, margin: total - request.dv },
         quickhack: { key, ok: res.ok, summary: res.summary, effectRolls: log.map(l => l.face), ...(typeof res.data?.combo === 'string' ? { combo: res.data.combo } : {}) },
       };
     }

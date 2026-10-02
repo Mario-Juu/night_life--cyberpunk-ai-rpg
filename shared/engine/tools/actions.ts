@@ -4,7 +4,7 @@
  */
 import { CHROME_WORDS, implantFromName } from '../../rules/cyberware';
 import { leaveAccessPoint } from '../net';
-import type { AllyStance, GameState, RollRequest, StatKey } from '../../types/game';
+import type { AllyStance, GameState, MerchantCatalogState, RollRequest, StatKey } from '../../types/game';
 import { askAlly, healParty } from '../party';
 import { SKILLS, getSkill } from '../../rules/skills';
 import { STAT_KEYS } from '../../rules/stats';
@@ -15,23 +15,50 @@ import { attackBlocker, buildAttackRequest, getPlayerWeapon, movementValue, prev
 import { healCharacter } from '../health';
 import { makeId } from '../ids';
 import { emit } from '../events';
-import { advanceTime } from '../world';
+import { advanceTime, eddies } from '../world';
+import { instantCheck } from '../instant';
 import { defineTool, fail, ok, type ToolOutcome } from './registry';
-import { addToInventory, buildCombatant, buildItem, findItem, findNpc, relationshipModifiers, sameName, sceneModifiers } from './helpers';
-import { saveContact } from '../npcs';
+import { addToInventory, buildCombatant, buildItem, buildMerchantItem, dropExpiredOffer, findItem, findNpc, normKey, relationshipModifiers, sameName, sceneModifiers } from './helpers';
+import { ensureNpc, saveContact } from '../npcs';
 import { findCombatantLoose } from '../combatants';
 import { COMBATANT_STATUS_LABEL } from '../../rules/labels';
 import { BRAWL_ACTIONS, brawl, type BrawlAction } from '../brawl';
-import { DRUGS, operatorPerks } from '../../rules/roles';
+import { DRUGS, operatorPerks, priceCategoryFor } from '../../rules/roles';
 import { applyDrug } from '../drugs';
 import { facedown } from '../facedown';
 import { useStreetDrug } from '../streetDrugs';
 import { activeOs, hasDoubleHealing } from '../cyberBonus';
 import { combatantHelpless, killPlayer, killTarget, npcHelpless, playerCanBeKilled, playerCannotAct } from '../conditions';
+import { MERCHANT_ITEM_KEYS, MERCHANT_KINDS, merchantItem, merchantStock, type MerchantKind } from '../../rules/merchantCatalog';
 
 const PLAYER = ['interpreter', 'player'] as const;
+/** Compra direta só vem de um botão de confirmação: a IA apenas abre uma proposta. */
+/** Descanso que conta como uma noite de sono (recarrega a Sorte). */
+export const SLEEP_HOURS = 6;
+const DIRECT_PLAYER = ['player'] as const;
+const TRADE_PROPOSERS = ['interpreter', 'narrator', 'phone'] as const;
 const SKILL_IDS = SKILLS.map(s => s.id);
 const ITEM_CATEGORIES = ['weapon', 'armor', 'ammo', 'consumable', 'gear', 'datashard'] as const;
+const ROLE_DENIED = (role: string) => `Só um ${role} pode fazer isso (Habilidade de Papel).`;
+
+function openCatalogTrade(sIn: GameState, seller: string, catalogKey: string, quantity = 1, cosmeticName?: string, merchantType?: MerchantKind): ToolOutcome {
+  // Oferta vencida não bloqueia a próxima: é descartada aqui.
+  const s0 = dropExpiredOffer(sIn);
+  if (s0.world.tradeOffer) return fail(sIn, `Já há uma proposta aberta: ${s0.world.tradeOffer.item.name}.`);
+  const def = merchantItem(catalogKey);
+  if (!def) return fail(s0, 'Esse item não existe no catálogo de mercadorias.');
+  if (merchantType && !def.merchants.includes(merchantType)) return fail(s0, `${def.name} não faz parte do estoque desse tipo de mercador.`);
+  const sellerNpc = findNpc(s0, seller);
+  if (sellerNpc?.status === 'dead') return fail(s0, `${sellerNpc.name} está morto — não pode negociar.`);
+  const qty = Math.max(1, Math.round(quantity));
+  const item = buildMerchantItem(catalogKey, cosmeticName, qty);
+  if (!item) return fail(s0, 'Falha ao montar a mercadoria do catálogo.');
+  // Preço sempre por unidade entregue: granadas (weapon empilhável) também escalam com a quantidade.
+  const price = def.price * item.quantity;
+  const offer = { id: makeId('trade'), seller: sellerNpc?.name ?? seller, item: { ...item, value: Math.round(price / item.quantity) }, price, priceSource: 'catalog' as const, createdTurn: s0.turn, expiresTurn: s0.turn + 3 };
+  const s = emit({ ...s0, world: { ...s0.world, tradeOffer: offer } }, 'SYSTEM', `Oferta: ${offer.item.quantity}× ${offer.item.name} por €$${offer.price} (${offer.seller})`, { target: offer.id, data: { kind: 'trade_offer', catalogKey } });
+  return ok(s, `Proposta aberta: ${offer.item.quantity}× ${offer.item.name} por €$${offer.price}.`, { offerId: offer.id, price, catalogKey });
+}
 
 /** Monta um teste de perícia validado (alvo vivo, modificadores de relação e cena). */
 function prepareCheck(
@@ -347,14 +374,15 @@ export const ACTION_TOOLS = [
       'O jogador PEDE algo a um membro da equipe (atacar um alvo, cobrir, segurar posição, recuar). O aliado decide (lealdade, confiança, risco, princípios): topa, faz do jeito dele ou recusa. risky = pedido perigoso para ele; againstPrinciples = vai contra o "nunca" do perfil dele.',
     params: {
       npcId: { type: 'string', desc: 'id ou nome do aliado', required: true, max: 80 },
-      request: { type: 'string', desc: 'aggressive (partir pra cima), focus (atacar targetId), protect (cobrir o jogador), hold (segurar posição), retreat (recuar/sair da luta)', required: true, enum: ['aggressive', 'focus', 'protect', 'hold', 'retreat'] },
+      request: { type: 'string', desc: 'aggressive (partir pra cima), focus (ocupar-se de UM inimigo: atacar, segurar, prender, segurar aquele cara → targetId), protect (cobrir o jogador), hold (ficar na cobertura segurando a POSIÇÃO, sem alvo), retreat (recuar/sair da luta)', required: true, enum: ['aggressive', 'focus', 'protect', 'hold', 'retreat'] },
       targetId: { type: 'string', desc: 'alvo (para focus)', max: 80 },
       combatantId: { type: 'string', desc: 'o mesmo que targetId (aceito por engano comum)', max: 80 },
       risky: { type: 'boolean', desc: 'o pedido é arriscado para ele' },
       againstPrinciples: { type: 'boolean', desc: 'vai contra o que ele nunca faria' },
     },
     run: (s0, a, ctx) => {
-      const npc = findNpc(s0, a.npcId);
+      // O intérprete costuma mandar o id do combatente (ally_brick) em vez do NPC (npc_brick).
+      const npc = findNpc(s0, a.npcId) ?? s0.npcs.find(n => n.id === s0.combat.combatants.find(t => t.id === a.npcId && t.side === 'ally')?.npcId);
       const ref = a.targetId ?? a.combatantId;
       const target = ref ? findCombatantLoose(s0.combat.combatants, ref) : undefined;
       const res = askAlly(s0, npc?.id ?? a.npcId, { stance: a.request as AllyStance, targetId: target?.id, risky: a.risky, againstPrinciples: a.againstPrinciples }, ctx.rng);
@@ -390,15 +418,181 @@ export const ACTION_TOOLS = [
       };
       // Saiu do lugar: o ponto de acesso da Rede fica para trás (conectado = cai a conexão).
       s = leaveAccessPoint(s, ctx.rng, 'Mudou de lugar');
+      // O Mercado Noturno é do bairro: trocar de distrito deixa as bancas para trás (sem horário, ele nunca vencia).
+      if (s.world.market && location.district !== s0.world.location.district) {
+        const market = s.world.market;
+        s = emit({ ...s, world: { ...s.world, market: undefined } }, 'SCENE_CHANGED', `Mercado Noturno ficou para trás: ${market.name}`, { target: market.id, data: { nightMarket: 'left' } });
+      }
       s = emit(s, 'PLAYER_MOVED', `${location.district} › ${location.subDistrict} › ${location.spot}`, { target: location.district, data: location });
       s = advanceTime(s, a.minutes ?? 15);
       return ok(s, `Deslocou-se para ${location.spot} (${location.district}).`);
     },
   }),
   defineTool({
+    name: 'open_merchant_catalog',
+    kind: 'mutation',
+    origins: TRADE_PROPOSERS,
+    description: 'Abre a banca de um mercador com estoque EXPLÍCITO de chaves do catálogo. Sem estoque, usa as mercadorias daquele tipo de banca.',
+    params: {
+      seller: { type: 'string', desc: 'mercador ou contato', required: true, max: 80 },
+      merchantType: { type: 'string', desc: 'tipo da banca', required: true, enum: MERCHANT_KINDS },
+      stock: { type: 'string', desc: 'chaves do catálogo separadas por vírgula', max: 2000 },
+      turns: { type: 'number', desc: 'quantos turnos a banca fica disponível', min: 1, max: 24 },
+    },
+    run: (s0, a) => {
+      const kind = a.merchantType as MerchantKind;
+      const seller = findNpc(s0, a.seller);
+      if (seller?.status === 'dead') return fail(s0, `${seller.name} está morto — não abre banca.`);
+      const requested = (a.stock ?? '').split(',').map(key => key.trim()).filter(Boolean);
+      const stock = (requested.length ? requested.map(merchantItem).filter((item): item is NonNullable<ReturnType<typeof merchantItem>> => !!item && item.merchants.includes(kind)) : merchantStock(kind)).map(item => item.key);
+      if (!stock.length) return fail(s0, 'O estoque informado não contém mercadorias válidas para essa banca.');
+      const catalog: MerchantCatalogState = { id: makeId('merchant'), seller: seller?.name ?? a.seller, merchantType: kind, stock: [...new Set(stock)], openedTurn: s0.turn, expiresTurn: s0.turn + (a.turns ?? 6) };
+      const s = emit({ ...s0, world: { ...s0.world, merchantCatalog: catalog } }, 'SCENE_CHANGED', `Catálogo aberto: ${catalog.seller} (${catalog.stock.length} itens)`, { target: catalog.id, data: { merchantCatalog: true } });
+      return ok(s, `${catalog.seller} abriu catálogo com ${catalog.stock.length} mercadorias.`, { catalogId: catalog.id });
+    },
+  }),
+  defineTool({
+    name: 'propose_catalog_item',
+    kind: 'action',
+    origins: DIRECT_PLAYER,
+    description: 'Seleciona uma mercadoria do catálogo aberto e abre seus termos de compra.',
+    params: { catalogKey: { type: 'string', desc: 'chave selecionada', required: true, enum: MERCHANT_ITEM_KEYS }, quantity: { type: 'number', desc: 'quantidade', min: 1, max: 999 } },
+    run: (s0, a) => {
+      const catalog = s0.world.merchantCatalog;
+      if (!catalog || (catalog.expiresTurn !== undefined && s0.turn > catalog.expiresTurn)) return fail(s0, 'Não há catálogo de mercador disponível nesta cena.');
+      if (!catalog.stock.includes(a.catalogKey)) return fail(s0, 'Esse item não está no estoque desta banca.');
+      return openCatalogTrade(s0, catalog.seller, a.catalogKey, a.quantity, undefined, catalog.merchantType);
+    },
+  }),
+  defineTool({
+    name: 'propose_trade',
+    kind: 'mutation',
+    origins: TRADE_PROPOSERS,
+    description: 'Apresenta uma oferta de compra. NÃO move dinheiro nem entrega item: o jogador confirma ou recusa no terminal de negociação.',
+    params: {
+      seller: { type: 'string', desc: 'vendedor ou contato que oferece', required: true, max: 80 },
+      catalogKey: { type: 'string', desc: 'chave canônica do catálogo', required: true, enum: MERCHANT_ITEM_KEYS },
+      merchantType: { type: 'string', desc: 'tipo da banca', enum: MERCHANT_KINDS },
+      name: { type: 'string', desc: 'apelido ou marca visual; não altera efeito', max: 80 },
+      quantity: { type: 'number', desc: 'quantidade', min: 1, max: 999 },
+    },
+    run: (s0, a) => openCatalogTrade(s0, a.seller, a.catalogKey, a.quantity, a.name, a.merchantType as MerchantKind | undefined),
+  }),
+  defineTool({
+    name: 'haggle_trade',
+    kind: 'action',
+    // Pechinchar é fala do jogador ("faço por 400?"): vale pelo texto e por SMS. Só a confirmação da compra é exclusiva da tela.
+    origins: ['interpreter', 'player', 'phone'],
+    description: 'Canal: faz UMA Pechincha em uma oferta aberta. Rola COOL + Trading + Operador contra o porte do negócio; só se vencer altera preço/quantidade antes de confirmar.',
+    params: { offerId: { type: 'string', desc: 'id da oferta exibida', required: true, max: 80 }, quantity: { type: 'number', desc: 'lote de munição/consumível antes da Pechincha', min: 1, max: 999 } },
+    run: (s0, a, ctx) => {
+      const offer = s0.world.tradeOffer;
+      if (s0.character.bio.role !== 'fixer') return fail(s0, ROLE_DENIED('Canal'));
+      if (!offer || offer.id !== a.offerId) return fail(s0, 'Esta proposta não existe mais.');
+      if (s0.turn > offer.expiresTurn) return fail(s0, 'A proposta expirou; peça uma nova negociação.');
+      if (offer.haggle?.attempted) return fail(s0, 'Você já usou sua Pechincha nesta transação.');
+      const stackable = offer.item.category === 'ammo' || offer.item.category === 'consumable';
+      if (a.quantity !== undefined && !stackable) return fail(s0, 'Só munição e consumíveis têm quantidade ajustável.');
+      const quantity = a.quantity === undefined ? offer.item.quantity : Math.round(a.quantity);
+      const baseOffer = quantity === offer.item.quantity ? offer : { ...offer, item: { ...offer.item, quantity }, price: Math.max(1, Math.round(offer.item.value ?? offer.price / offer.item.quantity)) * quantity };
+      const tier = priceCategoryFor(baseOffer.price).key;
+      const dv = tier === 'cheap' || tier === 'everyday' ? 11 : tier === 'costly' || tier === 'premium' ? 13 : tier === 'expensive' ? 15 : 17;
+      const op = operatorPerks(s0.character.roleRank);
+      const roll = instantCheck(s0, { reason: `Pechincha: ${baseOffer.item.name}`, stat: 'COOL', skillId: 'trading', dv, bonus: { label: 'Operador', value: s0.character.roleRank } }, ctx.rng);
+      const success = roll.outcome.check.success;
+      const discount = success ? Math.round(baseOffer.price * op.haggleDiscount) : 0;
+      const bulk = success && op.bulkBonus && stackable && baseOffer.item.quantity >= 5 ? 1 : 0;
+      const item = bulk ? { ...baseOffer.item, quantity: baseOffer.item.quantity + bulk } : baseOffer.item;
+      const price = baseOffer.price - discount;
+      const nextOffer = { ...baseOffer, item, price, haggle: { attempted: true as const, success, discount } };
+      const s = emit({ ...roll.state, world: { ...roll.state.world, tradeOffer: nextOffer } }, 'SYSTEM', success ? `Pechincha venceu: −€$${discount}${bulk ? ' e +1 unidade' : ''}.` : 'Pechincha não fechou vantagem; termos originais mantidos.', { target: offer.id, data: { kind: 'haggle', success, discount, bulk } });
+      return ok(s, success ? `Pechincha aceita: a oferta agora custa €$${price}${bulk ? ` e inclui ${item.quantity} unidades` : ''}.` : 'O vendedor mantém os termos originais.', { success, price, discount, bulk });
+    },
+  }),
+  defineTool({
+    name: 'change_trade_quantity',
+    kind: 'action',
+    origins: DIRECT_PLAYER,
+    description: 'Ajusta a quantidade de munição ou consumível em uma proposta aberta antes da Pechincha. O motor recalcula o preço pelo valor unitário do catálogo.',
+    params: { offerId: { type: 'string', desc: 'id da proposta', required: true, max: 80 }, quantity: { type: 'number', desc: 'nova quantidade', required: true, min: 1, max: 999 } },
+    run: (s0, a) => {
+      const offer = s0.world.tradeOffer;
+      if (!offer || offer.id !== a.offerId) return fail(s0, 'Esta proposta não existe mais.');
+      if (!['ammo', 'consumable'].includes(offer.item.category)) return fail(s0, 'Só munição e consumíveis têm quantidade ajustável.');
+      if (offer.haggle?.attempted) return fail(s0, 'A quantidade fica travada depois da Pechincha.');
+      const quantity = Math.round(a.quantity);
+      const price = Math.max(1, Math.round(offer.item.value ?? offer.price / offer.item.quantity)) * quantity;
+      const next = { ...offer, item: { ...offer.item, quantity }, price };
+      const s = emit({ ...s0, world: { ...s0.world, tradeOffer: next } }, 'SYSTEM', `Oferta ajustada: ${quantity}× ${offer.item.name} por €$${price}`, { target: offer.id, data: { kind: 'trade_quantity', quantity } });
+      return ok(s, `Quantidade ajustada para ${quantity}; total €$${price}.`, { quantity, price });
+    },
+  }),
+  defineTool({
+    name: 'settle_trade',
+    kind: 'action',
+    origins: DIRECT_PLAYER,
+    description: 'Confirma uma proposta comercial aberta. Único ponto que desconta eddies e entrega o item da oferta.',
+    params: { offerId: { type: 'string', desc: 'id da oferta exibida', required: true, max: 80 }, quantity: { type: 'number', desc: 'lote final de munição/consumível', min: 1, max: 999 } },
+    run: (s0, a) => {
+      const offer = s0.world.tradeOffer;
+      if (!offer || offer.id !== a.offerId) return fail(s0, 'Esta proposta não existe mais.');
+      if (s0.turn > offer.expiresTurn) return fail(s0, 'A proposta expirou; peça uma nova negociação.');
+      if (s0.character.dead) return fail(s0, 'O personagem está morto.');
+      // Preço vem do estado (save/migração): só inteiro finito ≥ 0 liquida — nunca credita nem corrompe o saldo.
+      if (!Number.isInteger(offer.price) || offer.price < 0) return fail(s0, 'Proposta com preço inválido; peça uma nova negociação.');
+      const sellerNpc = findNpc(s0, offer.seller);
+      if (sellerNpc?.status === 'dead') return fail(s0, `${sellerNpc.name} está morto — a negociação acabou.`);
+      const stackable = offer.item.category === 'ammo' || offer.item.category === 'consumable';
+      if (a.quantity !== undefined && !stackable) return fail(s0, 'Só munição e consumíveis têm quantidade ajustável.');
+      if (a.quantity !== undefined && offer.haggle?.attempted && a.quantity !== offer.item.quantity) return fail(s0, 'A quantidade fica travada depois da Pechincha.');
+      const quantity = a.quantity === undefined ? offer.item.quantity : Math.round(a.quantity);
+      const finalOffer = quantity === offer.item.quantity ? offer : { ...offer, item: { ...offer.item, quantity }, price: Math.max(1, Math.round(offer.item.value ?? offer.price / offer.item.quantity)) * quantity };
+      if (s0.character.money < finalOffer.price) return fail(s0, `Eddies insuficientes: ${finalOffer.item.name} custa €$${finalOffer.price} e você tem €$${s0.character.money}.`);
+      let s: GameState = { ...s0, character: { ...s0.character, money: s0.character.money - finalOffer.price }, world: { ...s0.world, tradeOffer: undefined } };
+      s = addToInventory(s, finalOffer.item);
+      s = emit(s, 'MONEY_CHANGED', `−${finalOffer.price} €$ (compra confirmada: ${finalOffer.item.name})`, { source: 'player', target: finalOffer.seller, value: -finalOffer.price, data: { kind: 'trade', offerId: finalOffer.id, priceSource: finalOffer.priceSource } });
+      s = emit(s, 'ITEM_ACQUIRED', `Comprou ${finalOffer.item.quantity}× ${finalOffer.item.name}`, { target: finalOffer.item.id, source: finalOffer.seller, value: finalOffer.item.quantity, data: { name: finalOffer.item.name, via: 'trade', offerId: finalOffer.id } });
+      return ok(s, `Compra confirmada: ${finalOffer.item.quantity}× ${finalOffer.item.name} por €$${finalOffer.price}. Saldo: €$${s.character.money}.`, { offerId: finalOffer.id, balance: s.character.money });
+    },
+  }),
+  defineTool({
+    name: 'haggle_quest',
+    kind: 'action',
+    // Canal negocia o pagamento cara a cara ou pelo Agent (é o mesmo teste, uma vez por trabalho).
+    origins: ['interpreter', 'player', 'phone'],
+    description: 'Canal: negocia UMA vez o pagamento de uma missão ativa antes de concluí-la. O bônus só entra na recompensa controlada pelo motor, nunca como transferência livre.',
+    params: { questId: { type: 'string', desc: 'id da missão ativa', required: true, max: 80 } },
+    run: (s0, a, ctx) => {
+      if (s0.character.bio.role !== 'fixer') return fail(s0, ROLE_DENIED('Canal'));
+      const quest = s0.missions.find(m => m.id === a.questId);
+      if (!quest || quest.status !== 'ACTIVE') return fail(s0, 'Só dá para negociar uma missão ativa.');
+      if (quest.haggleAttempted) return fail(s0, 'Este pagamento já foi negociado.');
+      const op = operatorPerks(s0.character.roleRank);
+      const dv = quest.rewardEddies <= 100 ? 11 : quest.rewardEddies <= 500 ? 13 : quest.rewardEddies <= 1000 ? 15 : 17;
+      const roll = instantCheck(s0, { reason: `Pechincha do trabalho: ${quest.title}`, stat: 'COOL', skillId: 'trading', dv, bonus: { label: 'Operador', value: s0.character.roleRank } }, ctx.rng);
+      const bonus = roll.outcome.check.success ? Math.round(quest.rewardEddies * op.haggleDiscount) : 0;
+      const updated = { ...quest, haggleAttempted: true, negotiatedBonus: bonus, rewardEddies: quest.rewardEddies + bonus };
+      const s = emit({ ...roll.state, missions: roll.state.missions.map(m => (m.id === quest.id ? updated : m)) }, 'QUEST_UPDATED', roll.outcome.check.success ? `${quest.title}: pagamento negociado para €$${updated.rewardEddies}.` : `${quest.title}: contratante manteve €$${quest.rewardEddies}.`, { target: quest.id, value: updated.rewardEddies, data: { haggle: true, success: roll.outcome.check.success, bonus } });
+      return ok(s, roll.outcome.check.success ? `Pagamento do trabalho subiu €$${bonus}, para €$${updated.rewardEddies}.` : 'A Pechincha falhou; o pagamento original permanece.', { success: roll.outcome.check.success, reward: updated.rewardEddies, bonus });
+    },
+  }),
+  defineTool({
+    name: 'decline_trade',
+    kind: 'action',
+    origins: DIRECT_PLAYER,
+    description: 'Recusa a proposta comercial aberta sem alterar dinheiro ou inventário.',
+    params: { offerId: { type: 'string', desc: 'id da oferta exibida', required: true, max: 80 } },
+    run: (s0, a) => {
+      const offer = s0.world.tradeOffer;
+      if (!offer || offer.id !== a.offerId) return fail(s0, 'Esta proposta não existe mais.');
+      const s = emit({ ...s0, world: { ...s0.world, tradeOffer: undefined } }, 'SYSTEM', `Oferta recusada: ${offer.item.name} (${offer.seller})`, { target: offer.id, data: { kind: 'trade_declined' } });
+      return ok(s, `Recusou a oferta de ${offer.item.name}.`);
+    },
+  }),
+  defineTool({
     name: 'buy_item',
     kind: 'action',
-    origins: PLAYER,
+    origins: DIRECT_PLAYER,
     description: 'Comprar um item. Preço de tabela do motor quando existir; o saldo é verificado.',
     params: {
       name: { type: 'string', desc: 'nome do item', required: true, max: 80 },
@@ -444,20 +638,8 @@ export const ACTION_TOOLS = [
         if (!/\((ruim|excelente)\)/i.test(item.name)) item.name = `${item.name} (${quality === 'poor' ? 'ruim' : 'excelente'})`;
       }
       const perks: string[] = [];
-      // Operador (Canal): pechincha e "leve 6, pague 5" em munição/consumíveis.
-      if (s0.character.bio.role === 'fixer') {
-        const op = operatorPerks(s0.character.roleRank);
-        if (op.bulkBonus && (item.category === 'ammo' || item.category === 'consumable') && item.quantity >= 5) {
-          const free = Math.floor(item.quantity / 5);
-          item.quantity += free;
-          perks.push(`+${free} de brinde`);
-        }
-        const discount = Math.round(total * op.discount);
-        if (discount > 0) {
-          total -= discount;
-          perks.push(`pechincha −€$${discount}`);
-        }
-      }
+      // Compra direta é usada só pelos controles de Sandbox: vantagens de Operador exigem
+      // uma proposta e haggle_trade para que preço e inventário permaneçam auditáveis.
       const money = s0.character.money;
       if (money < total) return fail(s0, `Eddies insuficientes: ${item.name} custa €$${total} e você tem €$${money}.`);
       let s: GameState = { ...s0, character: { ...s0.character, money: money - total } };
@@ -468,42 +650,100 @@ export const ACTION_TOOLS = [
     },
   }),
   defineTool({
-    name: 'pay_money',
+    name: 'sell_item',
     kind: 'action',
     origins: PLAYER,
-    description: 'O jogador paga/transfere/gasta eddies (dívida, conta, aluguel, suborno, presente). O motor confere o saldo e desconta.',
+    description: 'Vende um item do inventário por 50% do valor registrado. A IA não escolhe preço.',
+    params: {
+      itemId: { type: 'string', desc: 'id ou nome exato do item', required: true, max: 100 },
+      buyer: { type: 'string', desc: 'quem compra', required: true, max: 80 },
+      quantity: { type: 'number', desc: 'quantidade a vender', min: 1, max: 99 },
+    },
+    run: (s0, a) => {
+      const item = findItem(s0, a.itemId);
+      if (!item) return fail(s0, `Você não tem "${a.itemId}".`);
+      if (item.implant || item.cyberKey) return fail(s0, 'Cromo e implantes usam os fluxos de ripperdoc/mercado, não venda genérica.');
+      // Comprador conhecido precisa estar vivo e ao alcance: na cena, ou um contato (combina a entrega pelo Agent).
+      const buyer = findNpc(s0, a.buyer);
+      if (buyer?.status === 'dead') return fail(s0, `${buyer.name} está morto — não compra nada.`);
+      if (buyer && !buyer.isContact && !s0.scene.presentNpcIds.includes(buyer.id)) return fail(s0, `${buyer.name} não está na cena nem é contato: não há como fechar a venda agora.`);
+      const quantity = Math.min(item.quantity, Math.max(1, Math.round(a.quantity ?? item.quantity)));
+      const value = Math.max(0, Math.round(item.value ?? 0));
+      if (!value) return fail(s0, `${item.name} não tem valor de revenda registrado.`);
+      const price = Math.max(1, Math.floor((value * quantity) / 2));
+      const inventory = s0.character.inventory.map(i => (i.id === item.id ? { ...i, quantity: i.quantity - quantity } : i)).filter(i => i.quantity > 0);
+      let s: GameState = { ...s0, character: { ...s0.character, inventory, money: s0.character.money + price } };
+      s = emit(s, 'ITEM_REMOVED', `Vendeu ${quantity}× ${item.name} para ${a.buyer}`, { target: item.id, value: quantity });
+      s = emit(s, 'MONEY_CHANGED', `+${price} €$ (venda: ${item.name})`, { source: a.buyer, value: price, data: { kind: 'sale', itemId: item.id, quantity } });
+      return ok(s, `Vendeu ${quantity}× ${item.name} para ${a.buyer} por €$${price}.`, { price, balance: s.character.money });
+    },
+  }),
+  defineTool({
+    name: 'pay_money',
+    kind: 'action',
+    // Telefone: o jogador manda dinheiro pelo Agent ao contato com quem está falando ("te mandei 200").
+    origins: [...PLAYER, 'phone'],
+    description: 'O jogador paga/transfere/gasta eddies (dívida, conta, aluguel, suborno, presente, empréstimo a alguém). O motor confere o saldo, desconta e abate dívida registrada com quem recebe.',
     params: {
       amount: { type: 'number', desc: 'valor em €$', required: true, min: 1, max: 100000 },
       recipient: { type: 'string', desc: 'para quem vai o dinheiro', required: true, max: 80 },
       reason: { type: 'string', desc: 'motivo do pagamento', max: 200 },
       questId: { type: 'string', desc: 'missão relacionada (anota o pagamento nela)', max: 60 },
+      loan: { type: 'boolean', desc: 'o jogador está EMPRESTANDO: a pessoa passa a dever esse valor a ele' },
     },
-    run: (s0, args) => {
-      const a = { ...args, reason: args.reason ?? 'pagamento' };
+    run: (s0, args, ctx) => {
+      const a = { ...args, amount: Math.round(args.amount), reason: args.reason ?? 'pagamento' };
       const money = s0.character.money;
+      if (s0.character.dead) return fail(s0, 'O personagem está morto.');
       if (money < a.amount) return fail(s0, `Saldo insuficiente: você tem €$${money} e quer pagar €$${a.amount}. Nenhum pagamento foi feito.`);
-      const npc = findNpc(s0, a.recipient);
-      if (npc?.status === 'dead') return fail(s0, `${npc.name} está morto — não há a quem pagar.`);
+      const found = findNpc(s0, a.recipient);
+      if (found?.status === 'dead') return fail(s0, `${found.name} está morto — não há a quem pagar.`);
+      // Pelo Agent só se paga a um contato (quem está na conversa), nunca um desconhecido "cobrando" por SMS.
+      if (ctx.origin === 'phone' && !found?.isContact) return fail(s0, `Pagamento pelo Agent só vai para um contato salvo; "${a.recipient}" não é contato.`);
+      // O mesmo pagamento duas vezes no mesmo turno (intérprete repetindo, SMS + cena) é a MESMA conta.
+      const sameTarget = (t: unknown) => typeof t === 'string' && (t === found?.id || normKey(t) === normKey(a.recipient));
+      const twice = s0.events.find(e => e.type === 'MONEY_CHANGED' && e.source === 'player' && e.turn === s0.turn && e.value === -a.amount && sameTarget(e.target));
+      if (twice) return fail(s0, `Esse pagamento já foi feito neste turno (${twice.summary}). Nada foi cobrado de novo.`);
       let s: GameState = { ...s0, character: { ...s0.character, money: money - a.amount } };
-      s = emit(s, 'MONEY_CHANGED', `−${a.amount} €$ para ${a.recipient} (${a.reason})`, { source: 'player', target: npc?.id ?? a.recipient, value: -a.amount });
+      // Livro de dívidas: pagar a quem o jogador deve abate a dívida; emprestar cria o crédito dele.
+      let debtNote = '';
+      let npc = found;
+      if (a.loan && !npc) {
+        const ensured = ensureNpc(s, a.recipient);
+        s = ensured.state;
+        npc = ensured.npc;
+      }
+      if (npc && a.loan) {
+        const owes = eddies(npc.owesPlayer) + a.amount;
+        s = { ...s, npcs: s.npcs.map(n => (n.id === npc.id ? { ...n, owesPlayer: owes } : n)) };
+        debtNote = ` ${npc.name} agora deve €$${owes} a você.`;
+      } else if (npc && eddies(npc.playerOwes) > 0) {
+        const debt = eddies(npc.playerOwes);
+        const left = Math.max(0, debt - a.amount);
+        s = { ...s, npcs: s.npcs.map(n => (n.id === npc.id ? { ...n, playerOwes: left || undefined } : n)) };
+        debtNote = left ? ` Dívida com ${npc.name}: restam €$${left}.` : ` Dívida com ${npc.name} quitada${a.amount > debt ? ` (€$${a.amount - debt} a mais)` : ''}.`;
+      }
+      s = emit(s, 'MONEY_CHANGED', `−${a.amount} €$ para ${a.recipient} (${a.reason})${debtNote}`, { source: 'player', target: npc?.id ?? a.recipient, value: -a.amount, data: { kind: a.loan ? 'loan_out' : 'payment' } });
       const quest = a.questId ? s.missions.find(m => m.id === a.questId) : undefined;
       if (quest) {
         const note = `Pagou €$${a.amount} a ${a.recipient}: ${a.reason}`;
         s = { ...s, missions: s.missions.map(m => (m.id === quest.id ? { ...m, notes: [...m.notes, note].slice(-10) } : m)) };
         s = emit(s, 'QUEST_UPDATED', `${quest.title}: ${note}`, { target: quest.id });
       }
-      return ok(s, `Pagou €$${a.amount} a ${a.recipient} (${a.reason}). Saldo agora: €$${s.character.money}.`, { amount: a.amount, balance: s.character.money });
+      return ok(s, `Pagou €$${a.amount} a ${a.recipient} (${a.reason}). Saldo agora: €$${s.character.money}.${debtNote}`, { amount: a.amount, balance: s.character.money });
     },
   }),
   defineTool({
     name: 'use_item',
     kind: 'action',
     origins: PLAYER,
-    description: 'Usar um consumível do inventário.',
+    description: 'Usar um consumível do inventário, ou LER um datashard (devolve o conteúdo registrado).',
     params: { itemId: { type: 'string', desc: 'id ou nome exato do item', required: true, max: 80 } },
     run: (s0, a, ctx) => {
       const item = findItem(s0, a.itemId);
       if (!item) return fail(s0, `Você não tem "${a.itemId}".`);
+      // Ler um shard devolve o que foi gravado nele (conteúdo e origem): sem isso o Mestre inventava outro conteúdo.
+      if (item.category === 'datashard') return ok(s0, `Leu ${item.name}: ${item.description || 'sem descrição registrada — só o que o nome diz'}`, { content: item.description, name: item.name });
       if (item.category !== 'consumable') return fail(s0, `${item.name} não é consumível.`);
       if (item.streetDrug) {
         const r = useStreetDrug(s0, item.streetDrug, ctx.rng);
@@ -570,11 +810,17 @@ export const ACTION_TOOLS = [
     name: 'rest',
     kind: 'action',
     origins: PLAYER,
-    description: 'Descansar por algumas horas (8h+ recupera PV igual ao BODY).',
+    description: 'Descansar por algumas horas (6h+ é uma noite de sono: recarrega a Sorte; 8h+ recupera PV igual ao BODY).',
     params: { hours: { type: 'number', desc: 'horas', required: true, min: 1, max: 24 } },
     run: (s0, a) => {
       if (s0.combat.active) return fail(s0, 'Impossível descansar em combate.');
       let s = advanceTime(s0, a.hours * 60);
+      // Uma noite de sono recarrega a Sorte, mesmo sem cruzar a meia-noite (a campanha começa às 23h e
+      // o segundo sono quase sempre é 07h→15h: só a virada do calendário nunca chegava).
+      const luck = s.character.luck;
+      if (a.hours >= SLEEP_HOURS && luck.current < luck.max) {
+        s = emit({ ...s, character: { ...s.character, luck: { ...luck, current: luck.max } } }, 'EFFECT_ADDED', `Sorte recarregada (${luck.max}/${luck.max}) depois de dormir`, { value: luck.max - luck.current, data: { luck: 'refill' } });
+      }
       if (a.hours >= 8 && s.character.hp.current > 0) {
         const before = s.character.hp.current;
         const antibiotic = s.activeEffects.some(e => e.name === DRUGS.antibiotic.label) ? 2 : 0;
@@ -589,4 +835,3 @@ export const ACTION_TOOLS = [
     },
   }),
 ];
-

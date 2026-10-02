@@ -12,6 +12,8 @@ export function netActionsFor(rank: number): number {
 }
 
 export const NET_DV: Record<NetDifficulty, number> = { basic: 6, standard: 8, uncommon: 10, advanced: 12 };
+/** Acesso é um marco de progressão; o d10 vence a defesa, não pula a camada de segurança. */
+export const NET_MIN_INTERFACE: Record<NetDifficulty, number> = { basic: 1, standard: 3, uncommon: 6, advanced: 8 };
 export const NET_DIFFICULTY_LABEL: Record<NetDifficulty, string> = { basic: 'Básica', standard: 'Padrão', uncommon: 'Incomum', advanced: 'Avançada' };
 
 export interface IceProfile {

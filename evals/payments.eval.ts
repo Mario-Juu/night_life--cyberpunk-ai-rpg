@@ -21,7 +21,7 @@ describe('Recompensa de missão × transferência do narrador', () => {
     sc.tool('narrator', 'complete_quest', { questId: 'm_entrega' });
     sc.tool('narrator', 'transfer_money', { amount: 600, counterpart: 'Rafa "Zero-Um"', reason: 'Pagamento pelo corre de entrega' });
     expect(sc.last().ok).toBe(false);
-    expect(sc.last().summary).toMatch(/duplicado/);
+    expect(sc.last().summary).toMatch(/não permitida/);
     expect(sc.state.character.money).toBe(before + 600);
   });
 
@@ -51,31 +51,31 @@ describe('Recompensa de missão × transferência do narrador', () => {
     expect(sc.state.character.money).toBe(before + 600);
   });
 
-  it('dinheiro de OUTRA pessoa, de outro valor, continua valendo', () => {
+  it('crédito narrativo de outra pessoa também é bloqueado; só contratos liquidam recompensas', () => {
     const sc = withJob();
     const before = sc.state.character.money;
     sc.tool('narrator', 'complete_quest', { questId: 'm_entrega' });
     sc.tool('narrator', 'transfer_money', { amount: 50, counterpart: 'Gorjeta do cliente', reason: 'gorjeta' });
-    expect(sc.last().ok).toBe(true);
-    expect(sc.state.character.money).toBe(before + 650);
+    expect(sc.last().ok).toBe(false);
+    expect(sc.state.character.money).toBe(before + 600);
   });
 
-  it('bem depois (fora da janela de 3 turnos) um novo pagamento do contratante vale', () => {
+  it('novo crédito do contratante continua exigindo uma nova missão, mesmo fora da janela antiga', () => {
     const sc = withJob();
     const before = sc.state.character.money;
     sc.tool('narrator', 'complete_quest', { questId: 'm_entrega' });
     sc.atTurn(sc.state.turn + 5).tool('narrator', 'transfer_money', { amount: 600, counterpart: 'Rafa', reason: 'outro trabalho' });
-    expect(sc.last().ok).toBe(true);
-    expect(sc.state.character.money).toBe(before + 1200);
+    expect(sc.last().ok).toBe(false);
+    expect(sc.state.character.money).toBe(before + 600);
   });
 });
 
 describe('Item comprado e entregue de novo pelo narrador (log do T43)', () => {
   it('buy_item + give_item do mesmo item no mesmo turno: entra UMA vez', () => {
     const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 5000 } }));
-    sc.tool('interpreter', 'buy_item', { name: 'Kit Médico', category: 'consumable', quantity: 1 });
+    sc.tool('player', 'buy_item', { name: 'Kit Médico', category: 'consumable', quantity: 1 });
     expect(sc.last().ok).toBe(true);
-    sc.tool('narrator', 'give_item', { name: 'Kit médico de trauma', category: 'consumable', source: 'vendedor' });
+    sc.tool('narrator', 'give_item', { name: 'Kit médico de trauma', category: 'consumable', catalogKey: 'biocurativo', source: 'vendedor' });
     expect(sc.last().ok).toBe(false);
     expect(sc.last().summary).toMatch(/duplicado/);
     expect(sc.state.character.inventory.filter(i => /kit m[eé]dico/i.test(i.name)).reduce((n, i) => n + i.quantity, 0)).toBe(1);
@@ -83,7 +83,7 @@ describe('Item comprado e entregue de novo pelo narrador (log do T43)', () => {
 
   it('um item diferente entregue no mesmo turno continua valendo', () => {
     const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 5000 } }));
-    sc.tool('interpreter', 'buy_item', { name: 'Kit Médico', category: 'consumable', quantity: 1 });
+    sc.tool('player', 'buy_item', { name: 'Kit Médico', category: 'consumable', quantity: 1 });
     sc.tool('narrator', 'give_item', { name: 'Cartão de visita do Doc', category: 'gear', source: 'Doc' });
     expect(sc.last().ok).toBe(true);
   });
@@ -92,24 +92,24 @@ describe('Item comprado e entregue de novo pelo narrador (log do T43)', () => {
 describe('Implante não é item comum', () => {
   it('a loja não vende Sandevistan/Braços Gorila como mercadoria (manda instalar com um ripperdoc)', () => {
     const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 50_000 } }));
-    sc.tool('interpreter', 'buy_item', { name: 'Sandevistan', category: 'gear' });
+    sc.tool('player', 'buy_item', { name: 'Sandevistan', category: 'gear' });
     expect(sc.last().ok).toBe(false);
     expect(sc.last().summary).toMatch(/install_cyberware/);
-    sc.tool('interpreter', 'buy_item', { name: 'Braços Gorila', category: 'weapon' });
+    sc.tool('player', 'buy_item', { name: 'Braços Gorila', category: 'weapon' });
     expect(sc.last().ok).toBe(false);
     expect(sc.state.character.money).toBe(50_000);
   });
 
   it('na clínica do ripperdoc, nomes inventados de cromo ("Kit Neural", "Amplificador de Áudio") também não viram compra de balcão', () => {
     const sc = scenario().edit(s => withRipperdoc({ ...s, character: { ...s.character, money: 5000 } }, 3, true));
-    sc.tool('interpreter', 'buy_item', { name: 'Kit Neural', category: 'gear', price: 500 });
+    sc.tool('player', 'buy_item', { name: 'Kit Neural', category: 'gear', price: 500 });
     expect(sc.last().ok).toBe(false);
-    sc.tool('interpreter', 'buy_item', { name: 'Amplificador de Áudio', category: 'gear', price: 500 });
+    sc.tool('player', 'buy_item', { name: 'Amplificador de Áudio', category: 'gear', price: 500 });
     expect(sc.last().ok).toBe(false);
     expect(sc.state.character.money).toBe(5000);
     // Fora de clínica, um "kit de ferramentas" continua sendo item comum.
     const shop = scenario().edit(s => ({ ...s, character: { ...s.character, money: 5000 } }));
-    shop.tool('interpreter', 'buy_item', { name: 'Kit de ferramentas', category: 'gear' });
+    shop.tool('player', 'buy_item', { name: 'Kit de ferramentas', category: 'gear' });
     expect(shop.last().ok).toBe(true);
   });
 
@@ -236,13 +236,13 @@ describe('Coerência do dinheiro nas runs reais (T6 e T8)', () => {
     expect(w.some(x => /saldo real é €\$500/.test(x))).toBe(true);
   });
 
-  it('entrada legítima de outra pessoa, ou da mesma pessoa com outro valor, continua valendo', () => {
+  it('entradas de terceiros não são mais inventadas pelo narrador', () => {
     const sc = scenario().atTurn(8);
     sc.edit(s => ({ ...s, character: { ...s.character, money: 1100 } }));
     sc.tool('interpreter', 'pay_money', { amount: 600, recipient: 'Minha irmã', reason: 'aluguel' });
     sc.tool('narrator', 'transfer_money', { amount: 200, counterpart: 'Minha irmã', reason: 'devolveu o troco' });
-    expect(sc.last().ok).toBe(true);
+    expect(sc.last().ok).toBe(false);
     sc.tool('narrator', 'transfer_money', { amount: 600, counterpart: 'Rafa "Zero-Um"', reason: 'adiantamento de outro corre' });
-    expect(sc.last().ok).toBe(true);
+    expect(sc.last().ok).toBe(false);
   });
 });

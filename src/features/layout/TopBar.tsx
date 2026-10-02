@@ -70,6 +70,7 @@ export function TopBar({ game }: { game: GameState }) {
   const sideOpen = useUiStore(s => s.sideOpen);
   const toggleSide = useUiStore(s => s.toggleSide);
   const model = useUiStore(s => s.model);
+  const debug = useUiStore(s => s.debug);
   const degraded = useUiStore(s => s.lastDegraded);
   const loc = game.world.location;
   const threat = computeThreat(game);
@@ -146,7 +147,7 @@ export function TopBar({ game }: { game: GameState }) {
           aria-pressed={sideOpen}
           className="hidden lg:inline-flex"
         />
-        <MenuButton sandbox={game.sandbox} />
+        <MenuButton sandbox={game.sandbox && debug} />
       </div>
     </header>
   );

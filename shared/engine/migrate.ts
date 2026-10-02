@@ -10,6 +10,7 @@ import { starterDeck } from './net';
 import { implantFromName } from '../rules/cyberware';
 import { MIN_AGE } from '../rules/creation';
 import { withQuickhackDefaults } from './quickhacks';
+import { guessMerchantItem } from '../rules/merchantCatalog';
 
 /** Campos adicionados dentro da v3 (habilidades de papel, Rede): preenche sem mudar a versão. */
 function fillDefaults(s: GameState): GameState {
@@ -18,6 +19,16 @@ function fillDefaults(s: GameState): GameState {
   if ((character.bio?.age ?? 18) < MIN_AGE) character = { ...character, bio: { ...character.bio, age: MIN_AGE } };
   if (character.bio.role === 'netrunner' && !character.deck) character = { ...character, deck: starterDeck() };
   character = withQuickhackDefaults(character);
+  // Corrige consumíveis antigos que eram apenas texto (ex.: "Injector de Stim").
+  if (character.inventory.some(i => i.category === 'consumable' && !i.drug && !i.streetDrug && !i.heal && guessMerchantItem(i.name))) {
+    character = {
+      ...character,
+      inventory: character.inventory.map(i => {
+        const def = i.category === 'consumable' && !i.drug && !i.streetDrug && !i.heal ? guessMerchantItem(i.name) : undefined;
+        return def ? { ...i, description: def.description, value: def.price, heal: def.heal, drug: def.drug, streetDrug: def.streetDrug } : i;
+      }),
+    };
+  }
   // Trilheiros de saves antigos: o Neural Link + Plugues passaram a ser cromo de verdade (sem cobrar Humanidade retroativa).
   if (character.bio.role === 'netrunner' && !(character.cyberware ?? []).some(cw => cw.key === 'interface_plugs')) {
     const link = { id: makeId('cw'), key: 'neural_link', name: 'Neural Link', category: 'Neuralware' as const, humanityLoss: 0, description: 'Fundação da neuralware.' };
@@ -39,7 +50,14 @@ function fillDefaults(s: GameState): GameState {
   if (character.cyberware?.some(cw => /^Cyber/.test(cw.category))) character = { ...character, cyberware: character.cyberware.map(cw => ({ ...cw, category: cw.category.replace(/^Cyber/, 'Ciber') as typeof cw.category })) };
   // O custo de vida automático saiu (o aluguel agora é orgânico, da ficção): limpa saves que o tinham.
   const { lifestyle: _dropped, ...rest } = s as GameState & { lifestyle?: unknown };
-  return { ...rest, character, net: s.net ?? { architecture: null, run: null } };
+  // Primeiras versões do tutorial gravaram instruções internas na missão. Isso não é conteúdo da ficha:
+  // limpa saves existentes sem mexer no progresso, objetivo ou outras missões.
+  const missions = s.missions.map(m => {
+    if (m.id !== 'm_first_job') return m;
+    const { reward: _reward, ...clean } = m;
+    return { ...clean, description: 'Seu primeiro corre em Night City.', rewardEddies: 0, notes: [] };
+  });
+  return { ...rest, character, missions, net: s.net ?? { architecture: null, run: null } };
 }
 
 /** Dados de save antigos, sem tipo garantido. */

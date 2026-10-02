@@ -10,7 +10,7 @@ import { applyNarration, beginTurn } from '../shared/engine/turn';
 import { rollD10, seededRng, sequenceRng } from '../shared/engine/dice';
 import { NPC_TEMPLATES } from '../shared/rules/npcTemplates';
 import { CYBERPSYCHO_ACTIONS, humanityBand, isCyberpsycho } from '../shared/rules/humanity';
-import { createSandboxState, sbx } from '../shared/engine/sandbox';
+import { applySandboxRole, createSandboxState, sbx } from '../shared/engine/sandbox';
 import { buildGameContext } from '../shared/engine/context';
 import { buildNarratePrompt } from '../server/gamemaster/promptBuilder';
 import type { NarrateResponse } from '../shared/types/gm';
@@ -180,6 +180,14 @@ describe('Sandbox', () => {
     expect(s.character.deck?.quality).toBe('excellent');
     expect(s.character.inventory.filter(i => i.weapon).length).toBeGreaterThanOrEqual(10);
     expect(s.chat.some(e => e.kind === 'narration')).toBe(true); // sem prólogo da IA
+  });
+
+  it('trocar papel/rank mantém alocações de Papel válidas, inclusive Técnico de rank baixo', () => {
+    const tech = applySandboxRole(createSandboxState(), 'tech', 1);
+    expect(Object.values(tech.character.roleData.maker ?? {}).reduce((n, v) => n + v, 0)).toBe(2);
+    expect(Object.values(tech.character.roleData.maker ?? {}).every(v => v >= 0 && v <= 1)).toBe(true);
+    const med = sbx.rank(applySandboxRole(createSandboxState(), 'medtech', 4), 1);
+    expect(Object.values(med.character.roleData.medicine ?? {}).reduce((n, v) => n + v, 0)).toBe(1);
   });
 
   it('d10 forçado pela seed (reproduzível)', () => {

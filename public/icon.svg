@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a0630"/>
+      <stop offset="0.6" stop-color="#0b0614"/>
+      <stop offset="1" stop-color="#05030a"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fcee0a"/>
+      <stop offset="0.5" stop-color="#ff00ea"/>
+      <stop offset="1" stop-color="#bd00ff"/>
+    </linearGradient>
+    <clipPath id="round"><rect width="512" height="512" rx="96"/></clipPath>
+    <clipPath id="sunclip"><circle cx="256" cy="226" r="112"/></clipPath>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <!-- sun with scanline cuts -->
+    <g clip-path="url(#sunclip)">
+      <rect x="130" y="110" width="252" height="230" fill="url(#sun)"/>
+      <g fill="#0b0614">
+        <rect x="130" y="238" width="252" height="6"/>
+        <rect x="130" y="262" width="252" height="9"/>
+        <rect x="130" y="288" width="252" height="12"/>
+        <rect x="130" y="316" width="252" height="16"/>
+      </g>
+    </g>
+    <!-- skyline -->
+    <g fill="#05030a" stroke="#00f0ff" stroke-width="3" filter="url(#glow)">
+      <path d="M0 400 V330 h40 v-40 h34 v70 h28 v-110 h40 v90 h26 v-60 h36 v50 h30 v-130 h38 v100 h28 v-70 h34 v60 h30 v-80 h36 v110 h32 v-30 h40 V400 Z"/>
+    </g>
+    <!-- ground -->
+    <rect y="400" width="512" height="112" fill="#05030a"/>
+    <path d="M0 400 H512" stroke="#ff00ea" stroke-width="3" filter="url(#glow)"/>
+    <!-- grid -->
+    <g stroke="#ff00ea" stroke-opacity="0.45" stroke-width="2">
+      <path d="M256 400 L256 512 M256 400 L130 512 M256 400 L0 512 M256 400 L382 512 M256 400 L512 512"/>
+      <path d="M0 428 H512 M0 462 H512 M0 500 H512"/>
+    </g>
+    <!-- NL monogram -->
+    <g filter="url(#glow)" fill="none" stroke-linecap="square" stroke-width="14">
+      <path d="M176 330 V240 L236 330 V240" stroke="#00f0ff"/>
+      <path d="M290 240 V330 H346" stroke="#fcee0a"/>
+    </g>
+    <rect x="8" y="8" width="496" height="496" rx="88" fill="none" stroke="#00f0ff" stroke-opacity="0.6" stroke-width="4"/>
+  </g>
+</svg>

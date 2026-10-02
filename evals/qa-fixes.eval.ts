@@ -16,6 +16,9 @@ import { CYBERWARE } from '../shared/rules/cyberware';
 import { ripperdocHasStock, ripperdocStock } from '../shared/engine/cyberware';
 import { amountsIn, checkNarration, claimedBalances } from '../shared/engine/consistency';
 import type { GameState } from '../shared/types/game';
+import type { InterpretResponse, NarrateResponse } from '../shared/types/gm';
+import { applyEnemyPhase, applyInterpretation, applyNarration, beginTurn } from '../shared/engine/turn';
+import { buildNarratePrompt } from '../server/gamemaster/promptBuilder';
 
 const withJax = () =>
   scenario()
@@ -256,5 +259,95 @@ describe('Vitrine do ripperdoc (estoque sorteado por clínica)', () => {
     sc.tool('interpreter', 'install_cyberware', { key: missing.key });
     expect(sc.last().ok).toBe(false);
     expect(sc.last().summary).toMatch(/no estoque/);
+  });
+});
+
+describe('Rodada de correções de 02/10 (B2, B3, Sorte, prompt da cidade)', () => {
+  // Pente vazio: recarregar é uma Ação válida (com o pente cheio o motor recusa e não há fase inimiga).
+  const fightState = () => scenario().tool('narrator', 'start_combat', { combatants: [{ template: 'maelstrom_ganger', count: 2 }] }).edit(s => ({ ...s, character: { ...s.character, inventory: s.character.inventory.map(i => (i.weapon?.magSize ? { ...i, weapon: { ...i.weapon, loaded: 0 } } : i)) } })).state;
+  const interp = (toolCalls: Array<{ tool: string; args: Record<string, unknown> }>) => ({ intent: { type: 'other', summary: 'x', confidence: 1 }, toolCalls }) as unknown as InterpretResponse;
+  const phase = (toolCalls: Array<{ tool: string; args: Record<string, unknown> }>) => {
+    const step = applyInterpretation(beginTurn(fightState(), 'x'), interp(toolCalls), sequenceRng([5]));
+    return applyEnemyPhase(step, sequenceRng([5])).record.toolCalls.some(t => t.tool === 'enemy_phase');
+  };
+
+  it('B3: consulta ou ação recusada NÃO dá a vez aos inimigos; ação válida e descrição livre dão', () => {
+    expect(phase([{ tool: 'get_character', args: {} }])).toBe(false);
+    expect(phase([{ tool: 'move_location', args: { spot: 'Outro bairro' } }])).toBe(false); // recusado em combate
+    expect(phase([{ tool: 'reload', args: {} }])).toBe(true);
+    expect(phase([])).toBe(true); // o tempo passa
+  });
+
+  it('B2: com a fase inimiga já aplicada, o damage do narrador por tiro é recusado; o ambiental passa', () => {
+    let step = applyInterpretation(beginTurn(fightState(), 'x'), interp([{ tool: 'reload', args: {} }]), sequenceRng([5]));
+    step = applyEnemyPhase(step, sequenceRng([5]));
+    const hp = step.state.character.hp.current;
+    const narr = (reason: string) => ({ narration: 'x', dialogues: [], toolCalls: [{ tool: 'damage', args: { amount: 10, reason } }], discoveries: [], suggestedActions: [], enemyActions: [] }) as unknown as NarrateResponse;
+    const shot = applyNarration(step, narr('o ganger acerta um tiro'), sequenceRng([5]));
+    expect(shot.state.character.hp.current).toBe(hp);
+    expect(shot.record.toolCalls.some(t => t.tool === 'damage' && t.error === 'dano duplicado')).toBe(true);
+    const fall = applyNarration(step, narr('queda da escada de incêndio'), sequenceRng([5]));
+    expect(fall.state.character.hp.current).toBeLessThan(hp);
+  });
+
+  it('Sorte: dormir 6h+ recarrega mesmo sem cruzar a meia-noite', () => {
+    const sc = scenario();
+    sc.tool('interpreter', 'rest', { hours: 8 }); // 23:41 → 07:41 (cruza)
+    sc.edit(s => ({ ...s, character: { ...s.character, luck: { ...s.character.luck, current: 1 } } }));
+    sc.tool('interpreter', 'rest', { hours: 8 }); // 07:41 → 15:41 (não cruza)
+    expect(sc.state.character.luck.current).toBe(sc.state.character.luck.max);
+    sc.edit(s => ({ ...s, character: { ...s.character, luck: { ...s.character.luck, current: 1 } } }));
+    sc.tool('interpreter', 'rest', { hours: 2 }); // cochilo não conta
+    expect(sc.state.character.luck.current).toBe(1);
+  });
+
+  it('o prompt mostra perseguição, mercado, oferta pendente (com id) e facções com id', () => {
+    const sc = scenario({ role: 'fixer' }).edit(s => ({ ...s, character: { ...s.character, money: 3000 } }));
+    sc.tool('narrator', 'start_chase', { opponent: 'Viaturas da NCPD', reason: 'Fuga', pressure: 3, vehicleIntegrity: 4, opponentIntegrity: 4 });
+    sc.tool('narrator', 'open_night_market', { name: 'Mercado do Porto', cyberStock: 'cybereye' });
+    sc.tool('interpreter', 'propose_trade', { seller: 'Nix', merchantType: 'weapons', catalogKey: 'weapon_assault_rifle' });
+    const prompt = buildNarratePrompt(sc.context('x'), { kind: 'action', playerInput: 'x', engineResult: null });
+    expect(prompt).toMatch(/PERSEGUIÇÃO ATIVA: Viaturas da NCPD/);
+    expect(prompt).toMatch(/MERCADO NOTURNO ABERTO: Mercado do Porto/);
+    expect(prompt).toContain(`OFERTA PENDENTE [${sc.state.world.tradeOffer!.id}]`);
+    expect(prompt).toMatch(/\[fac_ncpd\] NCPD/);
+  });
+
+  it('Canal pechincha pelo texto; aliado aceita o id de combatente; cura do narrador vale para aliado', () => {
+    const sc = scenario({ role: 'fixer' }).edit(s => ({ ...s, character: { ...s.character, money: 3000 } }));
+    sc.tool('interpreter', 'propose_trade', { seller: 'Nix', merchantType: 'weapons', catalogKey: 'weapon_assault_rifle' });
+    sc.tool('interpreter', 'haggle_trade', { offerId: sc.state.world.tradeOffer!.id }, [10, 10]);
+    expect(sc.last().ok).toBe(true);
+
+    const p = scenario().tool('narrator', 'upsert_npc', { name: 'Brick', role: 'Merc', present: true }).tool('narrator', 'recruit_npc', { npcId: 'Brick', share: 20, template: 'bodyguard' });
+    p.tool('narrator', 'start_combat', { combatants: [{ template: 'maelstrom_ganger', count: 1 }] });
+    const allyId = p.state.combat.combatants.find(t => t.side === 'ally')!.id;
+    p.tool('interpreter', 'ask_ally', { npcId: allyId, request: 'hold' }, [1]);
+    expect(p.last().ok).toBe(true);
+    p.edit(s => ({ ...s, npcs: s.npcs.map(n => (n.name === 'Brick' ? { ...n, combat: { ...n.combat!, hp: { ...n.combat!.hp, current: 5 } } } : n)) }));
+    p.tool('narrator', 'heal', { amount: 10, targetId: 'Brick', reason: 'primeiros socorros' });
+    expect(p.last().ok).toBe(true);
+    expect(p.npc('Brick')!.combat!.hp.current).toBe(15);
+  });
+});
+
+describe('Informação tem dono: arquivos da Rede ancorados no sistema invadido', () => {
+  it('arquitetura de hotel sem arquivos informados: todo andar de arquivo/controle tem rótulo do próprio hotel', () => {
+    for (let i = 0; i < 20; i++) {
+      const sc = scenario({ role: 'netrunner' }).tool('narrator', 'net_architecture', { name: 'Servidor do Hotel Pérola', accessPoint: 'Port da recepção', difficulty: 'basic', floors: 12 }, [i % 6 + 1, (i * 7) % 6 + 1, 3]);
+      for (const f of sc.state.net.architecture!.floors.filter(f => f.kind === 'file' || f.kind === 'control')) {
+        expect(f.label).toMatch(/\(Servidor do Hotel Pérola\)$/);
+        if (f.kind === 'file') expect(f.label).toMatch(/hóspedes|Reservas|câmeras do saguão|Escala/);
+      }
+    }
+  });
+
+  it('o shard baixado diz o conteúdo e a origem (o Mestre não precisa inventar)', () => {
+    const sc = scenario({ role: 'netrunner' }).tool('narrator', 'net_architecture', { name: 'Servidor do Hotel Pérola', accessPoint: 'Port da recepção', difficulty: 'basic', floors: 3, files: 'Registro de hóspedes do 9º andar' });
+    sc.edit(s => ({ ...s, net: { ...s.net, architecture: { ...s.net.architecture!, floors: s.net.architecture!.floors.map((f, i) => (i === 0 ? { ...f, kind: 'file', label: 'Registro de hóspedes do 9º andar', revealed: true, cleared: false, dv: 2 } : { ...f, kind: 'password', cleared: true })) } } }));
+    sc.tool('interpreter', 'jack_in', {}, [9]).tool('interpreter', 'net_action', { action: 'eye_dee' }, [9]);
+    const shard = sc.state.character.inventory.find(i => i.category === 'datashard');
+    expect(shard?.name).toBe('Arquivo: Registro de hóspedes do 9º andar');
+    expect(shard?.description).toMatch(/Origem: Servidor do Hotel Pérola \(Port da recepção\)/);
   });
 });

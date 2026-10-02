@@ -73,6 +73,20 @@ function PlayerRoleAbility() {
   );
 }
 
+/** O mesmo foco salvo com a abertura; evita que o tutorial diga "hacking" para um Canal, por exemplo. */
+function FirstJobFocus() {
+  const tutorial = useGameStore(s => s.game?.world.opening?.tutorial);
+  if (!tutorial) return null;
+  return (
+    <Frame>
+      <p className="eyebrow text-neon-yellow">Seu foco neste corre</p>
+      <p className="text-fg">{tutorial.focus}</p>
+      <p className="text-muted">{tutorial.roleLesson}</p>
+      <p className="text-[11px] text-dim">{tutorial.characterFit}</p>
+    </Frame>
+  );
+}
+
 function Bar({ value, max, tone }: { value: number; max: number; tone: string }) {
   return (
     <div className="h-1.5 bg-surface-2">
@@ -84,6 +98,56 @@ function Bar({ value, max, tone }: { value: number; max: number; tone: string })
 // ---------------------------------------------------------------- conteúdo
 
 export const TUTORIALS: Record<TutorialId, Tutorial> = {
+  opening: {
+    id: 'opening',
+    title: 'Seu primeiro corre',
+    steps: [
+      {
+        title: 'Você começa pequeno',
+        body: (
+          <>
+            Em <b>Cyberpunk</b>, você não é o escolhido: é uma pessoa tentando pagar as contas e sobreviver numa cidade controlada por corporações, gangues e gente com mais poder.
+            A missão <b>Primeiro corre</b>, no <b>Diário</b>, é o seu rumo imediato. Ela muda conforme a abertura sorteada e nasce da sua vida, não de um destino fixo.
+          </>
+        ),
+        visual: <FirstJobFocus />,
+      },
+      {
+        title: 'A ação é sua',
+        body: (
+          <>
+            Escreva o que você tenta como falaria numa mesa: <b>conversar</b>, observar, mentir, seguir alguém, procurar uma rota, usar o seu papel ou cair fora.
+            O Mestre interpreta a intenção; o motor só rola dados quando há risco ou incerteza. Passar no dado resolve <b>o que era plausível</b>, não faz um novato virar lenda.
+          </>
+        ),
+        visual: (
+          <Frame>
+            <p className="text-muted">“Pergunto o que está acontecendo, sem prometer nada.”</p>
+            <p className="text-muted">“Examino a porta e procuro uma saída pelos fundos.”</p>
+            <p className="text-muted">“Uso meu ofício para descobrir se isso é uma armadilha.”</p>
+          </Frame>
+        ),
+      },
+      {
+        title: 'Aprenda na rua, não num manual',
+        body: (
+          <>
+            Este primeiro corre vai mostrar um contato, uma pressão e pelo menos uma escolha com consequência. <b>Combate não é obrigatório</b> e quase nunca é a única saída.
+            Quando uma mecânica aparecer de verdade — combate, Rede, cromo ou habilidade de papel — o jogo abre um guia curto. Você pode rever todos em <b>Configurações</b>.
+          </>
+        ),
+        visual: (
+          <Frame>
+            <div className="flex flex-wrap gap-1">
+              <Chip tone="cyan">Diário: objetivo e pistas</Chip>
+              <Chip tone="yellow">Agent: contatos e acordos</Chip>
+              <Chip tone="green">Ficha: recursos e papel</Chip>
+            </div>
+          </Frame>
+        ),
+      },
+    ],
+  },
   net: {
     id: 'net',
     title: 'A Rede',

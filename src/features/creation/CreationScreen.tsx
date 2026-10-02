@@ -44,8 +44,10 @@ export function CreationScreen() {
   const [stats, setStats] = useState<Stats>({ ...STAT_PRESETS[0].stats });
   const [weaponId, setWeaponId] = useState(STARTER_WEAPONS[0].id);
   const [starting, setStarting] = useState(false);
+  const [hardcore, setHardcore] = useState(false);
   const model = useUiStore(s => s.model);
   const hasKey = useUiStore(s => s.hasKey);
+  const debug = useUiStore(s => s.debug);
   const [keyDraft, setKeyDraft] = useState('');
 
   const total = statTotal(stats);
@@ -66,7 +68,7 @@ export function CreationScreen() {
     setStarting(true);
     sound.playCrit();
     const character = buildCharacter({ name, handle, age, role, occupation, district, familyTie, debtReason, personalAnchor, appearance, stats, starterWeaponId: weaponId });
-    await startCampaign(character);
+    await startCampaign(character, undefined, { hardcore });
   };
 
   const next = () => {
@@ -84,11 +86,16 @@ export function CreationScreen() {
               Registro de ingresso · Night City · 2077 ·{' '}
               <button type="button" className="underline-offset-2 hover:underline hover:text-neon-cyan" onClick={() => useUiStore.getState().setIntroSeen(false)}>
                 rever introdução
-              </button>{' '}
-              ·{' '}
-              <button type="button" className="underline-offset-2 hover:underline hover:text-neon-yellow" onClick={() => startSandbox(role)} title="Personagem de testes com tudo no máximo e painel de depuração">
-                modo sandbox (depuração)
               </button>
+              {/* Sandbox só com a flag de debug do servidor (NIGHTLIFE_DEBUG no .env). */}
+              {debug && (
+                <>
+                  {' '}·{' '}
+                  <button type="button" className="underline-offset-2 hover:underline hover:text-neon-yellow" onClick={() => startSandbox(role)} title="Personagem de testes com tudo no máximo e painel de depuração">
+                    modo sandbox (depuração)
+                  </button>
+                </>
+              )}
             </p>
             <h1 className="font-display text-3xl sm:text-4xl font-black tracking-widest text-neon-cyan drop-shadow-[0_0_12px_rgba(0,240,255,0.5)]">
               NIGHT<span className="text-neon-magenta">//</span>LIFE
@@ -304,6 +311,13 @@ export function CreationScreen() {
                     })}
                   </div>
                 </section>
+                <label className={cn('flex items-start gap-3 border p-3 cursor-pointer transition-colors', hardcore ? 'border-danger bg-danger/10' : 'border-line hover:border-muted')}>
+                  <input type="checkbox" checked={hardcore} onChange={e => setHardcore(e.target.checked)} className="mt-1 accent-[var(--color-danger)]" aria-label="Modo hardcore" />
+                  <span>
+                    <span className="font-display text-xs uppercase tracking-wider text-danger">Modo hardcore</span>
+                    <span className="block text-[11px] text-muted mt-1">Morreu, acabou: sem voltar pela linha do tempo e sem carregar saves antigos desta campanha.</span>
+                  </span>
+                </label>
                 <div className="border border-line-soft bg-surface-0/60 p-3 text-sm text-muted leading-relaxed">
                   Você começa sem fama, com <span className="text-neon-yellow">€${STARTING_MONEY}</span>, jaqueta balística (SP 7), boné reforçado (SP 4),
                   dois biocurativos, o Agent de bolso e o kit do seu papel. Narrador: modelo <span className="text-neon-cyan uppercase">{model}</span>.

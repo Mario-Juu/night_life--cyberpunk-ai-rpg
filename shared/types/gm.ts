@@ -46,6 +46,8 @@ export interface FrontView {
   seedNpc?: string;
   /** Continuação de outra trama: o título dela e como terminou. */
   continues?: { title: string; outcome: string };
+  /** Motivo concreto de a trama tocar a cena atual; ausente = é de outro lugar (não ligar por semelhança). */
+  sceneLink?: string;
 }
 
 /** Subconjunto relevante do estado, montado por shared/engine/context.ts. */
@@ -67,7 +69,8 @@ export interface GameContext {
   net?: NetState;
   /** Modo Sandbox (debug). */
   sandbox?: boolean;
-  memories: Memory[];
+  /** linked = ligada à cena/ação atual; as outras são pano de fundo de outro lugar/assunto. */
+  memories: Array<Memory & { linked?: boolean }>;
   summaries: HistorySummary[];
   recentHistory: Array<{ turn: number; kind: string; text: string }>;
   phone: Array<{ npcId: string; npcName: string; last: Array<{ from: string; text: string }> }>;
@@ -226,4 +229,6 @@ export interface GMStatus {
   /** Reserva da narração quando o Flash cai (hoje, "Flash-Lite"). */
   backup?: string;
   promptVersion: string;
+  /** Sandbox liberado (NIGHTLIFE_DEBUG no .env do servidor). */
+  debug?: boolean;
 }

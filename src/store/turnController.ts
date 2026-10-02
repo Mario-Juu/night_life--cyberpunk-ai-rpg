@@ -10,6 +10,7 @@ import type { EngineResult, TurnRecord } from '@shared/types/turn';
 import type { GameContext, GmEnvelope, NarrateResponse } from '@shared/types/gm';
 import { buildGameContext } from '@shared/engine/context';
 import { createInitialState } from '@shared/engine/initialState';
+import { OPENING_SURPRISE, findOpening, pickOpening } from '@shared/engine/openings';
 import { applyWorldgen, buildWorldgenRequest, markNewsRead, markPolishTried, needsPolish, unreadNews } from '@shared/engine/fronts';
 import { createSandboxState } from '@shared/engine/sandbox';
 import { attackBlocker, buildAttackRequest, getPlayerWeapon, type AttackOptions } from '@shared/engine/combat';
@@ -288,8 +289,14 @@ async function narrateAndFinish(stepIn: Step, outcome: RollOutcome | null): Prom
 
 // ---------------------------------------------------------------- campanha
 
-export function startCampaign(character: Character): Promise<void> {
-  useGameStore.getState().setGame(createInitialState(character));
+/**
+ * Começa a campanha. `opening`: chave de shared/engine/openings.ts escolhida na criação; sem ela (ou
+ * "surpresa"), sorteia uma abertura coerente com o papel e a história do personagem.
+ */
+export function startCampaign(character: Character, opening: string = OPENING_SURPRISE, opts: { hardcore?: boolean } = {}): Promise<void> {
+  const seed = newSeed();
+  const key = findOpening(opening)?.key ?? pickOpening(character, seededRng(seed)).key;
+  useGameStore.getState().setGame(createInitialState(character, { opening: key, seed, hardcore: opts.hardcore }));
   useUiStore.setState({ mobileTab: 'story', phoneOpen: false, activeThread: null, lastDegraded: false });
   return requestOpening();
 }
@@ -701,11 +708,12 @@ export function sendPhoneMessage(npcId: string, text: string): Promise<void> {
   const game = requireGame();
   const target = game.npcs.find(n => n.id === npcId);
   if (target && !canUsePhone(target)) return Promise.resolve();
-  const ctx = buildGameContext(game, clean);
   dispatch({ type: 'phoneSend', npcId, text: clean });
   return exclusive('Aguardando resposta no Agent…', async () => {
     useUiStore.getState().setPhoneTyping(npcId);
     try {
+      // Inclui a fala recém-enviada no histórico com o papel explícito de JOGADOR.
+      const ctx = buildGameContext(requireGame(), clean);
       const env = await api.phone(ctx, npcId, clean, model());
       getRepository().saveLlmRun(env.meta).catch(() => undefined);
       const reply = env.payload;

@@ -27,6 +27,9 @@ export default function App() {
   const geminiKey = useUiStore(s => s.geminiKey);
   // Só decide se pede a chave depois de perguntar ao servidor (ele pode ter uma chave própria).
   const [statusChecked, setStatusChecked] = useState(false);
+  const debug = useUiStore(s => s.debug);
+  // Campanha Sandbox salva só volta com a flag de debug ligada no servidor.
+  const sandboxLocked = !!game?.sandbox && !debug;
 
   // Turno que ficou no meio quando a página recarregou: fecha e avisa (senão a ação fica pendurada).
   useEffect(() => {
@@ -36,6 +39,7 @@ export default function App() {
   useEffect(() => {
     void fetchStatus().then(status => {
       useUiStore.getState().setHasKey(status.hasKey);
+      useUiStore.getState().setDebug(!!status.debug);
       if (status.backup) useUiStore.getState().setBackupLabel(status.backup);
       setStatusChecked(true);
     });
@@ -51,13 +55,13 @@ export default function App() {
 
   return (
     <>
-      {game ? (
+      {game && !sandboxLocked ? (
         <>
           <GameLayout game={game} />
           <SaveLoadModal game={game} />
           <EventLogModal game={concealed ?? game} />
           <SettingsModal />
-          <SandboxModal game={game} />
+          {debug && <SandboxModal game={game} />}
         </>
       ) : (
         <CreationScreen />
@@ -71,7 +75,7 @@ export default function App() {
       )}
       <RulesModal />
       <LiteChoiceModal />
-      {game && <TutorialModal />}
+      {game && !sandboxLocked && <TutorialModal />}
       <DiceOverlay />
       <VfxLayer game={concealed ?? game} />
       <ToastHost />

@@ -2,7 +2,7 @@
  * Quickhacks do Trilheiro no espaço físico: RAM do deck, teste de Interface contra a defesa do alvo
  * e efeitos que reaproveitam o combate (perder ataque, dano sem armadura, bônus para acertar, dano por rodada).
  */
-import type { Character, Combatant, CombatantHack, D10Roll, GameState, RollOrigin, RollRequest } from '../types/game';
+import type { Character, Combatant, CombatantHack, D10Roll, GameState, Modifier, RollOrigin, RollRequest } from '../types/game';
 import { NPC_TEMPLATES } from '../rules/npcTemplates';
 import {
   QUICKHACKS,
@@ -17,6 +17,8 @@ import { emit } from './events';
 import { makeId } from './ids';
 import { playerCannotAct, setCondition } from './conditions';
 import { damageCombatant } from './combat';
+import { checkPenalties, effectPenalties } from './health';
+import { clampLuck } from './checks';
 import { addTrace } from './net';
 
 /** Dano fixo por rodada do Superaquecimento (fixo: o tick roda no reducer, sem dado). */
@@ -37,6 +39,9 @@ export function withQuickhackDefaults(c: Character): Character {
   if (next.deck && !next.deck.ram) next = { ...next, deck: { ...next.deck, ram: { current: ramMax(next), max: ramMax(next) } } };
   // Rank subiu: o máximo acompanha.
   if (next.deck?.ram && next.deck.ram.max !== ramMax(next)) next = { ...next, deck: { ...next.deck, ram: { current: Math.min(next.deck.ram.current, ramMax(next)), max: ramMax(next) } } };
+  // Save corrompido (RAM negativa/NaN): volta à faixa válida.
+  const ram = next.deck?.ram;
+  if (ram && !(Number.isFinite(ram.current) && ram.current >= 0 && ram.current <= ram.max)) next = { ...next, deck: { ...next.deck!, ram: { ...ram, current: Number.isFinite(ram.current) ? Math.max(0, Math.min(ram.max, ram.current)) : ram.max } } };
   return next;
 }
 
@@ -127,6 +132,7 @@ export type QuickhackTarget = { combatantId?: string; npcId?: string };
 export function quickhackBlocker(s0: GameState, key: QuickhackKey, target: QuickhackTarget): string | null {
   const def = QUICKHACKS[key];
   const c = withQuickhackDefaults(s0.character);
+  if (c.dead) return 'O personagem está morto.';
   const cannot = playerCannotAct(c);
   if (cannot) return cannot;
   if (!isNetrunner(c) || !c.deck) return 'Só um Trilheiro com ciberdeck usa quickhacks.';
@@ -137,7 +143,7 @@ export function quickhackBlocker(s0: GameState, key: QuickhackKey, target: Quick
   if (ram.current < def.ram) return `RAM insuficiente para ${def.name}: precisa de ${def.ram}, tem ${ram.current}.`;
 
   const inCombat = s0.combat.active;
-  const foe = target.combatantId ? s0.combat.combatants.find(t => t.id === target.combatantId) : undefined;
+  const foe = target.combatantId && s0.combat.active ? s0.combat.combatants.find(t => t.id === target.combatantId) : undefined;
   const npc = target.npcId ? s0.npcs.find(n => n.id === target.npcId) : undefined;
   if (def.target === 'combatant' && !inCombat) return `${def.name} só funciona em combate, contra um inimigo.`;
   if (def.target !== 'none') {
@@ -154,7 +160,7 @@ export function quickhackBlocker(s0: GameState, key: QuickhackKey, target: Quick
 
 /** Defesa contra o quickhack (alvo em combate pela ficha; NPC fora de combate, a padrão). */
 export function quickhackDvFor(s: GameState, target: QuickhackTarget): number {
-  const foe = target.combatantId ? s.combat.combatants.find(t => t.id === target.combatantId) : undefined;
+  const foe = target.combatantId && s.combat.active ? s.combat.combatants.find(t => t.id === target.combatantId) : undefined;
   return foe ? quickhackDv(foe) : QUICKHACK_DV.unknown;
 }
 
@@ -186,6 +192,14 @@ export function buildQuickhackRequest(s: GameState, key: QuickhackKey, target: Q
   };
 }
 
+/**
+ * Penalidades no teste de Interface do quickhack: as mesmas do teste de Interface na Rede (ferimento grave,
+ * efeitos de droga/Rede em INT). Antes o quickhack ignorava, e ferido/drogado hackeava como se nada fosse.
+ */
+export function quickhackModifiers(s: Pick<GameState, 'character' | 'activeEffects'>): Modifier[] {
+  return [...checkPenalties(s.character, 'INT'), ...effectPenalties(s.activeEffects, 'INT')].filter(m => m.value !== 0);
+}
+
 /** preset: d10 e Sorte já rolados na tela (rolagem pendente); sem ele, rola aqui (Ping, testes). */
 export function useQuickhack(s0: GameState, key: QuickhackKey, target: QuickhackTarget, rng: Rng, preset?: { d10: D10Roll; luck: number }): QuickhackResult {
   const def = QUICKHACKS[key];
@@ -195,19 +209,22 @@ export function useQuickhack(s0: GameState, key: QuickhackKey, target: Quickhack
   const c = withQuickhackDefaults(s0.character);
   const ram = c.deck!.ram!;
   const inCombat = s0.combat.active;
-  const foe = target.combatantId ? s0.combat.combatants.find(t => t.id === target.combatantId) : undefined;
+  const foe = target.combatantId && s0.combat.active ? s0.combat.combatants.find(t => t.id === target.combatantId) : undefined;
   const npc = target.npcId ? s0.npcs.find(n => n.id === target.npcId) : undefined;
 
   // Teste de Interface.
   const d10 = preset?.d10 ?? rollD10(rng);
-  const luck = preset?.luck ?? 0;
+  // Sorte só até o que o jogador tem (a tela limita; o motor também precisa limitar).
+  const luck = clampLuck(c, preset?.luck);
+  const mods = quickhackModifiers(s0);
+  const modTotal = mods.reduce((n, m) => n + m.value, 0);
   const dv = quickhackDvFor(s0, target);
-  const total = c.roleRank + d10.total + luck;
+  const total = c.roleRank + d10.total + luck + modTotal;
   const success = def.target === 'none' || total > dv;
   let s: GameState = { ...s0, character: setRam(c, ram.current - def.ram) };
   // Hacks de alto nível deixam assinatura; Cloak pode baixar o rastro dentro da arquitetura.
   if (def.tier >= 3) s = addTrace(s, 1, def.name);
-  const rollText = def.target === 'none' ? '' : ` (Interface ${c.roleRank} + d10 ${d10.total}${luck ? ` + Sorte ${luck}` : ''} = ${total} vs ${dv})`;
+  const rollText = def.target === 'none' ? '' : ` (Interface ${c.roleRank} + d10 ${d10.total}${modTotal ? ` ${modTotal > 0 ? '+' : '−'} ${Math.abs(modTotal)}` : ''}${luck ? ` + Sorte ${luck}` : ''} = ${total})`;
   const where = foe?.name ?? npc?.name ?? 'a área';
   const prior = new Set(foe?.hacks?.map(h => h.key) ?? []);
   const combo = (key === 'short_circuit' && prior.has('cyberware_malfunction'))

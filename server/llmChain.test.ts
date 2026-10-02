@@ -93,6 +93,18 @@ describe('classifyError (erros reais do Gemini)', () => {
 });
 
 describe('runChain', () => {
+  it('cota no 3.8 e 3.7 percorre os Flash seguintes antes de oferecer Lite', async () => {
+    const { transport, calls } = fakeTransport({
+      'gemini-3.8-flash': quotaDay(),
+      'gemini-3.7-flash': quotaDay(),
+      'gemini-3.6-flash': 'ok',
+    });
+    const result = await runChain('k', req('narrate'), transport);
+    expect(result.model).toBe('gemini-3.6-flash');
+    expect(calls.map(c => c.model)).toEqual(['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash']);
+    expect(result.attempts.some(a => /lite/i.test(a.model))).toBe(false);
+  });
+
   it('modelo com cota diária esgotada é pulado nas próximas chamadas (sem gastar request)', async () => {
     const { transport, calls } = fakeTransport({ 'gemini-3.8-flash': quotaDay() });
     const r1 = await runChain('k', req(), transport);

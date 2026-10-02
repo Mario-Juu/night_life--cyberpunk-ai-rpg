@@ -49,6 +49,7 @@ export const SKILLS: readonly SkillDefinition[] = [
   { id: 'human_perception', label: 'Percepção Humana', stat: 'EMP', category: 'Percepção', description: 'Detectar mentiras, medo e intenções.', basic: true, aliases: ['human perception', 'percepção humana', 'psicologia', 'ler pessoas', 'intuição', 'detectar mentira'] },
 
   // Técnica
+  { id: 'medical_tech', label: 'Tecnologia Médica', stat: 'TECH', category: 'Técnica', description: 'Operar, entender e reparar equipamento médico; é a base para Farmacêutica e Criossistemas do Medicânico.', aliases: ['medical tech', 'tecnologia médica', 'tecnologia medica', 'medtech', 'equipamento médico', 'equipamento medico'] },
   { id: 'basic_tech', label: 'Tecnologia Básica', stat: 'TECH', category: 'Técnica', description: 'Consertar aparelhos, veículos e máquinas.', aliases: ['basic tech', 'tecnologia básica', 'consertar', 'reparo', 'mecânica'] },
   { id: 'cybertech', label: 'Cibertecnologia', stat: 'TECH', category: 'Técnica', description: 'Manutenção e reparo de ciberware.', aliases: ['cybertech', 'cibertecnologia', 'ciberware', 'implante'] },
   { id: 'electronics_security', label: 'Eletrônica/Segurança', stat: 'TECH', category: 'Técnica', difficult: true, description: 'Burlar fechaduras eletrônicas, câmeras e alarmes.', aliases: ['electronics', 'security tech', 'eletrônica', 'eletronica', 'segurança eletrônica', 'alarme', 'câmera', 'fechadura eletrônica', 'hack', 'hacking', 'invadir sistema'] },

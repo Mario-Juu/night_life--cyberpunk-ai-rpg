@@ -128,7 +128,7 @@ describe('Cadência 2, emboscada e artes marciais', () => {
 describe('Granadas', () => {
   it('atinge todos na mesma faixa, rola o dano uma vez e consome a granada', () => {
     const sc = shooter();
-    sc.tool('interpreter', 'buy_item', { name: 'Granada de fragmentação', category: 'weapon', quantity: 2 });
+    sc.tool('player', 'buy_item', { name: 'Granada de fragmentação', category: 'weapon', quantity: 2 });
     expect(sc.last().ok).toBe(true);
     const g = sc.state.character.inventory.find(i => i.weapon?.weaponClass === 'grenade')!;
     expect(g.quantity).toBe(2);
@@ -144,7 +144,7 @@ describe('Granadas', () => {
 
   it('granada de luz ofusca (perde o ataque) sem causar dano', () => {
     const sc = shooter();
-    sc.tool('interpreter', 'buy_item', { name: 'Granada de luz', category: 'weapon', quantity: 1 });
+    sc.tool('player', 'buy_item', { name: 'Granada de luz', category: 'weapon', quantity: 1 });
     const g = sc.state.character.inventory.find(i => i.weapon?.grenade === 'flashbang')!;
     foes(sc, 1, '7-12m');
     sc.tool('interpreter', 'attack', { targetId: foe(sc.state).id, weaponId: g.id });
@@ -175,7 +175,7 @@ describe('Qualidade, trava e não letal', () => {
 
   it('arma excelente dá +1 e custa uma categoria acima', () => {
     const sc = shooter();
-    sc.tool('interpreter', 'buy_item', { name: 'Pistola pesada', category: 'weapon', weaponClass: 'pistol_heavy', quality: 'excellent' });
+    sc.tool('player', 'buy_item', { name: 'Pistola pesada', category: 'weapon', weaponClass: 'pistol_heavy', quality: 'excellent' });
     const w = sc.state.character.inventory.find(i => i.weapon?.weaponClass === 'pistol_heavy')!;
     expect(w.name).toMatch(/excelente/);
     expect(20000 - sc.state.character.money).toBeGreaterThan(WEAPON_PRICES.pistol_heavy);
@@ -210,7 +210,7 @@ describe('Qualidade, trava e não letal', () => {
   it('munição de borracha: recarregar com ela deixa a arma não letal', () => {
     const sc = shooter();
     const p = give(sc, { name: 'Pistola', category: 'weapon', weaponClass: 'pistol_medium' }, { loaded: 0 });
-    sc.tool('interpreter', 'buy_item', { name: 'Munição de borracha 9mm', category: 'ammo', ammoKind: 'M_PISTOL', quantity: 12 });
+    sc.tool('player', 'buy_item', { name: 'Munição de borracha 9mm', category: 'ammo', ammoKind: 'M_PISTOL', quantity: 12 });
     sc.edit(s => gameReducer(s, { type: 'reload', weaponId: p }));
     expect(sc.state.character.inventory.find(i => i.id === p)!.weapon!.nonLethal).toBe('rubber');
   });
@@ -259,7 +259,7 @@ describe('Encarada', () => {
 describe('Drogas de rua e vício', () => {
   it('Boost dá +2 INT; falhar no teste vicia; sóbrio vem a abstinência; desintoxicação cura', () => {
     const sc = shooter();
-    sc.tool('interpreter', 'buy_item', { name: 'Boost', category: 'consumable', quantity: 2 });
+    sc.tool('player', 'buy_item', { name: 'Boost', category: 'consumable', quantity: 2 });
     expect(sc.last().ok).toBe(true);
     const boost = sc.state.character.inventory.find(i => i.streetDrug === 'boost')!;
     expect(20000 - sc.state.character.money).toBe(100);
@@ -285,7 +285,7 @@ describe('Drogas de rua e vício', () => {
 
   it('Black Lace custa Humanidade', () => {
     const sc = shooter();
-    sc.tool('interpreter', 'buy_item', { name: 'Black Lace', category: 'consumable', quantity: 1 });
+    sc.tool('player', 'buy_item', { name: 'Black Lace', category: 'consumable', quantity: 1 });
     const before = sc.state.character.humanity.current;
     sc.tool('interpreter', 'use_item', { itemId: sc.state.character.inventory.find(i => i.streetDrug)!.id }, [3, 3, 10]);
     expect(sc.state.character.humanity.current).toBe(before - 6);

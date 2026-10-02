@@ -1,8 +1,10 @@
-import { Flag, MapPin, Search, Shield, Target, Users } from 'lucide-react';
+import { Cpu, Flag, MapPin, Search, Shield, Target, Users } from 'lucide-react';
 import { STANCE_LABEL } from '@shared/engine/party';
 import type { GameState, MissionStatus } from '@shared/types/game';
 import { playerViewOf } from '@shared/engine/npcProfile';
-import { Badge, Empty, Meter, cn } from '../../ui';
+import { Badge, Button, Empty, Meter, cn } from '../../ui';
+import { quickTool } from '../../store/turnController';
+import { useUiStore } from '../../store/uiStore';
 
 const MISSION_TONE: Record<MissionStatus, 'cyan' | 'green' | 'danger' | 'muted'> = {
   ACTIVE: 'cyan',
@@ -20,6 +22,7 @@ function standingTone(v: number) {
 }
 
 export function JournalPanel({ game }: { game: GameState }) {
+  const busy = useUiStore(s => s.gmBusy);
   const rank = (s: MissionStatus) => (s === 'ACTIVE' ? 0 : 1);
   const missions = [...game.missions].sort((a, b) => rank(a.status) - rank(b.status));
   return (
@@ -47,6 +50,10 @@ export function JournalPanel({ game }: { game: GameState }) {
             </div>
             {m.objective && <p className="text-xs text-muted">▸ {m.objective}</p>}
             {(m.reward || m.rewardEddies > 0) && <p className="tabular text-[11px] text-neon-yellow">Recompensa: {m.rewardEddies > 0 ? `€$${m.rewardEddies}` : m.reward}</p>}
+            {game.character.bio.role === 'fixer' && m.status === 'ACTIVE' && m.rewardEddies > 0 && !m.haggleAttempted && (
+              <Button size="sm" variant="ghost" tone="cyan" disabled={busy || game.combat.active} onClick={() => void quickTool('haggle_quest', { questId: m.id }, `Pechincho o pagamento de ${m.title}.`)}>Pechinchar pagamento</Button>
+            )}
+            {m.negotiatedBonus !== undefined && <p className={m.negotiatedBonus > 0 ? 'text-[10px] text-neon-green' : 'text-[10px] text-dim'}>{m.negotiatedBonus > 0 ? `Pechincha: +€$${m.negotiatedBonus}` : 'Pechincha recusada'}</p>}
             {m.notes.length > 0 && (
               <ul className="text-[11px] text-dim list-disc pl-4">
                 {m.notes.slice(-3).map((n, i) => (
@@ -57,6 +64,13 @@ export function JournalPanel({ game }: { game: GameState }) {
           </article>
         ))}
       </section>
+
+      {(game.world.daemons ?? []).length > 0 && (
+        <section className="space-y-2 border border-neon-cyan/25 bg-neon-cyan/5 p-3">
+          <p className="flex items-center gap-1.5 eyebrow text-neon-cyan"><Cpu className="w-3 h-3" /> Daemons plantados</p>
+          {(game.world.daemons ?? []).map(d => <div key={d.architectureId} className="text-xs text-muted"><span className="text-fg">{d.architectureName}</span> · {d.directive}<span className="text-dim"> · {d.controlledNodes.length} nó(s) sob vigia</span></div>)}
+        </section>
+      )}
 
       {(game.party?.members.length ?? 0) > 0 && (
         <section className="space-y-2">

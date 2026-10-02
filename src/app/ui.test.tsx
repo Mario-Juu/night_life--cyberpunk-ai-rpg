@@ -104,6 +104,21 @@ describe('GameLayout', () => {
 });
 
 describe('Tutoriais de primeira vez', () => {
+  it('a primeira abertura narrada apresenta o tutorial do primeiro corre', async () => {
+    const { TutorialModal } = await import('../features/tutorial/TutorialModal');
+    useUiStore.setState({ introSeen: true, tutorialsOn: true, seenTutorials: [], tutorial: null });
+    const base = makeGame();
+    const game = { ...base, world: { ...base.world, opening: { key: 'classic', title: 'Cubículo', hook: '' } } };
+    render(
+      <>
+        <GameLayout game={game} />
+        <TutorialModal />
+      </>,
+    );
+    expect(useUiStore.getState().tutorial).toBe('opening');
+    expect(screen.getByText('Você começa pequeno')).toBeTruthy();
+  });
+
   it('o combate se apresenta uma vez; depois de visto não volta', async () => {
     const { TutorialModal } = await import('../features/tutorial/TutorialModal');
     useUiStore.setState({ introSeen: true, tutorialsOn: true, seenTutorials: [], tutorial: null });

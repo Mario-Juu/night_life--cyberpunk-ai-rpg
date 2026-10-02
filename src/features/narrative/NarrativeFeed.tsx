@@ -5,6 +5,8 @@ import { Button, Spinner } from '../../ui';
 import { canRegenerate, regenerateNarration, requestOpening } from '../../store/turnController';
 import { useUiStore } from '../../store/uiStore';
 import { ChatEntryView } from './ChatEntryView';
+import { TradeOfferAction } from '../system/TradeOfferModal';
+import { MerchantCatalogAction } from '../system/MerchantCatalog';
 
 const PAGE = 60;
 
@@ -90,6 +92,8 @@ export function NarrativeFeed({ game }: { game: GameState }) {
               onRegenerate={entry.id === regenerableId ? () => window.confirm('Gerar uma nova narração para este turno? A mecânica (dados, dano, itens) continua a mesma.') && void regenerateNarration() : undefined}
             />
           ))}
+          {!busy && <TradeOfferAction game={game} />}
+          {!busy && <MerchantCatalogAction game={game} />}
           {busy && !phoneTyping && (
             <div className="flex items-center gap-2 text-sm text-muted animate-pulse-soft" role="status">
               <Spinner /> {busyLabel || 'O Mestre pensa…'}

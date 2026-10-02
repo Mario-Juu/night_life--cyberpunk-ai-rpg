@@ -94,7 +94,7 @@ describe('prompts e schemas', () => {
     expect(tools).toContain('attack');
     expect(tools).not.toContain('transfer_money');
     const narr = (NARRATE_SCHEMA.properties.toolCalls as { items: { properties: { tool: { enum: string[] } } } }).items.properties.tool.enum;
-    expect(narr).toContain('transfer_money');
+    expect(narr).not.toContain('transfer_money');
     expect(JSON.stringify(NARRATE_SCHEMA)).not.toMatch(/"type":"(OBJECT|STRING)"/);
   });
 
@@ -228,6 +228,27 @@ describe('chave do próprio jogador', () => {
     app.close();
     expect(without.hasKey).toBe(false);
     expect(withKey.hasKey).toBe(true);
+  });
+
+  it('Sandbox só com a flag de debug: /status informa e, sem ela, o contexto perde o modo Sandbox', async () => {
+    const prompts: string[] = [];
+    const provider: LlmProvider = {
+      name: 'fake',
+      async generate(req) {
+        prompts.push(req.prompt);
+        return { text: JSON.stringify({ intent: { type: 'other', summary: 'x', confidence: 1 }, toolCalls: [] }), model: 'fake-1', usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0 }, attempts: [{ model: 'fake-1', ok: true, latencyMs: 1 }] };
+      },
+    };
+    for (const on of [false, true]) {
+      prompts.length = 0;
+      const app = createApp({ gm: createGameMaster(provider, () => {}), hasKey: () => true, defaultMode: () => 'flash', debug: () => on }).listen(0);
+      const base = `http://127.0.0.1:${(app.address() as { port: number }).port}`;
+      const status = await (await fetch(`${base}/api/gm/status`)).json();
+      await fetch(`${base}/api/gm/interpret`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ context: { ...context(), sandbox: true }, text: 'gera 3 gangers' }) });
+      app.close();
+      expect(status.debug).toBe(on);
+      expect(prompts.some(p => /MODO SANDBOX/.test(p))).toBe(on);
+    }
   });
 
   it('chave malformada no cabeçalho é recusada (não cai em silêncio na chave do servidor) — API-5', async () => {

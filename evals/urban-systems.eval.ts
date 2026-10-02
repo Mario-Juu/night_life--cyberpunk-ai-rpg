@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scenario } from './harness';
 import { CYBERWARE } from '../shared/rules/cyberware';
-import { addTrace, generateArchitecture } from '../shared/engine/net';
+import { addTrace, generateArchitecture, netAction } from '../shared/engine/net';
 import { cyberCapacityCost, cyberCapacityMax, cyberCapacityUsed } from '../shared/engine/cyberware';
 import { useQuickhack } from '../shared/engine/quickhacks';
 import { sequenceRng } from '../shared/engine/dice';
@@ -42,6 +42,17 @@ describe('Daemons, rastro e combos', () => {
     const sc = scenario().edit(s => ({ ...s, net: { ...s.net, trace: { level: 4, source: 'teste', lastTurn: 1 } } }));
     expect(addTrace(sc.state, 4, 'Cão de Guarda').net.trace?.level).toBe(5);
     expect(addTrace(sc.state, -9, 'Cloak').net.trace).toBeUndefined();
+  });
+
+  it('daemon do Trilheiro persiste no mundo depois de ser plantado', () => {
+    const sc = scenario({ role: 'netrunner' })
+      .edit(s => ({ ...s, character: { ...s.character, roleRank: 10 } }))
+      .tool('narrator', 'net_architecture', { name: 'Servidor da Gangue', accessPoint: 'terminal', difficulty: 'basic', floors: 1 })
+      .tool('interpreter', 'jack_in', {}, [10]);
+    const atCore = { ...sc.state, net: { ...sc.state.net, run: { ...sc.state.net.run!, position: sc.state.net.architecture!.floors.length - 1 } } };
+    const result = netAction(atCore, { kind: 'daemon', virus: 'Avisar se alguém tocar nas câmeras.' }, sequenceRng([10]));
+    expect(result.ok).toBe(true);
+    expect(result.state.world.daemons?.[0]).toMatchObject({ architectureName: 'Servidor da Gangue', owner: 'player' });
   });
 
   it('Pane de Cromo seguida de Curto-Circuito aciona o combo', () => {

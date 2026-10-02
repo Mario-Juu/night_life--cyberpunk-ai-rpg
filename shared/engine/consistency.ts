@@ -8,6 +8,7 @@ import type { EngineResult, ToolCall } from '../types/turn';
 import { MAX_TRANSFER_IN } from '../rules/catalog';
 import { factAwareness } from './npcProfile';
 import { PAYMENT_WINDOW_TURNS } from './world';
+import { slugId } from './ids';
 
 const FIRED = /\b(dispar(a|ou|am|o)|atir(a|ou|am)|bala(s)? (atravess|acert|rasg|perfur)|tiro (acert|atravess|rasg|atinge))/i;
 const DRY = /(clique seco|click seco|clique vazio|sem muni|descarregad|vazi[ao]|nada acontece|o gatilho estala)/i;
@@ -35,7 +36,7 @@ function norm(t: string) {
   return t.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
-const MONEY_TOOLS = ['pay_money', 'buy_item', 'transfer_money', 'loot', 'complete_quest'];
+const MONEY_TOOLS = ['pay_money', 'buy_item', 'settle_trade', 'sell_item', 'receive_payment', 'transfer_money', 'loot', 'complete_quest', 'quest_advance'];
 /** Jogador pagando/transferindo/gastando um valor em eddies. */
 const PLAYER_PAYS = /\b(transfer\w*|pag(a|ou|ando|ar|amento)|quit(a|ou|ar|ação)|deposit\w*|gast(a|ou|ar)|abat(e|eu|er)|desembols\w*)[^.\n]{0,90}?(€\$?\s?\d|\d[\d.]*\s?(eddies|€))/i;
 
@@ -45,9 +46,12 @@ const NOT_DONE = /\b(n[aã]o|nunca|vai|v[aã]o|ir[aá]|precisa|precisar[aá]|dev
 /** O jogador é quem paga: 2ª pessoa na frase ("você transfere", "seus eddies", "sua conta"). */
 const BY_PLAYER = /\b(voc[eê]|seus? eddies|sua conta|seu saldo|te custa)(?![\wÀ-ÿ])/i;
 
+/** Blocos de fala inteiros ([DIALOGUE: X]…[/DIALOGUE]) e citações: o NPC dizendo "você me paga 500 amanhã" é cobrança, não pagamento. */
+const SPEECH = /\[(?:DIALOGUE|FALA):[^\]]*\][\s\S]*?(?:\[\/(?:DIALOGUE|FALA)\]|$)|“[^”]*”|"[^"]*"/gi;
+
 /** Alguma frase narra o JOGADOR pagando agora (não "o barman pagou a rodada", nem "você vai pagar"). */
 function playerPaysIn(text: string): boolean {
-  return text.split(/(?<=[.!?…])\s+|\n+/).some(s => {
+  return text.replace(SPEECH, ' ').split(/(?<=[.!?…])\s+|\n+/).some(s => {
     const m = PLAYER_PAYS.exec(s);
     if (!m || !BY_PLAYER.test(s)) return false;
     // Até o fim da palavra do verbo ("pagará" inteiro), sem o que vem depois ("…e não olha para trás").
@@ -179,7 +183,14 @@ export function checkNarration(
   dialogues: Dialogue[],
   npcs: Npc[],
   narratorTools: ToolCall[] = [],
-  opts: { playerDead?: boolean; money?: number; turn?: number; quests?: Array<Pick<Mission, 'id' | 'title' | 'status' | 'rewardEddies' | 'giverId' | 'resolvedTurn'>> } = {},
+  opts: {
+    playerDead?: boolean;
+    money?: number;
+    turn?: number;
+    quests?: Array<Pick<Mission, 'id' | 'title' | 'status' | 'rewardEddies' | 'giverId' | 'resolvedTurn'> & Partial<Pick<Mission, 'advancePaid'>>>;
+    /** % somado da equipe viva: o motor repassa a parte deles ao concluir uma missão. */
+    partyShare?: number;
+  } = {},
 ): string[] {
   const warnings: string[] = [];
   const text = narration;
@@ -251,13 +262,48 @@ export function checkNarration(
 
   // Saldo citado na narração tem que bater com o do motor (antes ou depois das transferências do narrador).
   // complete_quest só mexe no saldo se a missão ainda está ativa (senão o motor recusa).
+  // Missões abertas NESTA resposta (start_quest) e concluídas nela mesma: o motor só paga até o teto do turno.
+  const started = narratorTools.filter(t => t.tool === 'start_quest');
+  const startedQuest = (questId: unknown) => started.find(t => t.args?.id === questId || (typeof t.args?.title === 'string' && questId === slugId('m', t.args.title)));
+  let instant = 0;
+  for (const t of narratorTools.filter(c => c.tool === 'complete_quest')) {
+    const s = !quests.some(q => q.id === t.args?.questId) ? startedQuest(t.args?.questId) : undefined;
+    const reward = Number(s?.args?.rewardEddies) || 0;
+    if (!s || !reward) continue;
+    if (instant + reward > MAX_TRANSFER_IN)
+      warnings.push(`"${String(s.args?.title)}" foi combinada e concluída NESTA resposta com €$${reward}: o motor paga bico na hora só até €$${MAX_TRANSFER_IN} por turno e vai RECUSAR. Deixe a missão ativa (o trabalho acontece em cena) ou use uma recompensa que caiba; não narre esse dinheiro entrando.`);
+    else instant += reward;
+  }
+  // Adiantamento acima de metade da recompensa: o motor recusa.
+  for (const t of narratorTools) {
+    const quest = t.tool === 'quest_advance' ? quests.find(q => q.id === t.args?.questId) : undefined;
+    const reward = t.tool === 'start_quest' ? Number(t.args?.rewardEddies) || 0 : quest?.rewardEddies ?? 0;
+    const already = t.tool === 'start_quest' ? 0 : quest?.advancePaid ?? 0;
+    const amount = Number(t.tool === 'start_quest' ? t.args?.advanceEddies : t.args?.amount) || 0;
+    if (amount > 0 && (t.tool === 'start_quest' || quest) && amount + already > Math.floor(reward / 2))
+      warnings.push(`Adiantamento de €$${amount} passa de METADE da recompensa (€$${reward}${already ? `, €$${already} já adiantados` : ''}): o motor vai recusar. Adiante no máximo €$${Math.max(0, Math.floor(reward / 2) - already)} e deixe o resto para a entrega.`);
+  }
+  // Pagamento de trabalho ativo por receive_payment: o motor recusa (é complete_quest ou quest_advance).
+  for (const t of narratorTools.filter(c => c.tool === 'receive_payment' && !['loan', 'repayment', 'refund'].includes(String(c.args?.kind)))) {
+    const amount = Number(t.args?.amount);
+    const q = quests.find(x => x.status === 'ACTIVE' && x.rewardEddies > 0 && (amount === x.rewardEddies || (!!giverWord(x.giverId) && norm(String(t.args?.counterpart ?? '')).includes(giverWord(x.giverId)!))));
+    if (q) warnings.push(`receive_payment de €$${amount} parece pagamento de "${q.title}" (missão ativa): o motor vai RECUSAR. Na entrega, complete_quest; adiantamento, quest_advance (até metade). Não narre esse dinheiro entrando por fora.`);
+  }
+
+  // Recompensa a receber agora: o adiantamento já entrou antes; a equipe leva a parte dela.
+  const share = Math.max(0, Math.min(100, opts.partyShare ?? 0));
+  const net = (reward: number) => reward - Math.round((reward * share) / 100);
   const activeReward = narratorTools
     .filter(t => t.tool === 'complete_quest')
-    .map(t => quests.find(q => q.id === t.args?.questId && q.status === 'ACTIVE'))
-    .reduce((n, q) => n + (q?.rewardEddies ?? 0), 0);
-  const opaqueMoney = narratorTools.some(t => ['loot', 'pay_money', 'buy_item'].includes(t.tool)) || narratorTools.some(t => t.tool === 'complete_quest' && !quests.length);
+    .map(t => {
+      const q = quests.find(x => x.id === t.args?.questId && x.status === 'ACTIVE');
+      return q ? net(q.rewardEddies) - Math.min(q.rewardEddies, q.advancePaid ?? 0) : 0;
+    })
+    .reduce((n, v) => n + v, 0) + net(instant);
+  const opaqueMoney = narratorTools.some(t => ['loot', 'pay_money', 'buy_item', 'sell_item'].includes(t.tool)) || narratorTools.some(t => t.tool === 'complete_quest' && !quests.length && !startedQuest(t.args?.questId));
   if (opts.money !== undefined && !opaqueMoney) {
-    const transfers = narratorTools.filter(t => t.tool === 'transfer_money' && !alreadyPaid(t) && !isEcho(t)).reduce((n, t) => n + Math.min(MAX_TRANSFER_IN, Number(t.args?.amount) || 0), 0);
+    const advances = narratorTools.reduce((n, t) => n + (t.tool === 'quest_advance' ? Number(t.args?.amount) || 0 : t.tool === 'start_quest' ? Number(t.args?.advanceEddies) || 0 : 0), 0);
+    const transfers = advances + narratorTools.filter(t => (t.tool === 'transfer_money' && !alreadyPaid(t) && !isEcho(t)) || t.tool === 'receive_payment').reduce((n, t) => n + Math.min(MAX_TRANSFER_IN, Number(t.args?.amount) || 0), 0);
     // A recompensa da missão desconta o que já foi pago na cena: qualquer valor entre o saldo e saldo + recompensa é plausível só nos extremos.
     const valid = new Set([opts.money, opts.money + transfers, opts.money + activeReward, opts.money + transfers + activeReward]);
     const wrong = claimedBalances(text).find(vals => !vals.some(v => valid.has(v)));

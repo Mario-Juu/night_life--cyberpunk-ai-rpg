@@ -9,6 +9,7 @@ import { findNpcLoose } from '../npcs';
 import { NPC_TEMPLATES, guessTemplate } from '../../rules/npcTemplates';
 import type { GrenadeKind, WeaponClass, WeaponQuality } from '../../types/game';
 import { STREET_DRUGS, guessStreetDrug } from '../../rules/streetDrugs';
+import { guessMerchantItem, merchantItem } from '../../rules/merchantCatalog';
 
 export const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 export const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
@@ -101,8 +102,36 @@ export function buildItem(a: ItemArgs): InventoryItem {
       item.streetDrug = street;
       item.description = item.description || STREET_DRUGS[street].description;
     }
+    // Apelidos como "Injector de Stim" sempre recebem a mecânica do item canônico.
+    const medical = guessMerchantItem(a.name);
+    if (medical?.category === 'consumable') {
+      item.description = medical.description;
+      item.value = medical.price;
+      item.heal = medical.heal;
+      item.drug = medical.drug;
+      item.streetDrug = medical.streetDrug;
+    }
   }
   return item;
+}
+
+/** Cria a mercadoria a partir da chave do catálogo; nome alternativo é apenas cosmético. */
+export function buildMerchantItem(catalogKey: string, cosmeticName?: string, quantity = 1): InventoryItem | undefined {
+  const def = merchantItem(catalogKey);
+  if (!def) return undefined;
+  const item = buildItem({
+    name: cosmeticName?.trim() || def.name,
+    category: def.category,
+    quantity,
+    description: def.description,
+    value: def.price,
+    weaponClass: def.weaponClass,
+    ammoKind: def.ammoKind,
+    armorSP: def.armorSP,
+    armorSlot: def.armorSlot,
+    heal: def.heal,
+  });
+  return { ...item, description: def.description, value: def.price, heal: def.heal, drug: def.drug, streetDrug: def.streetDrug };
 }
 
 const STOP = new Set(['de', 'da', 'do', 'das', 'dos', 'com', 'para', 'uma', 'um', 'the', 'of']);
@@ -135,20 +164,69 @@ export function recentAcquisition(state: GameState, name: string): { name: strin
   return null;
 }
 
-/** Adiciona ao inventário, empilhando munição/consumíveis de mesmo tipo. */
+/**
+ * Identidade MECÂNICA de um item empilhável: dois itens só viram uma pilha se fazem exatamente a
+ * mesma coisa. O nome é cosmético (um apelido "Biocurativo" num Stim não pode engolir o Stim).
+ */
+function stackIdentity(i: InventoryItem): string {
+  return JSON.stringify([
+    i.category,
+    i.ammoKind ?? null,
+    i.ammoVariant ?? null,
+    i.drug ?? null,
+    i.streetDrug ?? null,
+    i.heal ?? null,
+    i.cyberKey ?? null,
+    i.weapon ? [i.weapon.weaponClass, i.weapon.grenade ?? null, i.weapon.damage, i.weapon.quality ?? null, i.weapon.nonLethal ?? null] : null,
+    i.armor ? [i.armor.slot, i.armor.maxSp] : null,
+  ]);
+}
+
+/** Adiciona ao inventário, empilhando munição/consumíveis/granadas de mesma identidade mecânica. */
 export function addToInventory(state: GameState, item: InventoryItem): GameState {
   const c = state.character;
   const grenade = !!item.weapon?.grenade;
   const stackable = item.category === 'ammo' || item.category === 'consumable' || grenade;
-  const existing = stackable
-    ? c.inventory.find(i =>
-        grenade
-          ? i.weapon?.grenade === item.weapon!.grenade && i.weapon?.weaponClass === item.weapon!.weaponClass
-          : i.category === item.category && (item.ammoKind ? i.ammoKind === item.ammoKind && i.ammoVariant === item.ammoVariant : sameName(i.name, item.name)),
-      )
-    : undefined;
-  const inventory = existing ? c.inventory.map(i => (i.id === existing.id ? { ...i, quantity: i.quantity + item.quantity } : i)) : [...c.inventory, item];
+  const id = stackIdentity(item);
+  // Munição e granadas empilham por tipo (o nome varia); consumível exige o mesmo nome E o mesmo efeito.
+  const byKind = !!item.ammoKind || grenade;
+  const existing = stackable ? c.inventory.find(i => stackIdentity(i) === id && (byKind || sameName(i.name, item.name))) : undefined;
+  // A pilha nunca herda um valor unitário MAIOR: senão comprar barato e revender a pilha inteira dá lucro.
+  const mergedValue = (a?: number, b?: number) => (a === undefined ? b : b === undefined ? a : Math.min(a, b));
+  const inventory = existing
+    ? c.inventory.map(i => (i.id === existing.id ? { ...i, quantity: i.quantity + item.quantity, value: mergedValue(i.value, item.value) } : i))
+    : [...c.inventory, item];
   return { ...state, character: { ...c, inventory } };
+}
+
+/** Normaliza um nome para comparar sem maiúsculas/acentos/espaços extras. */
+export const normKey = (t: string) => t.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
+
+/** Oferta comercial vencida não existe mais: some do estado em vez de bloquear novas propostas. */
+export function dropExpiredOffer(state: GameState): GameState {
+  const offer = state.world.tradeOffer;
+  if (!offer || !(state.turn > offer.expiresTurn)) return state;
+  return { ...state, world: { ...state.world, tradeOffer: undefined } };
+}
+
+/**
+ * Perícias cujo sucesso sustenta "roubo" (furto, arrombamento, intimidação, golpe, briga) e
+ * "achado" (procurar, revistar, abrir um cofre). Pechincha, Medicina etc. não validam dinheiro.
+ */
+export const ROBBERY_SKILLS = new Set(['pick_pocket', 'pick_lock', 'electronics_security', 'stealth', 'interrogation', 'persuasion', 'acting', 'brawling', 'martial_arts', 'melee_weapon', 'handgun', 'shoulder_arms', 'autofire', 'heavy_weapons', 'archery']);
+export const FOUND_SKILLS = new Set(['perception', 'conceal_reveal', 'tracking', 'pick_lock', 'electronics_security', 'basic_tech', 'streetwise', 'local_expert', 'library_search']);
+
+/** Houve neste turno um sucesso que justifique roubo/achado? (ataque acertado e Encarada vencida contam como roubo). */
+export function relevantSuccessThisTurn(state: GameState, kind: 'robbery' | 'found'): boolean {
+  const skills = kind === 'robbery' ? ROBBERY_SKILLS : FOUND_SKILLS;
+  return state.events.some(e => {
+    if (e.turn !== state.turn || e.value !== true) return false;
+    if (kind === 'robbery' && e.type === 'ATTACK_RESOLVED' && e.source === 'player') return true;
+    if (e.type !== 'CHECK_RESOLVED') return false;
+    const skillId = (e.data as { skillId?: string } | undefined)?.skillId;
+    if (skillId) return skills.has(skillId);
+    return kind === 'robbery' && /^Encarada/.test(e.summary);
+  });
 }
 
 /**

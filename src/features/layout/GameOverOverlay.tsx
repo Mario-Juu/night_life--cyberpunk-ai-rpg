@@ -19,10 +19,13 @@ export function GameOverOverlay({ game }: { game: GameState }) {
           {game.character.bio.handle} bateu as botas em {game.world.location.district}. Night City nem piscou.
         </p>
         {cause && <p className="text-xs text-dim italic">{cause}</p>}
+        {game.hardcore && <p className="font-display text-[11px] uppercase tracking-[0.25em] text-danger">Modo hardcore · não há volta</p>}
         <div className="flex flex-col gap-2">
-          <Button variant="solid" tone="yellow" icon={<History className="w-4 h-4" />} onClick={() => useUiStore.getState().openLog('timeline')}>
-            Voltar no tempo
-          </Button>
+          {!game.hardcore && (
+            <Button variant="solid" tone="yellow" icon={<History className="w-4 h-4" />} onClick={() => useUiStore.getState().openLog('timeline')}>
+              Voltar no tempo
+            </Button>
+          )}
           <Button
             variant="ghost"
             tone="danger"

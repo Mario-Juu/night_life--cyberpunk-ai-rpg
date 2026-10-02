@@ -17,7 +17,7 @@ export function RulesModal() {
           <h3 className="font-display text-xs uppercase tracking-wider text-neon-cyan">Testes</h3>
           <p className="text-muted">
             ATRIBUTO + PERÍCIA + 1d10 + modificadores. É preciso <strong className="text-fg">superar</strong> o DV (empate favorece a dificuldade). Um 10 natural rola
-            outro d10 e soma; um 1 natural rola outro d10 e subtrai. Pontos de Sorte somam +1 cada e recarregam na virada do dia.
+            outro d10 e soma; um 1 natural rola outro d10 e subtrai. Pontos de Sorte somam +1 cada e recarregam quando você dorme (descanso de 6h ou mais) ou na virada do dia.
           </p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
             {DV_TABLE.map(d => (

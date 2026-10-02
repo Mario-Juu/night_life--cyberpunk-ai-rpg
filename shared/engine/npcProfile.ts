@@ -6,6 +6,7 @@ import type { Awareness, GameState, Npc, NpcBond, NpcBondKind, NpcGoal, NpcGoalS
 import type { NpcProfileRequest, NpcProfileResponse } from '../types/gm';
 import { emit } from './events';
 import { makeId } from './ids';
+import { mentionsName } from './memory';
 
 export const NPC_BOND_KINDS: readonly NpcBondKind[] = ['aliado', 'rival', 'deve_a', 'cobra', 'familia', 'amante', 'chefe', 'subordinado', 'ex'];
 export const BOND_LABEL: Record<NpcBondKind, string> = {
@@ -265,8 +266,12 @@ export function buildProfileRequest(state: GameState, npcId: string): NpcProfile
   if (!npc) return null;
   const need = depthNeeds(npc);
   const first = npc.name.toLowerCase().replace(/["“”']/g, '').split(/\s+/)[0];
+  // Palavra inteira, e nome completo se outro NPC tem o mesmo primeiro nome: senão as cenas do
+  // "Rafael" (ou da outra Rafa) viravam evidência da Rafa, e o perfil/segredo nascia da pessoa errada.
+  const shared = state.npcs.some(n => n.id !== npc.id && n.name.toLowerCase().replace(/["“”']/g, '').split(/\s+/)[0] === first);
+  const key = shared ? npc.name : first;
   const scenes = state.chat
-    .filter(e => e.kind === 'narration' && first.length >= 3 && e.text.toLowerCase().includes(first))
+    .filter(e => e.kind === 'narration' && first.length >= 3 && mentionsName(e.text, key))
     .slice(-6)
     .map(e => `CENA (t${e.turn}): ${e.text.slice(0, 900)}`);
   const sms = (state.phone.find(t => t.npcId === npc.id)?.messages ?? []).slice(-8).map(m => `SMS ${m.from === 'npc' ? npc.name : 'JOGADOR'}: ${m.text}`);

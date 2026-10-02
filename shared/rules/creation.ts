@@ -2,6 +2,7 @@ import type { Character, InventoryItem, RoleId, StatKey, Stats, WeaponClass } fr
 import { STAT_KEYS, computeMaxHp, computeMaxHumanity } from './stats';
 import { SKILLS } from './skills';
 import { AMMO_LABEL, WEAPONS } from './weapons';
+import { AMMO_UNIT_PRICE } from './catalog';
 import { START_ROLE_RANK, familyVehicle } from './roles';
 import { VEHICLE_ITEM_ID, defaultRoleData } from '../engine/roles';
 import { starterDeck } from '../engine/net';
@@ -46,8 +47,8 @@ export const ROLES: readonly RoleInfo[] = [
     id: 'medtech',
     label: 'Medicânico',
     tagline: 'Mantém a equipe viva quando a Equipe de Trauma não vem.',
-    skills: { first_aid: 6, paramedic: 5, cybertech: 4, human_perception: 4, deduction: 4, conversation: 4, handgun: 3, resist_torture: 3 },
-    gear: { name: 'Estojo Médico de Emergência', category: 'gear', quantity: 1, description: 'Agulhas hemostáticas, biocurativos e bisturi.', equipped: true, value: 150 },
+    skills: { first_aid: 6, paramedic: 5, medical_tech: 1, cybertech: 4, human_perception: 4, deduction: 4, conversation: 4, handgun: 3, resist_torture: 3 },
+    gear: { name: 'Estojo Médico & Criobomba', category: 'gear', quantity: 1, description: 'Agulhas hemostáticas, biocurativos, bisturi e uma criobomba portátil.', equipped: true, value: 150 },
   },
   {
     id: 'fixer',
@@ -181,7 +182,8 @@ export function buildCharacter(input: CreationInput): Character {
       quantity: starter.spareAmmo,
       description: 'Cartuchos avulsos para recarga.',
       ammoKind: profile.ammo,
-      value: 10,
+      // Mesmo preço unitário da loja: valor maior fazia comprar a 1 e revender a pilha com lucro.
+      value: AMMO_UNIT_PRICE[profile.ammo],
     });
   }
 

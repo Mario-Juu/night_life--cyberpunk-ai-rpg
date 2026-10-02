@@ -3,7 +3,7 @@
  * Funções puras com RNG injetável — o motor decide tudo; o narrador só descreve.
  */
 import type { Cyberdeck, DeckProgram, GameState, IceInstance, NetArchitecture, NetDaemon, NetDifficulty, NetFloor, NetRun, ProgramKey, StatKey } from '../types/game';
-import { ANTI_ICE_PROGRAMS, DECKS, FLOOR_TABLE, ICE, LOBBY_TABLE, NET_DV, PROGRAMS, netActionsFor, type FloorSpec } from '../rules/net';
+import { ANTI_ICE_PROGRAMS, DECKS, FLOOR_TABLE, ICE, LOBBY_TABLE, NET_DV, NET_DIFFICULTY_LABEL, NET_MIN_INTERFACE, PROGRAMS, netActionsFor, type FloorSpec } from '../rules/net';
 import { advanceGameTime } from '../rules/world';
 import { rollD10, rollDamage, type Rng } from './dice';
 import { checkPenalties, effectPenalties } from './health';
@@ -88,6 +88,20 @@ export interface ArchitectureInput {
   daemon?: Pick<NetDaemon, 'name' | 'directive'>;
 }
 
+/** O que um sistema guarda, pelo tipo de lugar (nome/ponto de acesso da arquitetura). */
+const OWNER_DATA: Array<{ re: RegExp; files: string[]; controls: string[] }> = [
+  { re: /hotel|motel|pousada|c[aá]psula|hostel/i, files: ['Registro de hóspedes', 'Reservas e pagamentos', 'Gravações das câmeras do saguão', 'Escala da equipe e da segurança'], controls: ['Câmeras dos corredores', 'Fechaduras dos quartos', 'Elevadores', 'Alarme de incêndio'] },
+  { re: /cl[ií]nica|hospital|ripper|m[eé]dic|trauma/i, files: ['Prontuários de pacientes', 'Estoque de remédios e cromo', 'Agenda de cirurgias', 'Faturas de planos de saúde'], controls: ['Portas da ala', 'Câmeras', 'Climatização do centro cirúrgico'] },
+  { re: /\bbar\b|club|clube|boate|cassino|casa de bonecas/i, files: ['Caixa e contas da casa', 'Lista de convidados VIP', 'Gravações das câmeras', 'Contatos de fornecedores'], controls: ['Som e luzes', 'Portas dos fundos', 'Câmeras'] },
+  { re: /ncpd|delegacia|pol[ií]cia|maxtac/i, files: ['Boletins de ocorrência', 'Fichas de suspeitos', 'Escala de patrulhas'], controls: ['Portas das celas', 'Câmeras', 'Rádio da central'] },
+  { re: /maelstrom|tyger|valentin|6th|voodoo|scavenger|gangue|bando/i, files: ['Contas do tráfico', 'Lista de devedores', 'Mensagens do bando'], controls: ['Câmeras do esconderijo', 'Portão', 'Torretas improvisadas'] },
+  { re: /carro|caminh|ve[ií]culo|\bvan\b|\bav\b|moto|drone/i, files: ['Registro de rotas', 'Manifesto de carga', 'Logs do motorista'], controls: ['Travas das portas', 'Piloto automático', 'Rádio'] },
+  { re: /corp|arasaka|militech|biotechnica|kang tao|petrochem|torre|escrit[oó]rio|laborat/i, files: ['E-mails internos', 'Planilhas financeiras', 'Projetos em andamento', 'Cadastro de funcionários'], controls: ['Portas de segurança', 'Câmeras', 'Torretas', 'Elevadores'] },
+  { re: /f[aá]brica|armaz[eé]m|galp[aã]o|porto|doca/i, files: ['Inventário do estoque', 'Manifestos de embarque', 'Escala de turnos'], controls: ['Portões de carga', 'Esteiras', 'Câmeras'] },
+];
+const OWNER_DEFAULT = { files: ['Arquivos internos', 'Registros de acesso', 'Correspondência do administrador'], controls: ['Câmeras', 'Portas', 'Iluminação'] };
+const ownerData = (text: string) => OWNER_DATA.find(o => o.re.test(text)) ?? OWNER_DEFAULT;
+
 /** Gera uma arquitetura pelas tabelas do RED (3d6 andares; lobby 1d6; demais 3d6 pela dificuldade). */
 export function generateArchitecture(input: ArchitectureInput, turn: number, rng: Rng): NetArchitecture {
   const count = Math.max(3, Math.min(18, Math.round(input.floors ?? rng(6) + rng(6) + rng(6))));
@@ -104,6 +118,17 @@ export function generateArchitecture(input: ArchitectureInput, turn: number, rng
   };
   for (const label of (input.files ?? []).slice(0, 4)) place('file', label);
   for (const label of (input.controls ?? []).slice(0, 4)) place('control', label);
+  // Andar de arquivo/controle sem rótulo virava "dados corporativos" e o Mestre inventava o conteúdo —
+  // às vezes puxando outra trama (o hotel invadido "tinha" dados de uma gravadora). Todo dado tem dono:
+  // o rótulo vem do que aquele lugar guardaria.
+  const pool = ownerData(`${input.name} ${input.accessPoint}`);
+  let fi = 0;
+  let ci = 0;
+  for (const f of floors) {
+    if (f.label) continue;
+    if (f.kind === 'file') floors[f.index] = { ...f, label: `${pool.files[fi++ % pool.files.length]} (${input.name})` };
+    else if (f.kind === 'control') floors[f.index] = { ...f, label: `${pool.controls[ci++ % pool.controls.length]} (${input.name})` };
+  }
   return {
     id: makeId('arch'), name: input.name, accessPoint: input.accessPoint, difficulty: input.difficulty, dv: NET_DV[input.difficulty], floors, createdTurn: turn,
     daemon: input.daemon ? { ...input.daemon, alert: 0, controlledNodes: [...(input.controls ?? [])], owner: 'system' } : undefined,
@@ -353,6 +378,15 @@ export function jackIn(s0: GameState, rng: Rng): NetResult {
   if (!s0.net.architecture) return { state: s0, ok: false, lines: [], error: 'Não há ponto de acesso/arquitetura ao alcance (≤6 m). O Mestre ainda não revelou uma rede aqui.' };
   if (s0.net.run) return { state: s0, ok: false, lines: [], error: 'Você já está conectado.' };
   if (s0.character.dead) return { state: s0, ok: false, lines: [], error: 'O personagem está morto.' };
+  const required = NET_MIN_INTERFACE[s0.net.architecture.difficulty];
+  const rank = interfaceRank(s0);
+  if (rank < required)
+    return {
+      state: s0,
+      ok: false,
+      lines: [],
+      error: `${s0.net.architecture.name} é uma arquitetura ${NET_DIFFICULTY_LABEL[s0.net.architecture.difficulty]}: exige Interface ${required}. Você tem ${rank}; encontre acesso mais simples, prepare um trabalho ou evolua a Interface.`,
+    };
   const lines: string[] = [`Conexão (1 Ação de Rede) em ${s0.net.architecture.name}.`];
   // Programas derrezados voltam; destruídos não.
   let s = withPrograms(s0, p => (p.destroyed ? p : { ...p, rez: p.maxRez, active: false, spent: false }));
@@ -415,6 +449,7 @@ function targetIce(s: GameState, iceId?: string): IceInstance | undefined {
 /** Executa uma Ação de Rede. Não encerra o turno (use endNetTurn). */
 export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetResult {
   const fail = (error: string): NetResult => ({ state: s0, ok: false, lines: [], error });
+  if (s0.character.dead) return fail('O personagem está morto.');
   if (!s0.net.run || !s0.net.architecture) return fail('Você não está conectado à Rede — conecte-se primeiro.');
   const r = run(s0);
   const a = arch(s0);
@@ -451,13 +486,14 @@ export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetRe
       const roll = interfaceRoll(s, 0, rng);
       const ok = roll.total > (floor.dv ?? a.dv);
       if (ok) {
-        const label = floor.label ?? 'dados corporativos';
+        const label = floor.label ?? `Arquivos internos (${a.name})`;
         s = withFloor(s, floor.index, { cleared: true, downloaded: true });
-        const shard = { id: makeId('item'), name: `Arquivo: ${label}`, category: 'datashard' as const, quantity: 1, description: `Baixado de ${a.name}.` };
+        // O shard diz o que é e de onde veio: quem ler depois (o Mestre) não precisa inventar o conteúdo.
+        const shard = { id: makeId('item'), name: `Arquivo: ${label}`, category: 'datashard' as const, quantity: 1, description: `Conteúdo: ${label}. Origem: ${a.name} (${a.accessPoint}). Só tem o que esse sistema guardaria.` };
         s = { ...s, character: { ...s.character, inventory: [...s.character.inventory, shard] } };
         s = emit(s, 'ITEM_ACQUIRED', `Arquivo baixado: ${label}`, { target: shard.id });
       }
-      lines.push(`Eye-Dee (${roll.text}): ${ok ? `arquivo identificado e baixado — ${floor.label ?? 'dados corporativos'}` : 'o arquivo não se deixa ler'}.`);
+      lines.push(`Eye-Dee (${roll.text}): ${ok ? `arquivo identificado e baixado — ${floor.label ?? `Arquivos internos (${a.name})`}` : 'o arquivo não se deixa ler'}.`);
       break;
     }
     case 'control': {
@@ -494,7 +530,12 @@ export function netAction(s0: GameState, input: NetActionInput, rng: Rng): NetRe
       if (!directive) return fail('Diga em uma frase o que o daemon deve proteger, vigiar ou sabotar.');
       const roll = interfaceRoll(s, 0, rng);
       const ok = roll.total > Math.max(10, a.dv + 2);
-      if (ok) s = withArch(s, { daemon: { name: 'Daemon do runner', directive, alert: 0, controlledNodes: arch(s).floors.filter(f => f.kind === 'control' && f.cleared).map(f => f.label ?? `nó ${f.index + 1}`), owner: 'player' } });
+      if (ok) {
+        s = withArch(s, { daemon: { name: 'Daemon do runner', directive, alert: 0, controlledNodes: arch(s).floors.filter(f => f.kind === 'control' && f.cleared).map(f => f.label ?? `nó ${f.index + 1}`), owner: 'player' } });
+        const daemon = arch(s).daemon!;
+        const persistent = { ...daemon, architectureId: a.id, architectureName: a.name, accessPoint: a.accessPoint, plantedTurn: s.turn };
+        s = { ...s, world: { ...s.world, daemons: [...(s.world.daemons ?? []).filter(d => d.architectureId !== a.id), persistent] } };
+      }
       lines.push(`Daemon (${roll.text}): ${ok ? 'agente persistente instalado' : 'o sistema rejeita o agente'}.`);
       break;
     }

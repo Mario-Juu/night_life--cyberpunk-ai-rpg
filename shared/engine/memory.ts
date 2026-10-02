@@ -20,6 +20,33 @@ function norm(text: string) {
   return text.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
+const words = (text: string) => ` ${norm(text).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+
+/**
+ * O texto cita este nome como PALAVRA inteira? Substring solta misturava gente e lugares:
+ * "rafa" casava com "Rafael", "ana" com "banana", e a memória/NPC errado entrava no contexto.
+ */
+export function mentionsName(text: string, name: string): boolean {
+  const n = words(name).trim();
+  return n.length > 2 && words(text).includes(` ${n} `);
+}
+
+/**
+ * A memória está LIGADA à cena/ação (assunto citado, NPC presente, lugar atual, missão ativa)?
+ * Palavra comum em comum ("hotel", "arquivos") não liga: era assim que o hotel de outra trama
+ * entrava como se fosse o hotel de agora.
+ */
+export function memoryLinked(state: Pick<GameState, 'npcs' | 'world' | 'scene' | 'missions'>, mem: Memory, query: string): boolean {
+  // O que é do próprio personagem anda com ele: nunca é "de outro lugar".
+  if (mem.subject === 'player' || mem.type === 'CHARACTER_MEMORY' || mem.type === 'PLAYER_MEMORY') return true;
+  const npc = state.npcs.find(n => n.id === mem.subject);
+  if (npc && (state.scene.presentNpcIds.includes(npc.id) || mentionsName(query, npc.name.split(/\s+/)[0]) || mentionsName(query, npc.name))) return true;
+  if (!npc && mentionsName(query, mem.subject)) return true;
+  const loc = state.world.location;
+  if ([loc.spot, loc.subDistrict].some(p => p && (norm(p) === norm(mem.subject) || mentionsName(mem.content, p)))) return true;
+  return state.missions.some(m => m.status === 'ACTIVE' && (m.id === mem.subject || (m.giverId && m.giverId === mem.subject)));
+}
+
 /**
  * Pontua memórias por: assunto citado na ação, NPC presente na cena, local atual,
  * missão ativa, importância, confiança e recência (último uso).
@@ -32,7 +59,7 @@ export function scoreMemory(state: Pick<GameState, 'npcs' | 'world' | 'turn' | '
   let score = mem.importance * 1.5 * mem.confidence + TYPE_WEIGHT[mem.type];
 
   const names = [subject, npc ? norm(npc.name).split(/\s+/)[0] : ''].filter(w => w.length > 2);
-  if (names.some(n => q.includes(n))) score += 8;
+  if (names.some(n => mentionsName(q, n))) score += 8;
   if (q.split(/\W+/).some(w => w.length > 4 && content.includes(w))) score += 3;
   if (npc && state.scene.presentNpcIds.includes(npc.id)) score += 6;
   if (content.includes(norm(state.world.location.district)) || subject === norm(state.world.location.district)) score += 3;

@@ -214,9 +214,9 @@ describe('registro de ferramentas', () => {
       { tool: 'attack', args: { targetName: 'x' } }, // ação só do intérprete
       { tool: 'transfer_money', args: { amount: 999999, counterpart: 'x', reason: 'y' } },
     ]);
-    expect(res.records.map(r => r.ok)).toEqual([false, false, true]);
-    expect(res.state.character.money).toBe(s.character.money + 1000); // limitado
-    expect(res.state.events.filter(e => e.type === 'TOOL_REJECTED')).toHaveLength(2);
+    expect(res.records.map(r => r.ok)).toEqual([false, false, false]);
+    expect(res.state.character.money).toBe(s.character.money);
+    expect(res.state.events.filter(e => e.type === 'TOOL_REJECTED')).toHaveLength(3);
   });
 
   it('attack sem alvo registrado cria o combatente e inicia o combate', () => {

@@ -4,6 +4,8 @@ import { makeId } from './ids';
 import { RAFA_PROFILE, looksLikeAnimal } from './npcs';
 import { installCyberware } from './cyberware';
 import { withQuickhackDefaults } from './quickhacks';
+import { applyOpening, findOpening } from './openings';
+import { seededRng } from './dice';
 
 export const RAFA_ID = 'npc_rafa';
 export const FAMILY_ID = 'npc_family';
@@ -26,8 +28,11 @@ export function makeNpc(partial: Pick<Npc, 'id' | 'name' | 'role'> & Partial<Npc
   };
 }
 
-/** ÚNICO conjunto de defaults da campanha. */
-export function createInitialState(character: Character): GameState {
+/**
+ * ÚNICO conjunto de defaults da campanha. Sem `opening`, a abertura clássica (cubículo + corre do Rafa);
+ * com uma chave de shared/engine/openings.ts, a campanha começa naquela cena.
+ */
+export function createInitialState(character: Character, opts: { opening?: string; seed?: string; hardcore?: boolean } = {}): GameState {
   const district = getDistrict(character.bio.district);
   const time = CAMPAIGN_START_TIME;
   const clock = formatGameTime(time).time;
@@ -149,7 +154,9 @@ export function createInitialState(character: Character): GameState {
     pendingRoll: null,
     suggestedActions: [],
   };
-  return withStarterCyberware(state);
+  const opening = findOpening(opts.opening);
+  const opened = opening ? applyOpening(state, opening, seededRng(opts.seed ?? id), RAFA_ID, FAMILY_ID) : state;
+  return withStarterCyberware(opts.hardcore ? { ...opened, hardcore: true } : opened);
 }
 
 /** Cromo inicial do papel (RED: o Trilheiro já vem com Neural Link + Plugues; perda média de Humanidade). */

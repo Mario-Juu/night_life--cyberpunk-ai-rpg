@@ -20,6 +20,9 @@ function SidePanel({ game }: { game: GameState }) {
   const tab = useUiStore(s => s.sideTab);
   const setTab = useUiStore(s => s.setSideTab);
   const showNet = game.character.bio.role === 'netrunner' || !!game.net.architecture;
+  // Perseguição sem luta ocupa a aba; com luta, os dois painéis aparecem juntos (antes a perseguição
+  // escondia o combate e o jogador não conseguia atacar).
+  const chaseOnly = !!game.world.chase && !game.combat.active;
   const effective: SideTab = game.net.run ? 'net' : (game.combat.active || !!game.world.chase) && tab === 'contacts' ? 'combat' : tab === 'net' && !showNet ? 'journal' : tab;
   return (
     <div className="h-full flex flex-col min-h-0">
@@ -29,7 +32,7 @@ function SidePanel({ game }: { game: GameState }) {
         onChange={setTab}
         items={[
           { id: 'journal', label: 'Diário', icon: <BookOpen className="w-3.5 h-3.5" /> },
-          { id: 'combat', label: game.world.chase ? 'Perseg.' : 'Combate', icon: game.world.chase ? <CarFront className="w-3.5 h-3.5 text-neon-yellow" /> : <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: game.world.chase ? game.world.chase.pressure : game.combat.active ? game.combat.combatants.filter(c => c.status === 'active' && c.side !== 'ally').length : undefined },
+          { id: 'combat', label: chaseOnly ? 'Perseg.' : 'Combate', icon: chaseOnly ? <CarFront className="w-3.5 h-3.5 text-neon-yellow" /> : <Swords className={cn('w-3.5 h-3.5', game.combat.active && 'text-danger')} />, badge: chaseOnly ? game.world.chase!.pressure : game.combat.active ? game.combat.combatants.filter(c => c.status === 'active' && c.side !== 'ally').length : undefined },
           ...(showNet ? [{ id: 'net' as const, label: 'Rede', icon: <Radar className={cn('w-3.5 h-3.5', game.net.run && 'text-neon-cyan')} />, badge: game.net.architecture && !game.net.run ? 1 : undefined }] : []),
           { id: 'contacts', label: 'Contatos', icon: <Users className="w-3.5 h-3.5" /> },
         ]}
@@ -40,14 +43,26 @@ function SidePanel({ game }: { game: GameState }) {
         </div>
       ) : (
         <div className="flex-1 min-h-0 overflow-y-auto p-4">
-          {effective === 'journal' ? <JournalPanel game={game} /> : effective === 'net' ? <NetPanel game={game} /> : game.world.chase ? <ChasePanel game={game} /> : <CombatPanel game={game} />}
+          {effective === 'journal' ? <JournalPanel game={game} /> : effective === 'net' ? <NetPanel game={game} /> : <BattlePanels game={game} />}
         </div>
       )}
     </div>
   );
 }
 
+/** Perseguição e combate podem acontecer juntos (ganger atirando da moto): os dois painéis, em ordem. */
+function BattlePanels({ game }: { game: GameState }) {
+  return (
+    <div className="space-y-6">
+      {game.world.chase && <ChasePanel game={game} />}
+      {(game.combat.active || !game.world.chase) && <CombatPanel game={game} />}
+    </div>
+  );
+}
+
 function StoryColumn({ game }: { game: GameState }) {
+  // No desktop, quando a aba lateral já mostra a perseguição, ela não precisa espremer a narração no centro.
+  const sideShowsChase = useUiStore(s => s.sideTab) === 'combat';
   return (
     <main className="flex-1 min-w-0 min-h-0 flex flex-col">
       {game.combat.active && (
@@ -56,7 +71,7 @@ function StoryColumn({ game }: { game: GameState }) {
         </div>
       )}
       {game.world.chase && (
-        <div className="shrink-0 max-h-72 overflow-y-auto border-b border-neon-yellow/50 bg-surface-1/80 p-3">
+        <div className={cn('shrink-0 max-h-56 lg:max-h-80 overflow-y-auto border-b border-neon-yellow/50 bg-surface-1/80 p-3', sideShowsChase && 'lg:hidden')}>
           <ChasePanel game={game} />
         </div>
       )}
@@ -87,6 +102,7 @@ export function GameLayout({ game }: { game: GameState }) {
   const unread = game.phone.reduce((s, t) => s + t.unread, 0) + unreadNews(game);
   // Tutoriais de primeira vez (cada sistema se apresenta quando aparece). Esperam a narração terminar.
   const idle = !concealed;
+  useTutorial('opening', idle && !!game.world.opening && game.chat.some(entry => entry.kind === 'narration'));
   useTutorial('sandbox', idle && !!game.sandbox);
   useTutorial('combat', idle && game.combat.active);
   useTutorial('net', idle && !!game.net.architecture && game.character.bio.role === 'netrunner');
@@ -122,7 +138,7 @@ export function GameLayout({ game }: { game: GameState }) {
         {mobileTab === 'journal' && (
           <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-6">
             {view.net.architecture && <NetPanel game={view} />}
-            {view.world.chase ? <ChasePanel game={view} /> : view.combat.active && <CombatPanel game={view} />}
+            {(view.world.chase || view.combat.active) && <BattlePanels game={view} />}
             <JournalPanel game={view} />
           </div>
         )}

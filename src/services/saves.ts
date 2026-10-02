@@ -66,11 +66,30 @@ const SaveSchema = z.looseObject({
   party: z.looseObject({ members: z.array(z.looseObject({ npcId: z.string() })) }).optional(),
 });
 
+/** Oferta comercial salva: preço inteiro ≥ 0 e item com nome/quantidade (a UI e o settle leem direto). */
+const TradeOfferSchema = z.looseObject({
+  id: z.string(),
+  seller: z.string(),
+  price: z.number().int().min(0),
+  createdTurn: num,
+  expiresTurn: num,
+  item: z.looseObject({ id: z.string(), name: z.string(), category: z.string(), quantity: z.number().int().min(1) }),
+});
+
+/** Oferta corrompida não derruba o save: é descartada (o jogador só perde uma proposta). */
+function repairTradeOffer(data: unknown): unknown {
+  const world = (data as { world?: Record<string, unknown> } | null)?.world;
+  if (!world || typeof world !== 'object' || world.tradeOffer === undefined) return data;
+  if (TradeOfferSchema.safeParse(world.tradeOffer).success) return data;
+  const { tradeOffer: _bad, ...rest } = world;
+  return { ...(data as object), world: rest };
+}
+
 /** Valida e, se for de uma versão anterior compatível (v2), migra para a atual. */
 export function validateSave(data: unknown): GameState {
   let migrated: unknown;
   try {
-    migrated = migrateState(data);
+    migrated = repairTradeOffer(migrateState(data));
   } catch (err) {
     throw new Error(`Save incompatível: ${(err as Error).message}`);
   }
@@ -120,7 +139,7 @@ export function saveToSlot(slot: number, state: GameState): void {
 export function loadFromSlot(slot: number): GameState {
   const raw = safeGet(slotKey(slot));
   if (!raw) throw new Error('Slot vazio.');
-  return validateSave((JSON.parse(raw) as SlotData).state);
+  return assertNotFallen(validateSave((JSON.parse(raw) as SlotData).state));
 }
 
 export function deleteSlot(slot: number): void {
@@ -143,6 +162,41 @@ export function exportSave(state: GameState): void {
   URL.revokeObjectURL(url);
 }
 
+// ---------------------------------------------------------------- hardcore
+
+/** Campanhas hardcore cujo personagem morreu: nenhum save antigo delas volta a carregar. */
+const FALLEN_KEY = 'nightlife_hardcore_fallen';
+
+/** O personagem morreu numa campanha hardcore: acabou. */
+export const isPermadead = (s: Pick<GameState, 'hardcore' | 'character'>) => !!s.hardcore && s.character.dead;
+
+function fallenIds(): string[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(FALLEN_KEY) ?? '[]');
+    return Array.isArray(list) ? list.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markFallen(id: string): void {
+  const list = fallenIds();
+  if (list.includes(id)) return;
+  try {
+    localStorage.setItem(FALLEN_KEY, JSON.stringify([...list, id].slice(-200)));
+  } catch {
+    // sem armazenamento: a trava da linha do tempo ainda vale nesta sessão
+  }
+}
+
+/** Carregar (slot ou arquivo) um save antigo de uma campanha hardcore que já terminou em morte é proibido. */
+export function assertNotFallen(state: GameState): GameState {
+  if (state.hardcore && (state.character.dead || fallenIds().includes(state.id))) {
+    throw new Error(`Modo hardcore: ${state.character.bio.handle} morreu nesta campanha. Não há como voltar — comece outra.`);
+  }
+  return state;
+}
+
 export async function importSave(file: File): Promise<GameState> {
   const text = await file.text();
   let data: unknown;
@@ -151,5 +205,5 @@ export async function importSave(file: File): Promise<GameState> {
   } catch {
     throw new Error('O arquivo não é um JSON válido.');
   }
-  return validateSave(data);
+  return assertNotFallen(validateSave(data));
 }

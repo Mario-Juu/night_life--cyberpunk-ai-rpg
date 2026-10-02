@@ -269,6 +269,24 @@ function RipperdocCatalogModal({ game, open, onClose, source }: { game: GameStat
   );
 }
 
+/**
+ * Ampliar a capacidade de cromo (+2) com o ripperdoc da cena. A recusa de instalação manda "procurar uma
+ * clínica para ampliar", mas antes isso só existia escrevendo ao Mestre.
+ */
+function CapacityUpgrade({ game, busy }: { game: GameState; busy: boolean }) {
+  const doc = sceneRipperdoc(game);
+  if (!doc) return null;
+  const bonus = game.character.cyberCapacityBonus ?? 0;
+  const price = 500 + bonus * 100;
+  const maxed = bonus >= 20;
+  const reason = maxed ? 'Seu corpo já recebeu o máximo de adaptações.' : game.combat.active ? 'Não no meio de um combate.' : game.character.money < price ? `Custa €$${price}.` : undefined;
+  return (
+    <Button size="sm" variant="ghost" tone="cyan" block disabled={busy || !!reason} title={reason} onClick={() => void quickTool('upgrade_cyber_capacity', { ripperdocId: doc.id }, `Peço a ${doc.name} para ampliar minha capacidade de cromo.`)}>
+      {maxed ? 'Capacidade no limite' : `Ampliar capacidade com ${doc.name} (+2 · €$${price})`}
+    </Button>
+  );
+}
+
 export function CyberTab({ game }: { game: GameState }) {
   useTutorial('cyber', true);
   const c = game.character;
@@ -286,6 +304,7 @@ export function CyberTab({ game }: { game: GameState }) {
     <div className="space-y-4">
       <Meter label="Humanidade" value={c.humanity.current} max={c.humanity.max} tone={band.band === 'stable' ? 'purple' : 'danger'} />
       <Meter label="Capacidade de cromo" value={capacity} max={capacityMax} tone={capacity >= capacityMax ? 'danger' : 'cyan'} />
+      <CapacityUpgrade game={game} busy={busy} />
       {band.band !== 'stable' && (
         <Badge tone="danger" solid={band.band === 'cyberpsycho'}>
           {band.label}

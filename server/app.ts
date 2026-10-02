@@ -16,6 +16,8 @@ export interface AppOptions {
   backupLabel?: () => string;
   /** Valida a chave do jogador junto ao Google (injetável nos testes). */
   checkKey?: (key: string | undefined) => Promise<KeyCheck>;
+  /** Sandbox liberado? Padrão: NIGHTLIFE_DEBUG do .env. */
+  debug?: () => boolean;
 }
 
 function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.infer<T> | null {
@@ -28,7 +30,8 @@ function parse<T extends z.ZodType>(schema: T, req: Request, res: Response): z.i
   return result.data;
 }
 
-const asContext = (c: unknown) => c as GameContext;
+/** Modo de depuração (Sandbox): só com NIGHTLIFE_DEBUG=1/true/on no .env do servidor. */
+export const debugFromEnv = () => /^(1|true|on|yes)$/i.test(process.env.NIGHTLIFE_DEBUG?.trim() ?? '');
 
 /**
  * Express 4 não encaminha rejeição de handler async: sem isto, uma exceção no caminho de ERRO
@@ -38,7 +41,12 @@ const route = (fn: (req: Request, res: Response) => Promise<void>) => (req: Requ
   fn(req, res).catch(next);
 };
 
-export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey, backupLabel = () => 'Flash-Lite' }: AppOptions) {
+export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey, backupLabel = () => 'Flash-Lite', debug = debugFromEnv }: AppOptions) {
+  // Sem a flag de debug, o pedido de modo Sandbox (atalhos meta, spawn por texto) é ignorado: o navegador não liga isso sozinho.
+  const asContext = (c: unknown): GameContext => {
+    const ctx = c as GameContext;
+    return ctx.sandbox && !debug() ? { ...ctx, sandbox: false } : ctx;
+  };
   const app = express();
   app.use(express.json({ limit: '2mb' }));
   // Chave Gemini do próprio jogador (cabeçalho), válida só para este pedido.
@@ -59,7 +67,7 @@ export function createApp({ gm, hasKey, defaultMode, checkKey = checkApiKey, bac
   });
 
   app.get('/api/gm/status', (_req, res) => {
-    const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION, backup: backupLabel() };
+    const status: GMStatus = { status: 'ok', hasKey: !!requestKey() || hasKey(), defaultMode: defaultMode(), promptVersion: PROMPT_VERSION, backup: backupLabel(), debug: debug() };
     res.json(status);
   });
 

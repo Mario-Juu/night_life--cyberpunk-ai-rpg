@@ -197,7 +197,7 @@ export function createGameMaster(provider: LlmProvider, log: RunLogger = console
           // Fala do jogador rotulada com o nome de quem ouve ("[DIALOGUE: Rafa] E aí, Rafa…").
           const speakers = fixSelfAddressedSpeakers(payload.narration, payload.dialogues, ctx.character.bio.handle || ctx.character.bio.name);
           payload = { ...payload, narration: speakers.narration, dialogues: speakers.dialogues };
-          const warnings = checkNarration(input.engineResult, payload.narration, payload.dialogues, ctx.npcs, payload.toolCalls, { playerDead: ctx.character.dead, money: ctx.character.money, turn: ctx.turn, quests: ctx.quests });
+          const warnings = checkNarration(input.engineResult, payload.narration, payload.dialogues, ctx.npcs, payload.toolCalls, { playerDead: ctx.character.dead, money: ctx.character.money, turn: ctx.turn, quests: ctx.quests, partyShare: (ctx.party ?? []).reduce((n, m) => n + m.share, 0) });
           if (!warnings.length) break;
           warningsSeen.push(...warnings);
           correction = warnings.join(' ');

@@ -1,7 +1,7 @@
 /**
  * Habilidades de Papel aplicadas pelo motor: alocação de pontos, subir de rank e efeitos em testes/combate.
  */
-import type { Character, CombatAwarenessKey, DrugKey, MakerKey, MedicineKey, RoleData, RoleId } from '../types/game';
+import type { Character, CombatAwarenessKey, DrugKey, MakerKey, MedicineKey, NomadUpgradeKey, RoleData, RoleId } from '../types/game';
 import {
   COMBAT_AWARENESS,
   DRUG_ORDER,
@@ -10,6 +10,7 @@ import {
   START_ROLE_RANK,
   combatAwarenessValue,
   familyVehicle,
+  NOMAD_UPGRADES,
   makerPointsTotal,
   roleUpgradeCost,
   surgerySkill,
@@ -21,11 +22,24 @@ export type RoleSection = 'combatAwareness' | 'maker' | 'medicine';
 export function defaultRoleData(role: RoleId): RoleData {
   if (role === 'solo') return { combatAwareness: { precision: 3, initiative: 1 } };
   if (role === 'tech') return { maker: { field: 4, upgrade: 2, fabrication: 2 } };
-  if (role === 'medtech') return { medicine: { surgery: 2, pharma: 2 } };
+  if (role === 'medtech') return { medicine: { surgery: 1, pharma: 2, cryo: 1 } };
   return {};
 }
 
 const sum = (rec: Partial<Record<string, number>> | undefined) => Object.values(rec ?? {}).reduce<number>((n, v) => n + (v ?? 0), 0);
+
+/** Redistribuição atômica da Consciência de Combate; em luta, a ferramenta consome a Ação. */
+export function setCombatAwareness(c: Character, values: Partial<Record<CombatAwarenessKey, number>>): Character | string {
+  if (c.bio.role !== 'solo') return 'Só Solos têm Consciência de Combate.';
+  const next: Partial<Record<CombatAwarenessKey, number>> = {};
+  for (const option of COMBAT_AWARENESS) {
+    const value = Math.round(values[option.key] ?? 0);
+    if (value < 0 || value > option.max || value % option.step !== 0) return `${option.label}: alocação inválida.`;
+    if (value) next[option.key] = value;
+  }
+  if (sum(next) !== c.roleRank) return `Distribua exatamente ${c.roleRank} ponto(s) de Consciência de Combate.`;
+  return { ...c, roleData: { ...c.roleData, combatAwareness: next } };
+}
 
 /** Pontos ainda livres na seção (0 para papéis sem alocação). */
 export function freePoints(c: Character): number {
@@ -81,8 +95,18 @@ export function improveRole(c: Character): Character | string {
   const cost = roleUpgradeCost(c.roleRank + 1);
   if (c.ip < cost) return `Precisa de ${cost} PM.`;
   let next: Character = { ...c, ip: c.ip - cost, roleRank: c.roleRank + 1 };
-  if (c.bio.role === 'nomad') next = { ...next, inventory: next.inventory.map(i => (i.id === VEHICLE_ITEM_ID ? { ...i, name: familyVehicle(next.roleRank) } : i)) };
+  if (c.bio.role === 'nomad') next = { ...next, inventory: next.inventory.map(i => (i.id === VEHICLE_ITEM_ID ? { ...i, name: familyVehicle(next.roleRank, next.nomadUpgrades) } : i)) };
   return next;
+}
+
+/** Escolhe ou devolve uma melhoria do veículo familiar; o rank limita quantas ficam ativas. */
+export function toggleNomadUpgrade(c: Character, key: NomadUpgradeKey): Character | string {
+  if (c.bio.role !== 'nomad') return 'Só Nômades têm um veículo de família via Moto.';
+  if (!NOMAD_UPGRADES.some(u => u.key === key)) return 'Melhoria de veículo desconhecida.';
+  const current = c.nomadUpgrades ?? [];
+  const upgrades = current.includes(key) ? current.filter(x => x !== key) : current.length >= c.roleRank ? null : [...current, key];
+  if (!upgrades) return `Seu rank Moto permite ${c.roleRank} melhoria(s) ativa(s). Remova uma antes de escolher outra.`;
+  return { ...c, nomadUpgrades: upgrades, inventory: c.inventory.map(i => (i.id === VEHICLE_ITEM_ID ? { ...i, name: familyVehicle(c.roleRank, upgrades) } : i)) };
 }
 
 export const VEHICLE_ITEM_ID = 'item_family_vehicle';

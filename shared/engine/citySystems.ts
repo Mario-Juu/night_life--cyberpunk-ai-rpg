@@ -8,10 +8,9 @@ import { makeId } from './ids';
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 const cyberCopies = (key: string) => (CYBERWARE[key]?.paired ? 2 : 1);
-export const marketCyberPrice = (c: Character, key: string) => {
+export const marketCyberPrice = (_c: Character, key: string) => {
   const base = CYBERWARE[key].price * cyberCopies(key);
-  const discount = c.bio.role === 'fixer' ? operatorPerks(c.roleRank).discount : 0;
-  return Math.round(base * (1 - discount));
+  return base;
 };
 
 export function openNightMarket(s0: GameState, input: Omit<NightMarket, 'id'>): GameState {
@@ -75,14 +74,24 @@ export function fulfillCyberOrders(s0: GameState): GameState {
 }
 
 export function startChase(s0: GameState, chase: Omit<ChaseState, 'pressure'> & { pressure?: number }): GameState {
-  const state: ChaseState = { ...chase, pressure: clamp(chase.pressure ?? 2, 1, 4), vehicleIntegrity: clamp(chase.vehicleIntegrity, 1, 6), opponentIntegrity: clamp(chase.opponentIntegrity, 1, 6) };
+  const heavyChassis = s0.character.nomadUpgrades?.includes('heavy_chassis');
+  const state: ChaseState = {
+    ...chase,
+    pressure: clamp(chase.pressure ?? 2, 1, 4),
+    // O chassi pesado da Moto não resolve a perseguição, mas dá uma margem concreta de dano.
+    vehicleIntegrity: clamp(heavyChassis ? Math.max(chase.vehicleIntegrity, 6) : chase.vehicleIntegrity, 1, 6),
+    opponentIntegrity: clamp(chase.opponentIntegrity, 1, 6),
+  };
   return emit({ ...s0, world: { ...s0.world, chase: state } }, 'SCENE_CHANGED', `Perseguição: ${state.opponent} (${state.reason})`, { data: { chase: true } });
 }
+
+/** DV da manobra: 13, mais 1 por ponto de pressão acima de 2. */
+export const chaseDv = (chase: Pick<ChaseState, 'pressure'>) => 13 + Math.max(0, chase.pressure - 2);
 
 export function resolveChase(s0: GameState, action: 'drive' | 'evade' | 'ram' | 'shoot' | 'escape', total: number): { state: GameState; summary: string } {
   const chase = s0.world.chase;
   if (!chase) return { state: s0, summary: 'Não há perseguição em curso.' };
-  const dv = 13 + Math.max(0, chase.pressure - 2);
+  const dv = chaseDv(chase);
   const success = total > dv;
   let next = { ...chase };
   if (action === 'ram') {

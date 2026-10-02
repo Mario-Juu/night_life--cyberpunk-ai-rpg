@@ -2,7 +2,7 @@
  * Habilidades de Papel (Cyberpunk RED, cap. Papéis).
  * Todo personagem começa com rank 4; máximo 10; subir custa 60 × o novo rank em PM.
  */
-import type { CombatAwarenessKey, DrugKey, MakerKey, MedicineKey, RoleData, RoleId, StatKey } from '../types/game';
+import type { CombatAwarenessKey, DrugKey, MakerKey, MedicineKey, NomadUpgradeKey, RoleData, RoleId, StatKey } from '../types/game';
 
 export const START_ROLE_RANK = 4;
 export const MAX_ROLE_RANK = 10;
@@ -91,11 +91,32 @@ export function priceCategoryFor(price: number): (typeof PRICE_CATEGORIES)[numbe
   return [...PRICE_CATEGORIES].reverse().find(c => price >= c.price) ?? PRICE_CATEGORIES[0];
 }
 
+/** O dado resolve a execução, não concede formação instantânea. */
+export function makerRankRequired(category: PriceCategory): number {
+  switch (category) {
+    case 'cheap':
+    case 'everyday':
+      return 1;
+    case 'costly':
+      return 2;
+    case 'premium':
+      return 3;
+    case 'expensive':
+      return 4;
+    case 'very_expensive':
+      return 6;
+    case 'luxury':
+      return 8;
+    case 'super_luxury':
+      return 10;
+  }
+}
+
 // ---------------------------------------------------------------- Medicânico
 
 export const MEDICINE_SPECIALTIES: Array<{ key: MedicineKey; label: string; max: number; description: string }> = [
   { key: 'surgery', label: 'Cirurgia', max: 5, description: '+2 na perícia Cirurgia por ponto: tratar Ferimentos Críticos graves e instalar ciberware.' },
-  { key: 'pharma', label: 'Farmacêutica', max: 5, description: 'Cada ponto libera uma droga médica para fabricar (DV 13, €$200 de insumos).' },
+  { key: 'pharma', label: 'Farmacêutica', max: 5, description: 'Cada ponto amplia Tecnologia Médica e libera fórmulas. Sintetizar leva 1h, DV 13 e €$100 de insumos para 2 doses.' },
   { key: 'cryo', label: 'Criossistemas', max: 5, description: 'Operar criobombas e criotanques: manter pacientes em estase.' },
 ];
 
@@ -118,12 +139,13 @@ export function surgerySkill(data: RoleData): number {
 
 export function operatorPerks(rank: number) {
   return {
-    discount: rank >= 9 ? 0.2 : 0.1,
-    /** Leve 6, pague 5 em munição/consumíveis. */
-    bulkBonus: rank >= 3,
-    /** Trabalhos pagam +20%. */
-    jobBonus: rank >= 5 ? 0.2 : 0,
-    reach: rank >= 10 ? 'Superluxo' : rank >= 9 ? 'Luxo (Mercado da Meia-Noite)' : rank >= 7 ? 'Muito caro' : rank >= 5 ? 'Caro (Mercado Noturno mensal)' : rank >= 3 ? 'até Caro' : 'Barato e Cotidiano',
+    /** Só vale ao vencer a disputa de Pechincha; não é desconto automático. */
+    haggleDiscount: rank >= 7 ? 0.2 : 0.1,
+    /** Um sucesso em compra de 5+ unidades iguais rende UMA unidade extra. */
+    bulkBonus: true,
+    canHostNightMarket: rank >= 5,
+    canHostMidnightMarket: rank >= 9,
+    reach: rank >= 10 ? 'Superluxo' : rank >= 9 ? 'Luxo' : rank >= 7 ? 'Muito caro' : rank >= 3 ? 'Caro' : 'Premium',
   };
 }
 
@@ -131,11 +153,18 @@ export function operatorPerks(rank: number) {
 
 export const MOTO_SKILLS = ['drive', 'vehicle_tech'];
 
-export function familyVehicle(rank: number): string {
-  if (rank >= 9) return 'AV-9 do clã (veículo aéreo)';
-  if (rank >= 7) return 'Superbike blindada do clã';
-  if (rank >= 5) return 'Carro de alta performance do clã';
-  return 'Moto de estrada do clã (ou carro compacto)';
+export const NOMAD_UPGRADES: Array<{ key: NomadUpgradeKey; label: string; description: string }> = [
+  { key: 'seating', label: 'Assentos extras', description: '+2 lugares: o clã leva mais gente ou carga viva.' },
+  { key: 'heavy_chassis', label: 'Chassi pesado', description: '+20 SDP e cabo de reboque pesado.' },
+  { key: 'housing', label: 'Capacidade de moradia', description: 'Transforma o veículo em RV com cama, banheiro e cozinha.' },
+];
+
+/** Cada rank de Moto representa um veículo ou uma melhoria do pool familiar. */
+export const nomadUpgradeSlots = (rank: number) => Math.max(1, Math.min(MAX_ROLE_RANK, rank));
+
+export function familyVehicle(_rank: number, upgrades: NomadUpgradeKey[] = []): string {
+  const suffix = upgrades.length ? ` (${upgrades.map(key => NOMAD_UPGRADES.find(u => u.key === key)?.label).filter(Boolean).join(', ')})` : '';
+  return `Carro compacto do clã${suffix}`;
 }
 
 // ---------------------------------------------------------------- bônus em testes

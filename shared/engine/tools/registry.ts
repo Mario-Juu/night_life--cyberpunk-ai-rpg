@@ -257,7 +257,8 @@ export function runToolCalls(registry: ToolRegistry, state: GameState, calls: To
       continue;
     }
     // Em combate, a segunda Ação do mesmo turno é recusada (fica para o turno seguinte).
-    if (s.combat.active && spentAction && isTurnAction(call.tool)) {
+    // Perseguição também tem rodadas: várias manobras na mesma frase resolviam a fuga de uma vez.
+    if ((s.combat.active || s.world.chase) && spentAction && isTurnAction(call.tool)) {
       records.push({ ...call, origin: ctx.origin, ok: false, summary: 'Você já agiu neste turno — é uma Ação por turno em combate.', error: 'ação já usada' });
       continue;
     }
@@ -282,5 +283,5 @@ export function needsRoll(tool: string): boolean {
  * Ações que gastam a Ação do turno em combate: só UMA por turno. Sem isto, uma frase do jogador
  * ("hackeio, atiro e agarro") rendia três ações contra uma única resposta dos inimigos.
  */
-const TURN_ACTIONS = new Set(['quickhack', 'grapple', 'execute', 'reload']);
+const TURN_ACTIONS = new Set(['quickhack', 'grapple', 'execute', 'reload', 'chase_action', 'reconfigure_awareness']);
 export const isTurnAction = (tool: string) => ROLL_TOOLS.has(tool) || TURN_ACTIONS.has(tool);

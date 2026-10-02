@@ -27,6 +27,7 @@ export function StatusTab({ game }: { game: GameState }) {
           {c.hp.current <= 0 && !c.dead && (
             <Badge tone={c.stabilized ? 'green' : 'danger'}>{c.stabilized ? 'Estabilizado' : `Teste de Morte +${deathSavePenalty(c)}`}</Badge>
           )}
+          {c.cryoStasis && <Badge tone="cyan" title={`Até ${formatGameTime(c.cryoStasis.until).time}`}>Em criostase</Badge>}
           {(c.conditions ?? []).map(cond => (
             <Badge key={cond.key} tone="yellow" title={CONDITION_HINT[cond.key]}>
               {CONDITION_LABEL[cond.key]}

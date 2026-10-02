@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { GameState } from '@shared/types/game';
 import type { TurnRecord } from '@shared/types/turn';
 import { gameReducer, type GameAction } from '@shared/engine/reducer';
-import { validateSave } from '../services/saves';
+import { isPermadead, markFallen, validateSave } from '../services/saves';
 import { toast } from '../ui/toastStore';
 import { backfillNpcsFromChat, repairNpcs } from '@shared/engine/npcs';
 import { generateFronts, repairFronts } from '@shared/engine/fronts';
@@ -35,7 +35,9 @@ export const useGameStore = create<GameStore>()(
       dispatch: action =>
         set(s => {
           if (!s.game) return s;
-          return { game: bump(s.game, gameReducer(s.game, action)) };
+          const game = bump(s.game, gameReducer(s.game, action));
+          if (isPermadead(game)) markFallen(game.id);
+          return { game };
         }),
       commit: (next, expectedVersion) => {
         const current = get().game;
@@ -44,7 +46,10 @@ export const useGameStore = create<GameStore>()(
         if (expectedVersion !== undefined && current.session.version !== expectedVersion) {
           throw new StaleStateError(`Estado mudou durante a operação (v${expectedVersion} → v${current.session.version}).`);
         }
-        set({ game: bump(current, next) });
+        const game = bump(current, next);
+        // Morreu no hardcore: a campanha entra na lista das que não voltam (saves antigos incluídos).
+        if (isPermadead(game)) markFallen(game.id);
+        set({ game });
       },
       // Campanha nova, slot ou importação: saves de antes das frentes ganham as deles (seed da campanha).
       setGame: state => set({ game: state && sanitizeGame(state), activeTurn: null }),

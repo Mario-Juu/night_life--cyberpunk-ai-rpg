@@ -4,7 +4,7 @@
  * Mudanças pedidas pelo LLM NÃO passam por aqui: vão pelo registro de ferramentas.
  */
 import { SECOND_HEART_COOLDOWN, hasSecondHeart } from './cyberBonus';
-import type { ChatEntry, ChatKind, EnemyAttackResult, GameState, RollOutcome, RollRequest } from '../types/game';
+import type { ChatEntry, ChatKind, EnemyAttackResult, GameState, NomadUpgradeKey, RollOutcome, RollRequest } from '../types/game';
 import { formatGameTime } from '../rules/world';
 import { MAX_SKILL_LEVEL, getSkill, skillUpgradeCost } from '../rules/skills';
 import { applyPlayerAttack, reloadWeapon } from './combat';
@@ -12,7 +12,7 @@ import { applyDamageApplication, deathSavePenalty, healCharacter, needsDeathSave
 import { spendLuck } from './checks';
 import { emit } from './events';
 import { makeId } from './ids';
-import { allocate, improveRole, type RoleSection } from './roles';
+import { allocate, improveRole, toggleNomadUpgrade, type RoleSection } from './roles';
 import { applyDrug } from './drugs';
 import { ROLE_ABILITY } from '../rules/roles';
 import { QUICKHACKS, type QuickhackKey } from '../rules/quickhacks';
@@ -33,6 +33,7 @@ export type GameAction =
   | { type: 'improveRole' }
   | { type: 'unlockQuickhack'; key: QuickhackKey }
   | { type: 'allocateRole'; section: RoleSection; key: string; delta: number }
+  | { type: 'toggleNomadUpgrade'; key: NomadUpgradeKey }
   | { type: 'useDrug'; itemId: string }
   | { type: 'systemMessage'; text: string; kind?: ChatKind }
   | { type: 'phoneSend'; npcId: string; text: string }
@@ -67,6 +68,7 @@ export function secondHeart(state: GameState): GameState {
 
 /** Se o personagem está caído e não estabilizado, força o Teste de Morte. */
 export function ensureDeathSave(state: GameState): GameState {
+  if (state.character.cryoStasis) return state;
   if (!needsDeathSave(state.character)) return state;
   if (state.pendingRoll?.kind === 'deathSave') return state;
   return {
@@ -138,8 +140,11 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       } else if (outcome.quickhack) {
         const q = outcome.quickhack;
         const rolls = q.effectRolls.length ? sequenceRng(q.effectRolls) : cryptoRng;
-        const res = useQuickhack(s, q.key as QuickhackKey, { combatantId: req.targetId, npcId: req.targetNpcId }, rolls, { d10: outcome.check.d10, luck: outcome.check.luckSpent });
-        if (res.ok) s = res.state;
+        // Repete com a Sorte de ANTES do gasto (useQuickhack limita a Sorte ao saldo; com o saldo já
+        // descontado, o total mudaria e o efeito aplicado divergiria do que a rolagem mostrou).
+        const pre = { ...s, character: { ...s.character, luck: state.character.luck } };
+        const res = useQuickhack(pre, q.key as QuickhackKey, { combatantId: req.targetId, npcId: req.targetNpcId }, rolls, { d10: outcome.check.d10, luck: outcome.check.luckSpent });
+        if (res.ok) s = { ...res.state, character: spendLuck(res.state.character, outcome.check.luckSpent) };
       } else if (outcome.deathSave) {
         const c = s.character;
         s = { ...s, character: { ...c, deathSavePenalty: c.deathSavePenalty + 1, dead: !outcome.deathSave.success } };
@@ -297,6 +302,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       const next = allocate(state.character, action.section, action.key, action.delta, state.combat.active);
       if (typeof next === 'string') return appendChat(state, { kind: 'system', text: next });
       return { ...state, character: next };
+    }
+
+    case 'toggleNomadUpgrade': {
+      const next = toggleNomadUpgrade(state.character, action.key);
+      if (typeof next === 'string') return appendChat(state, { kind: 'system', text: next });
+      return emit({ ...state, character: next }, 'ROLE_IMPROVED', `Moto: ${next.nomadUpgrades?.length ?? 0} melhoria(s) ativa(s).`, { target: 'player', data: { nomadUpgrade: action.key } });
     }
 
     case 'useDrug': {

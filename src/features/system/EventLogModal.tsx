@@ -11,6 +11,7 @@ import { Badge, Button, Empty, Modal, Spinner, Tabs, cn } from '../../ui';
 import { useUiStore, type LogTab } from '../../store/uiStore';
 import { getRepository, type SnapshotMeta } from '../../services/repository';
 import { branchesOf, createBranch, listTimeline, rewindTo, switchBranch } from '../../store/timeline';
+import { isPermadead } from '../../services/saves';
 import { toast } from '../../ui/toastStore';
 
 type Tone = 'cyan' | 'magenta' | 'yellow' | 'green' | 'danger' | 'muted' | 'purple';
@@ -173,6 +174,11 @@ function TimelineTab({ game, close }: { game: GameState; close: () => void }) {
       .catch(() => setMetas([]));
   }, [game.id, game.session.branchId, game.turn]);
   if (!metas) return <Spinner />;
+  if (isPermadead(game)) {
+    return (
+      <Empty title="Modo hardcore">{game.character.bio.handle} morreu, e no hardcore a morte é definitiva: não há como voltar pela linha do tempo.</Empty>
+    );
+  }
 
   const points = metas.filter(m => m.branchId === game.session.branchId && m.kind === 'turn_start').reverse();
   const branches = branchesOf(metas);

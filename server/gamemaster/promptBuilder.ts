@@ -10,6 +10,8 @@ import { PROGRAMS, netActionsFor } from '../../shared/rules/net';
 import { QUICKHACKS, type QuickhackKey } from '../../shared/rules/quickhacks';
 import { surgeryValue, unlockedDrugs } from '../../shared/engine/roles';
 import { describeNet } from '../../shared/engine/net';
+import { CYBERWARE } from '../../shared/rules/cyberware';
+import { MERCHANT_CATALOG } from '../../shared/rules/merchantCatalog';
 import { humanityBand } from '../../shared/rules/humanity';
 import { describeCyberware } from '../../shared/engine/cyberware';
 import type { EngineResult } from '../../shared/types/turn';
@@ -52,11 +54,11 @@ export function describeRoleAbility(c: Character): string {
       break;
     case 'fixer': {
       const op = operatorPerks(c.roleRank);
-      detail = `alcance de mercado: ${op.reach} · pechincha −${Math.round(op.discount * 100)}%${op.jobBonus ? ` · trabalhos +${Math.round(op.jobBonus * 100)}%` : ''}`;
+      detail = `alcance de mercado: ${op.reach} · Pechincha até −${Math.round(op.haggleDiscount * 100)}% ao vencer a disputa${op.canHostNightMarket ? ' · Mercado Noturno mensal' : ''}${op.canHostMidnightMarket ? ' · Mercado da Meia-Noite' : ''}`;
       break;
     }
     case 'nomad':
-      detail = `+${c.roleRank} em Condução/Tec. de Veículos · veículo da família: ${familyVehicle(c.roleRank)}`;
+      detail = `+${c.roleRank} em Condução/Tec. de Veículos · veículo da família: ${familyVehicle(c.roleRank, c.nomadUpgrades)}`;
       break;
   }
   return `HABILIDADE DE PAPEL: ${info.name} rank ${c.roleRank}${detail ? ` — ${detail}` : ''}`;
@@ -83,6 +85,8 @@ export function describeCharacter(c: Character): string {
         d += ` (arma ${w.weaponClass}, ${w.damage}${w.magSize !== null ? `, pente ${w.loaded}/${w.magSize}` : ''}${tags.length ? `, ${tags.join(', ')}` : ''})`;
       }
       if (i.streetDrug) d += ' (droga de rua)';
+      // Shard leva o que contém e de onde veio: ao ser lido depois, o Mestre não inventa outro conteúdo.
+      if (i.category === 'datashard' && i.description) d += ` — ${i.description.slice(0, 220)}`;
       if (i.armor) d += ` (armadura ${i.armor.slot === 'head' ? 'cabeça' : 'corpo'} SP ${i.armor.sp}/${i.armor.maxSp})`;
       if (i.equipped) d += ' [equipado]';
       return d;
@@ -110,6 +114,47 @@ export function describeCharacter(c: Character): string {
     .join('\n');
 }
 
+/**
+ * Sistemas da cidade que vivem no estado (perseguição, Mercado Noturno, banca, oferta, encomendas,
+ * rastro). Sem isto o Mestre ficava cego: negava estoque que existia, narrava compra "concluída" de
+ * oferta ainda não confirmada e trocava chase_action por skill_check.
+ */
+export function describeCity(ctx: Pick<GameContext, 'world' | 'turn' | 'net' | 'factions'>): string[] {
+  const w = ctx.world;
+  const lines: string[] = [];
+  const chase = w.chase;
+  if (chase) {
+    const faction = chase.factionId ? ctx.factions.find(f => f.id === chase.factionId)?.name : undefined;
+    lines.push(
+      `PERSEGUIÇÃO ATIVA: ${chase.opponent}${faction ? ` (${faction})` : ''} — ${chase.reason} · pressão ${chase.pressure}/5 (5 = encurralado, 0 = escapou) · veículo do jogador ${chase.vehicleIntegrity}/6 · veículo perseguidor ${chase.opponentIntegrity}/6. Manobra do jogador = chase_action (drive, evade, escape, ram, shoot); o motor decide o resultado — não encerre a perseguição só na narração.`,
+    );
+  }
+  const market = w.market;
+  if (market && !(market.endsAt && new Date(market.endsAt).getTime() <= new Date(w.time).getTime())) {
+    const stock = market.cyberStock.filter(k => CYBERWARE[k]).map(k => `${CYBERWARE[k].name} [${k}] €$${CYBERWARE[k].price * (CYBERWARE[k].paired ? 2 : 1)}`);
+    lines.push(
+      `MERCADO NOTURNO ABERTO: ${market.name} (${market.district}${market.blackMarket ? ', mercado negro' : ''}${market.endsAt ? `, até ${formatGameTime(market.endsAt).time}` : ''}) · peças soltas à venda (exigem cirurgia de ripperdoc): ${stock.join(', ') || 'nada'}. Compra = buy_market_cyberware(key); só o que está nesta lista existe.`,
+    );
+  }
+  const shop = w.merchantCatalog;
+  if (shop && !(shop.expiresTurn !== undefined && shop.expiresTurn < ctx.turn)) {
+    const items = shop.stock.filter(k => Object.hasOwn(MERCHANT_CATALOG, k)).map(k => `${MERCHANT_CATALOG[k].name} [${k}] €$${MERCHANT_CATALOG[k].price}`);
+    lines.push(`BANCA ABERTA: ${shop.seller} (${shop.merchantType}) · estoque: ${items.join(', ') || 'vazio'}. O jogador escolhe (propose_catalog_item); você não vende nada fora desta lista.`);
+  }
+  const offer = w.tradeOffer;
+  if (offer && offer.expiresTurn >= ctx.turn) {
+    lines.push(
+      `OFERTA PENDENTE [${offer.id}] (aguarda o JOGADOR confirmar no terminal de negociação; Canal pode pechinchar uma vez com haggle_trade): ${offer.item.quantity}× ${offer.item.name} por €$${offer.price}, de ${offer.seller}${offer.haggle ? ` · pechincha ${offer.haggle.success ? `aceita (−€$${offer.haggle.discount})` : 'recusada'}` : ''}. NÃO narre a compra como feita, não cobre nem entregue: o motor liquida quando ele confirmar.`,
+    );
+  }
+  const orders = (w.cyberOrders ?? []).filter(o => o.status === 'ordered');
+  if (orders.length) lines.push(`ENCOMENDAS EM ANDAMENTO: ${orders.map(o => `${o.label} (paga €$${o.paid}, chega ${formatGameTime(o.readyAt).weekday} ${formatGameTime(o.readyAt).time})`).join('; ')}. A entrega é automática quando o relógio chega lá.`);
+  // Rastro de quickhack fora de uma arquitetura (dentro dela, describeNet já mostra).
+  const trace = ctx.net?.trace;
+  if (trace && trace.level > 0 && !ctx.net?.architecture) lines.push(`RASTRO NA REDE: ${trace.level}/5 (${trace.source}) — quanto mais alto, mais fácil um Trilheiro corporativo/NetWatch achar o jogador.`);
+  return lines;
+}
+
 function describeScene(ctx: GameContext): string {
   const t = formatGameTime(ctx.world.time);
   const l = ctx.world.location;
@@ -128,6 +173,8 @@ function describeScene(ctx: GameContext): string {
     lines.push(`⚠ AMEAÇA LETAL (desde o turno ${lt.sinceTurn}): ${lt.description}${armed ? ' — se o jogador não escapar AGORA, execute(targetId "player") é permitido' : ' — recém-anunciada: o jogador ainda tem este turno para reagir'}`);
   }
   if (ctx.net) lines.push(...describeNet({ net: ctx.net }));
+  lines.push(...describeCity(ctx));
+  if (ctx.world.daemons?.length) lines.push(`DAEMONS PLANTADOS PELO JOGADOR: ${ctx.world.daemons.map(d => `${d.name} em ${d.architectureName} (${d.directive})`).join('; ')}. Eles permanecem nesse local; reconheça os efeitos coerentes, sem conceder recursos automáticos.`);
   if (ctx.sandbox) lines.push('MODO SANDBOX (teste de mecânicas): atenda na hora pedidos meta do jogador (spawnar inimigos por template, criar rede, aplicar condições/ameaças, ferir, curar) usando as ferramentas; narração curta e direta.');
   if (ctx.combat.active) {
     lines.push(`COMBATE — rodada ${ctx.combat.round}${ctx.combat.playerInitiative !== null ? `, iniciativa do jogador ${ctx.combat.playerInitiative}` : ''}`);
@@ -186,6 +233,7 @@ function describeNpcs(ctx: GameContext): string {
           `    confiança ${n.trust} · respeito ${n.respect} · medo ${n.fear} · raiva ${n.anger}${n.location ? ` · em ${n.location}` : ''}`,
           n.conditions?.length ? `    condições: ${describeConditions(n.conditions)}` : '',
           n.pendingMatters ? `    pendente: ${n.pendingMatters}` : '',
+          n.playerOwes || n.owesPlayer ? `    dinheiro: ${[n.playerOwes ? `o jogador DEVE €$${n.playerOwes} a ele` : '', n.owesPlayer ? `ele DEVE €$${n.owesPlayer} ao jogador` : ''].filter(Boolean).join(' · ')}` : '',
           ...(full ? describeNpcDepth(n, ctx) : n.profile?.traits.length ? [`    traços: ${n.profile.traits.join(', ')}`] : []),
         ]
           .filter(Boolean)
@@ -201,7 +249,8 @@ function describeWorld(ctx: GameContext): string {
   const lines = [
     `Flags conhecidas: ${pub.join(', ') || '—'}`,
     `Flags ocultas (só o Mestre): ${hidden.join(', ') || '—'}`,
-    `Facções: ${ctx.factions.map(f => `${f.name} ${f.standing}`).join(', ')}`,
+    // O id vai junto: modify_faction_heat/modify_faction exigem factionId, e a IA não tinha como saber.
+    `Facções: ${ctx.factions.map(f => `[${f.id}] ${f.name} ${f.standing}${f.heat ? ` · calor ${f.heat}/5` : ''}`).join(', ')}`,
     `O jogador sabe: ${ctx.playerKnowledge.join(' | ') || '—'}`,
   ];
   if (ctx.upcoming.length) lines.push(`Agenda do mundo (só o Mestre): ${ctx.upcoming.map(u => `[${u.id}] ${formatGameTime(u.at).time} ${u.description}`).join('; ')}`);
@@ -214,7 +263,7 @@ const FRONT_AWARE = { no: 'o jogador NÃO sabe da trama', suspects: 'o jogador D
 export function describeFronts(ctx: GameContext): string {
   const fronts = ctx.fronts ?? [];
   const lines = fronts.map(f => {
-    const head = `  - [${f.id}] ${f.title} — ${f.status === 'active' ? `passo ${f.stage}/${f.total}` : f.status === 'resolved' ? 'CONCLUÍDA (aconteceu)' : 'DETIDA pelo jogador'} · ${FRONT_AWARE[f.playerAware]}`;
+    const head = `  - [${f.id}] ${f.title} — ${f.status === 'active' ? `passo ${f.stage}/${f.total}` : f.status === 'resolved' ? 'CONCLUÍDA (aconteceu)' : 'DETIDA pelo jogador'} · ${FRONT_AWARE[f.playerAware]} · ${f.sceneLink ? `LIGADA À CENA: ${f.sceneLink}` : 'fora desta cena'}`;
     return [
       head,
       f.continues ? `    CONTINUAÇÃO de "${f.continues.title}", que ${f.continues.outcome}` : '',
@@ -227,7 +276,11 @@ export function describeFronts(ctx: GameContext): string {
       .join('\n');
   });
   const news = (ctx.news ?? []).map(n => `  - [${n.source}] ${n.headline}`);
-  return [lines.join('\n') || '  (cidade quieta)', news.length ? `Manchetes recentes no NCNet do jogador:\n${news.join('\n')}` : ''].filter(Boolean).join('\n');
+  // Uma linha só (não por trama): o lugar descrito numa trama "fora desta cena" é OUTRO lugar.
+  const apart = fronts.some(f => f.status === 'active' && !f.sceneLink)
+    ? '  (Trama "fora desta cena": o lugar, as pessoas e os dados dela são de OUTRO ponto da cidade. Lugar parecido com o de agora não é o dela; ela só chega aqui por manchete, boato ou o rosto aparecendo de verdade.)'
+    : '';
+  return [apart, lines.join('\n') || '  (cidade quieta)', news.length ? `Manchetes recentes no NCNet do jogador:\n${news.join('\n')}` : ''].filter(Boolean).join('\n');
 }
 
 export function describeOutcome(o: RollOutcome): string {
@@ -305,11 +358,28 @@ export function describeEngineResult(r: EngineResult | null): string {
   return lines.join('\n');
 }
 
+/**
+ * Memórias separadas em "desta cena" e "pano de fundo", com turno de origem. Juntas e sem rótulo,
+ * a memória de outro hotel/pessoa parecia falar do lugar de agora e o Mestre fundia as duas histórias.
+ */
+export function describeMemories(ctx: Pick<GameContext, 'memories' | 'npcs'>): string {
+  const line = (m: GameContext['memories'][number]) => `  - (${m.type}, imp ${m.importance}, t${m.createdTurn}) ${ctx.npcs.find(n => n.id === m.subject)?.name ?? m.subject}: ${m.content}`;
+  const linked = ctx.memories.filter(m => m.linked !== false);
+  const background = ctx.memories.filter(m => m.linked === false);
+  if (!background.length) return linked.map(line).join('\n');
+  return [
+    linked.length ? `  Ligadas a esta cena/ação:\n${linked.map(line).join('\n')}` : '',
+    `  Pano de fundo (OUTROS lugares/pessoas/assuntos — não são o lugar, o arquivo nem a pessoa de agora; não ligue por semelhança):\n${background.map(line).join('\n')}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function contextSections(ctx: GameContext): string {
   const quests = ctx.quests
-    .map(m => `  - [${m.id}] ${m.title} (${m.status})${m.status === 'ACTIVE' ? `: ${m.objective}` : ''}${m.rewardEddies ? (m.status === 'COMPLETED' ? ` · €$${m.rewardEddies} JÁ PAGOS (não pague de novo)` : ` · paga €$${m.rewardEddies}`) : ''}${m.giverId ? ` · de ${m.giverId}` : ''}`)
+    .map(m => `  - [${m.id}] ${m.title} (${m.status})${m.status === 'ACTIVE' ? `: ${m.objective}` : ''}${m.rewardEddies ? (m.status === 'COMPLETED' ? ` · €$${m.rewardEddies} JÁ PAGOS (não pague de novo)` : ` · paga €$${m.rewardEddies}${m.advancePaid ? ` (€$${m.advancePaid} JÁ ADIANTADOS; na entrega o motor paga só €$${Math.max(0, m.rewardEddies - m.advancePaid)})` : ''}`) : ''}${m.giverId ? ` · de ${m.giverId}` : ''}`)
     .join('\n');
-  const memories = ctx.memories.map(m => `  - (${m.type}, imp ${m.importance}) ${m.subject}: ${m.content}`).join('\n');
+  const memories = describeMemories(ctx);
   const summaries = ctx.summaries.map(s => `  - Turnos ${s.fromTurn}–${s.toTurn}: ${s.text}`).join('\n');
   const phone = ctx.phone.map(t => `  - ${t.npcName}: ${t.last.map(m => `${m.from === 'player' ? 'Jogador' : t.npcName}: "${m.text}"`).join(' | ')}`).join('\n');
   const history = ctx.recentHistory.map(e => `${e.kind === 'player' ? 'JOGADOR' : e.kind === 'narration' ? 'MESTRE' : e.kind.toUpperCase()} (t${e.turn}): ${e.text}`).join('\n\n');
@@ -368,7 +438,22 @@ export function buildNarratePrompt(ctx: GameContext, input: { kind: 'action' | '
     input.kind === 'prologue'
       ? `# PRÓLOGO
 Crie a CENA DE ABERTURA (cold open): in medias res, impacto sensorial, o ofício de ${role} em ação, um incidente ligado à dívida ou ao laço.
-Rafa "Zero-Um" já mandou SMS oferecendo um corre de €$600 (ele NÃO está na cena). Use update_scene (descrição, ameaça, situação, objetivo) e advance_time.
+${
+          ctx.world.opening?.hook
+            ? `ABERTURA DESTA CAMPANHA (siga o lugar, a hora e as pessoas — não troque pelo cubículo nem pelo Rafa):\n${ctx.world.opening.hook}\nOs NPCs desta abertura já existem com os ids acima: use-os (não os recrie com upsert_npc).`
+            : 'Rafa "Zero-Um" já mandou SMS oferecendo um corre de €$600 (ele NÃO está na cena).'
+        }
+PRIMEIRO CORRE = TUTORIAL DIEGÉTICO PARA QUEM NUNCA JOGOU CYBERPUNK:
+- A missão [m_first_job] já existe: não crie uma missão duplicada. Faça a cena tornar seu objetivo concreto; atualize-a quando a situação mudar e conclua-a quando o jogador tiver atravessado o primeiro problema.
+- Apresente Night City pela situação e pelos NPCs, não por aula expositiva: eddies são sobrevivência, corporações e gangues têm poder, contatos cobram favores e o personagem começa pequeno.
+- Ofereça pelo menos três abordagens plausíveis, entre conversa/observação, uso do papel, preparação ou saída. Combate é uma consequência possível, nunca a resposta obrigatória.
+- Não explique botões nem despeje regras. Dados só entram em ação quando houver risco; um sucesso resolve somente algo plausível para o nível do personagem.
+${ctx.world.opening?.tutorial ? `
+FOCO DESTE PERSONAGEM (obrigatório): ${ctx.world.opening.tutorial.focus}.
+Lição de papel: ${ctx.world.opening.tutorial.roleLesson}
+Coerência de biografia: ${ctx.world.opening.tutorial.characterFit}
+Primeiras abordagens que devem ser realmente possíveis: ${ctx.world.opening.tutorial.suggestedApproaches.join('; ')}.` : ''}
+Use update_scene (descrição, ameaça, situação, objetivo) e advance_time.
 Termine com um gancho e "O que você faz, choom?". Sem enemyActions.`
       : `# AÇÃO DO JOGADOR
 "${input.playerInput ?? ''}"
@@ -421,17 +506,20 @@ export function buildPhonePrompt(ctx: GameContext, npcId: string, message: strin
 CONTATO: [${npcId}] ${npc?.name ?? npcId} — ${npc?.role ?? 'Contato'}
 Relação: confiança ${npc?.trust ?? 0} · respeito ${npc?.respect ?? 0} · medo ${npc?.fear ?? 0} · raiva ${npc?.anger ?? 0}
 Pendente: ${npc?.pendingMatters ?? '—'}
+Dinheiro: ${[npc?.playerOwes ? `o jogador deve €$${npc.playerOwes} a ele` : '', npc?.owesPlayer ? `ele deve €$${npc.owesPlayer} ao jogador` : ''].filter(Boolean).join(' · ') || 'nada em aberto'}
 ${npc ? describeNpcDepth(npc, ctx, '').join('\n') : ''}
 O que é "SÓ VOCÊ SABE" só sai se o contato tiver motivo; se sair, chame reveal_npc.
 
 JOGADOR: ${ctx.character.bio.handle}, €$${ctx.character.money}, PV ${ctx.character.hp.current}/${ctx.character.hp.max}, em ${ctx.world.location.district} (${ctx.world.location.spot}) às ${t.time}
-Missões: ${ctx.quests.filter(q => q.status === 'ACTIVE').map(q => `[${q.id}] ${q.title}`).join('; ') || 'nenhuma'}
-Flags: ${ctx.flags.map(f => `${f.key}=${String(f.value)}`).join(', ') || '—'}
+Missões: ${ctx.quests.filter(q => q.status === 'ACTIVE').map(q => `[${q.id}] ${q.title}${q.rewardEddies ? ` (paga €$${q.rewardEddies}${q.advancePaid ? `, €$${q.advancePaid} já adiantados` : ''}${q.giverId ? `, de ${q.giverId}` : ''})` : ''}`).join('; ') || 'nenhuma'}
+Flags conhecidas: ${ctx.flags.filter(f => f.visibility !== 'hidden').map(f => `${f.key}=${String(f.value)}`).join(', ') || '—'}
+Flags ocultas (só o Mestre; o contato não sabe disso a menos que esteja ligado a ele): ${ctx.flags.filter(f => f.visibility === 'hidden').map(f => `${f.key}=${String(f.value)}`).join(', ') || '—'}
 
 CONVERSA ATÉ AGORA:
 ${thread?.last.map(m => `${m.from === 'player' ? 'JOGADOR' : npc?.name}: "${m.text}"`).join('\n') || '(início)'}
 
 NOVA MENSAGEM DO JOGADOR:
+PAPÉIS IMUTÁVEIS: você escreve SOMENTE a resposta de ${npc?.name ?? npcId}. Esta mensagem foi escrita pelo JOGADOR para o contato. Nunca reconta uma ação do jogador como se fosse do contato: se o jogador enviou, mostrou ou comprou algo, responda como quem RECEBEU/VÊU a mensagem ("vi", "manda mais", "comprou onde?"), não como quem fez a ação.
 "${message}"
 `.trim();
 }

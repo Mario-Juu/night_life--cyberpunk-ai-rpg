@@ -81,7 +81,7 @@ beforeEach(() => {
 
 describe('pipeline do turno', () => {
   it('intérprete → motor → rolagem com seed → narrador → turno registrado', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     expect(useGameStore.getState().game?.turn).toBe(1);
 
     interpretReply = { intent: { type: 'social', summary: 'convencer o segurança', confidence: 0.9 }, framing: 'Ele cruza os braços.', toolCalls: [{ tool: 'persuade', args: { dv: 13, reason: 'Lábia no segurança' } }] };
@@ -120,7 +120,7 @@ describe('pipeline do turno', () => {
   });
 
   it('ação sem risco vai direto ao narrador; pedido ambíguo só pergunta', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [] };
     await sendAction('Olho pela janela');
     expect(calls).toEqual(['narrate:prologue', 'interpret', 'narrate:action']);
@@ -132,7 +132,7 @@ describe('pipeline do turno', () => {
   });
 
   it('arma sem munição: nenhum disparo, munição continua 0 e o narrador recebe a recusa', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     const g = useGameStore.getState().game!;
     useGameStore.getState().setGame({ ...g, character: { ...g.character, inventory: g.character.inventory.map(i => (i.weapon ? { ...i, weapon: { ...i.weapon, loaded: 0 } } : i)) } });
     interpretReply = { intent: { type: 'attack', summary: 'atirar', confidence: 1 }, toolCalls: [{ tool: 'attack', args: { targetName: 'Segurança' } }] };
@@ -145,7 +145,7 @@ describe('pipeline do turno', () => {
   });
 
   it('telefone e narrativa são serializados; relação via ferramenta persiste', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [] };
     hold = () => undefined;
     const action = sendAction('Olho em volta');
@@ -160,7 +160,7 @@ describe('pipeline do turno', () => {
   });
 
   it('chamada mal formada volta ao intérprete com o erro e o pagamento acontece', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     const money = useGameStore.getState().game!.character.money;
     interpretQueue.push(
       { intent: { type: 'trade', summary: 'pagar', confidence: 1 }, toolCalls: [{ tool: 'pay_money', args: { recipient: 'Síndico', combatantId: 'm_rent' } }] },
@@ -175,7 +175,7 @@ describe('pipeline do turno', () => {
   });
 
   it('regenerar narração mantém a mesma mecânica', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     interpretReply = { intent: { type: 'observe', summary: 'olhar', confidence: 1 }, toolCalls: [{ tool: 'move_location', args: { spot: 'Telhado', minutes: 10 } }] };
     narrateReply = narration({ narration: 'Primeira versão.' });
     await sendAction('Subo ao telhado');
@@ -205,7 +205,7 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
   it('pergunta; "seguir com o Lite" pede a narração de novo com allowLite', async () => {
     useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
     narrateEnvQueue.push(flashDown());
-    const done = startCampaign(character());
+    const done = startCampaign(character(), 'classic');
     const choice = await waitForChoice();
     expect(choice.waitMayHelp).toBe(true);
     expect((narrateInputs[0] as { allowLite?: boolean }).allowLite).toBe(false);
@@ -219,12 +219,12 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
   it('"sempre usar o Lite" vira preferência: a próxima narração já vai com allowLite, sem perguntar', async () => {
     useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
     narrateEnvQueue.push(flashDown());
-    const done = startCampaign(character());
+    const done = startCampaign(character(), 'classic');
     (await waitForChoice()).resolve('always');
     await done;
     expect(useUiStore.getState().liteNarration).toBe('allow');
     narrateInputs.length = 0;
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     expect((narrateInputs[0] as { allowLite?: boolean }).allowLite).toBe(true);
     useUiStore.setState({ liteNarration: 'ask' });
   });
@@ -235,7 +235,7 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
       useUiStore.setState({ liteNarration: 'insist', liteChoice: null });
       narrateEnvQueue.push(flashDown(), flashDown());
       let finished = false;
-      const done = startCampaign(character()).then(() => {
+      const done = startCampaign(character(), 'classic').then(() => {
         finished = true;
       });
       for (let i = 0; i < 20 && !finished; i++) await vi.advanceTimersByTimeAsync(INSIST_FLASH_RETRY_MS);
@@ -254,7 +254,7 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
     useUiStore.setState({ liteNarration: 'insist', liteChoice: null });
     const quota = flashDown();
     narrateEnvQueue.push({ ...quota, meta: { ...quota.meta, failureKind: 'quota_day', waitMayHelp: false } });
-    const done = startCampaign(character());
+    const done = startCampaign(character(), 'classic');
     const choice = await waitForChoice();
     expect(narrateInputs).toHaveLength(1);
     expect(choice.waitMayHelp).toBe(false);
@@ -266,7 +266,7 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
   it('fechar a pergunta mantém o aviso de modo degradado (nada é narrado pelo Lite)', async () => {
     useUiStore.setState({ liteNarration: 'ask', liteChoice: null });
     narrateEnvQueue.push(flashDown());
-    const done = startCampaign(character());
+    const done = startCampaign(character(), 'classic');
     (await waitForChoice()).resolve('cancel');
     await done;
     expect(narrateInputs).toHaveLength(1);
@@ -277,14 +277,14 @@ describe('Flash indisponível: o jogador escolhe antes do Flash-Lite', () => {
 describe('Hospedagem cortou a resposta (502)', () => {
   it('um 502 na narração: tenta de novo sozinho e o turno termina narrado', async () => {
     narrateThrowQueue.push(Object.assign(new Error('A hospedagem cortou a resposta do Mestre'), { status: 502 }));
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     expect(calls.filter(c => c.startsWith('narrate'))).toHaveLength(2);
     expect(useGameStore.getState().game!.chat.some(e => e.kind === 'narration' && e.text === 'Narração.')).toBe(true);
   }, 15_000);
 
   it('dois 502 seguidos: desiste com a mensagem clara (sem loop)', async () => {
     for (let i = 0; i < 2; i++) narrateThrowQueue.push(Object.assign(new Error('A hospedagem cortou a resposta do Mestre'), { status: 502 }));
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     expect(calls.filter(c => c.startsWith('narrate'))).toHaveLength(2);
     expect(useGameStore.getState().game!.chat.some(e => /cortou a resposta/.test(e.text))).toBe(true);
   }, 15_000);
@@ -292,7 +292,7 @@ describe('Hospedagem cortou a resposta (502)', () => {
 
 describe('Página recarregada no meio do turno (UI-3)', () => {
   it('narrando: fecha o turno, avisa e a narração pode ser pedida de novo', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     interpretReply = { intent: { type: 'other', summary: 'olhar', confidence: 0.9 }, toolCalls: [] };
     await sendAction('Olho em volta');
     const game = useGameStore.getState().game!;
@@ -308,7 +308,7 @@ describe('Página recarregada no meio do turno (UI-3)', () => {
   });
 
   it('interpretando: fecha como falho e pede para reenviar; rolagem pendente fica como está', async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     const game = useGameStore.getState().game!;
     const base = { turnId: 't', gameId: game.id, branchId: game.session.branchId, turn: game.turn, kind: 'action', startedAt: '', playerInput: 'x', parsedIntent: null, toolCalls: [], diceRolls: [] } as unknown as TurnRecord;
     useGameStore.getState().setActiveTurn({ ...base, phase: 'awaiting_roll' });
@@ -323,7 +323,7 @@ describe('Página recarregada no meio do turno (UI-3)', () => {
 
 describe('Botões da aba Equipamento gastam a vez em combate', () => {
   const inCombat = async () => {
-    await startCampaign(character());
+    await startCampaign(character(), 'classic');
     const g = useGameStore.getState().game!;
     const gun = g.character.inventory.find(i => i.weapon?.magSize)!;
     const ammo = { id: 'item_ammo', name: 'Munição', category: 'ammo' as const, quantity: 30, description: '', equipped: false, value: 0, ammoKind: gun.weapon!.ammo ?? undefined };

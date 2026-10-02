@@ -17,6 +17,12 @@ const FAILURE_TEXT = {
  * Resultado de rolagem já resolvido pelo motor (somente leitura; nunca tem botão de rolar).
  * `concealed`: a narração ainda não chegou — mostra só os dados, sem desfecho.
  */
+/** "Curto-Circuito (Interface 4 + d10 8 = 12): Curto-circuito em X: 7 de dano direto. −3 RAM. RAM 3/6." → só o efeito. */
+function quickhackEffect(summary: string): string {
+  const afterRoll = summary.replace(/^[^:]*?\)\s*:\s*/, '');
+  return afterRoll.replace(/\s*−\d+ RAM\.?\s*RAM \d+\/\d+\.?\s*$/, '').replace(/\s*RAM \d+\/\d+\.?\s*$/, '').trim();
+}
+
 export function RollResult({ outcome, defaultOpen = false, concealed = false }: { outcome: RollOutcome; defaultOpen?: boolean; concealed?: boolean }) {
   const { check, request, attack, deathSave, initiative } = outcome;
   const [open, setOpen] = useState(defaultOpen);
@@ -58,6 +64,7 @@ export function RollResult({ outcome, defaultOpen = false, concealed = false }: 
                 ? `d10 ${deathSave.roll} · precisa ≤ ${deathSave.target}`
                 : revealDv && !concealed ? `${check.total} vs DV ${check.dv}` : `Total ${check.total}`}
           {!concealed && attack?.application && !attack.failure && <span className="text-danger"> · −{attack.application.hpDamage} PV em {attack.targetName}</span>}
+          {!concealed && outcome.quickhack && <span className={check.success ? 'text-neon-cyan' : 'text-dim'}> · {quickhackEffect(outcome.quickhack.summary)}</span>}
         </span>
         {!concealed && (
           <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-dim hover:text-neon-cyan shrink-0">

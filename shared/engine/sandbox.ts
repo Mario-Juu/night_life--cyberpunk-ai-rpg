@@ -62,13 +62,40 @@ function arsenal(): InventoryItem[] {
 /** Aplica o papel com tudo no máximo (rank 10, alocações cheias, deck excelente com programas). */
 export function applySandboxRole(s: GameState, role: RoleId, rank = MAX_ROLE_RANK): GameState {
   const c = s.character;
+  const distribute = <T extends string>(keys: readonly T[], total: number, max: number): Partial<Record<T, number>> => {
+    const out: Partial<Record<T, number>> = {};
+    for (let i = 0; i < total; i++) {
+      const key = keys[i % keys.length];
+      if ((out[key] ?? 0) < max) out[key] = (out[key] ?? 0) + 1;
+    }
+    return out;
+  };
+  const soloAwareness = (): Record<string, number> => {
+    let remaining = rank;
+    const out: Record<string, number> = {};
+    if (remaining >= 3) {
+      out.precision = 3;
+      remaining -= 3;
+    }
+    for (const key of ['initiative', 'spotWeakness', 'threatDetection']) {
+      if (remaining <= 0) break;
+      out[key] = 1;
+      remaining--;
+    }
+    if (remaining >= 2) {
+      out.deflection = remaining - (remaining % 2);
+      remaining %= 2;
+    }
+    if (remaining) out.initiative = (out.initiative ?? 0) + remaining;
+    return out;
+  };
   const roleData =
     role === 'solo'
-      ? { combatAwareness: { deflection: 4, precision: 3, initiative: 1, spotWeakness: 1, threatDetection: 1 } }
+      ? { combatAwareness: soloAwareness() }
       : role === 'tech'
-        ? { maker: { field: rank, upgrade: rank - 4, fabrication: 2, invention: 2 } } // 2 × rank pontos
+        ? { maker: distribute(['field', 'upgrade', 'fabrication', 'invention'] as const, rank * 2, rank) } // 2 × rank pontos
         : role === 'medtech'
-          ? { medicine: { surgery: 5, pharma: 5, cryo: 0 } }
+          ? { medicine: distribute(['surgery', 'pharma', 'cryo'] as const, rank, 5) }
           : defaultRoleData(role);
   const deck =
     role === 'netrunner'
@@ -82,7 +109,7 @@ export function applySandboxRole(s: GameState, role: RoleId, rank = MAX_ROLE_RAN
   const inventory = c.inventory.filter(i => i.id !== VEHICLE_ITEM_ID);
   // Trilheiro precisa de Neural Link + Plugues para conectar o deck.
   if (role === 'nomad') inventory.push({ id: VEHICLE_ITEM_ID, name: familyVehicle(rank), category: 'gear', quantity: 1, description: 'Veículo da família.', equipped: true, value: 0 });
-  const character = { ...c, bio: { ...c.bio, role }, roleRank: rank, roleData, deck, inventory };
+  const character = { ...c, bio: { ...c.bio, role }, roleRank: rank, roleData, deck, inventory, nomadUpgrades: role === 'nomad' ? [] : undefined };
   return emit(withStarterCyberware({ ...s, character }), 'SYSTEM', `Sandbox: papel ${ROLE_LABEL[role]}, rank ${rank}`);
 }
 
@@ -140,7 +167,7 @@ export const sbx = {
   money: (s: GameState, v: number): GameState => ({ ...s, character: { ...s.character, money: Math.max(0, Math.round(v)) } }),
   ip: (s: GameState, v: number): GameState => ({ ...s, character: { ...s.character, ip: Math.max(0, Math.round(v)) } }),
   luck: (s: GameState, v: number): GameState => ({ ...s, character: { ...s.character, luck: { ...s.character.luck, current: clamp(v, 0, s.character.luck.max) } } }),
-  rank: (s: GameState, v: number): GameState => ({ ...s, character: { ...s.character, roleRank: clamp(v, 1, MAX_ROLE_RANK) } }),
+  rank: (s: GameState, v: number): GameState => applySandboxRole(s, s.character.bio.role, clamp(v, 1, MAX_ROLE_RANK)),
   allSkills: (s: GameState, v: number): GameState => ({ ...s, character: { ...s.character, skills: Object.fromEntries(SKILLS.map(k => [k.id, clamp(v, 0, 10)])) } }),
   condition: (s: GameState, key: ConditionKey, active: boolean, turnsAgo = 1): GameState => ({
     ...s,

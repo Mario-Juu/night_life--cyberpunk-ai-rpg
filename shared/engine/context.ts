@@ -3,10 +3,10 @@
  * SISTEMA (no servidor) + PERSONAGEM + CENA + NPCs RELEVANTES + MISSÕES + MUNDO
  * + MEMÓRIAS RELEVANTES + RESUMOS + HISTÓRICO RECENTE.
  */
-import type { ChatEntry, GameState, Npc } from '../types/game';
+import type { ChatEntry, Front, GameState, Npc } from '../types/game';
 import type { GameContext } from '../types/gm';
 import { getSkill } from '../rules/skills';
-import { retrieveMemories } from './memory';
+import { memoryLinked, mentionsName, retrieveMemories } from './memory';
 import { turnIdOf } from './events';
 import { computeThreat, pendingOffscreen } from './world';
 import { continuationOf } from './fronts';
@@ -36,7 +36,8 @@ export function relevantNpcs(state: GameState, query: string): Npc[] {
   const recentThreads = new Set(state.phone.filter(t => t.messages.length).slice(-4).map(t => t.npcId));
   const score = (n: Npc) => {
     const first = n.name.toLowerCase().replace(/["“”]/g, '').split(/\s+/)[0];
-    const mentioned = q.includes(n.id) || (first.length > 2 && q.includes(first));
+    // Palavra inteira: "Rafael" não puxa a Rafa, "banana" não puxa a Ana.
+    const mentioned = q.includes(n.id) || mentionsName(q, first) || mentionsName(q, n.name);
     if (n.status === 'dead') return mentioned ? 5 : -1;
     // Rosto/vítima de trama que o jogador ainda não conheceu: só entra se for citado.
     if (n.offstage) return mentioned ? 8 : -1;
@@ -44,10 +45,39 @@ export function relevantNpcs(state: GameState, query: string): Npc[] {
   };
   return state.npcs
     .map(n => ({ n, s: score(n) }))
-    .filter(x => x.s >= 0)
+    // Nota 0 = sem nada que o ligue a este turno (não está aqui, não foi citado, não é contato,
+    // não deu missão). Entrava assim mesmo, com perfil e segredos, e gente de outra história
+    // virava "relevante" — o Mestre a costurava na cena.
+    .filter(x => x.s > 0)
     .sort((a, b) => b.s - a.s)
     .slice(0, MAX_CONTEXT_NPCS)
     .map(x => x.n);
+}
+
+/**
+ * Por que esta trama toca a cena de agora (rosto/vítima presente ou citado, o grupo dela no lugar,
+ * na rede ou na fala do jogador). Sem motivo concreto → undefined: a trama é de OUTRO lugar, e o
+ * Mestre não deve ligá-la ao que está aqui só porque "também é um hotel".
+ */
+export function frontSceneLink(state: GameState, f: Front, query = ''): string | undefined {
+  const present = state.scene.presentNpcIds;
+  for (const id of [f.seedNpcId, f.victimNpcId]) {
+    const n = id ? state.npcs.find(x => x.id === id) : undefined;
+    if (!n) continue;
+    if (present.includes(n.id)) return `${n.name} está na cena`;
+    if (mentionsName(query, n.name) || mentionsName(query, n.name.split(/\s+/)[0])) return `o jogador citou ${n.name}`;
+  }
+  const faction = state.factions.find(x => x.id === f.factionId);
+  const group = [f.who, faction?.name].filter((g): g is string => !!g && g.length > 2);
+  const presentGroup = state.npcs.find(n => present.includes(n.id) && n.faction && group.some(g => mentionsName(n.faction!, g) || n.faction === f.factionId));
+  if (presentGroup) return `${presentGroup.name} (${presentGroup.faction}) está na cena`;
+  const l = state.world.location;
+  const here = [l.spot, l.subDistrict, state.scene.description, state.net?.architecture?.name ?? ''].join(' · ');
+  const g = group.find(x => mentionsName(here, x));
+  if (g) return `${g} aparece no lugar/rede atual`;
+  const said = group.find(x => mentionsName(query, x));
+  if (said) return `o jogador citou ${said}`;
+  return undefined;
 }
 
 /** Histórico cru APÓS o último resumo (o que é anterior está nos resumos). */
@@ -74,7 +104,7 @@ export function combatForContext(combat: GameState['combat']): GameState['combat
 }
 
 export function buildGameContext(state: GameState, query = ''): GameContext {
-  const memories = retrieveMemories(state, query || state.world.situation, 8);
+  const memories = retrieveMemories(state, query || state.world.situation, 8).map(m => ({ ...m, linked: memoryLinked(state, m, query) }));
   return {
     sessionId: state.id,
     branchId: state.session.branchId,
@@ -117,6 +147,7 @@ export function buildGameContext(state: GameState, query = ''): GameContext {
       next: f.status === 'active' && f.stages[f.stage] ? { title: f.stages[f.stage].title, at: f.nextAt, blockHint: f.stages[f.stage].blockHint } : undefined,
       seedNpc: state.npcs.find(n => n.id === f.seedNpcId)?.name,
       continues: continuationOf(state, f),
+      sceneLink: frontSceneLink(state, f, query),
     })),
     news: (state.news ?? []).slice(-6).map(n => ({ source: n.source, headline: n.headline, at: n.at })),
     party: (state.party?.members ?? []).map(m => {

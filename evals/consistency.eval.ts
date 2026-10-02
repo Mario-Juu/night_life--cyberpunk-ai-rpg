@@ -65,20 +65,20 @@ describe('TEST 003 — segredo não vira conhecimento do jogador', () => {
 describe('TEST 004 — economia', () => {
   it('100 eddies, compra item de 80 → saldo 20', () => {
     const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 100 } }));
-    sc.tool('interpreter', 'buy_item', { name: 'Armadura de couro', category: 'armor', armorSP: 4, price: 80 });
+    sc.tool('player', 'buy_item', { name: 'Armadura de couro', category: 'armor', armorSP: 4, price: 80 });
     // Tabela do motor: SP 4 custa 20 → o LLM não define o preço quando há referência.
     expect(sc.state.character.money).toBe(80);
-    sc.tool('interpreter', 'buy_item', { name: 'Chip de dados raro', category: 'datashard', price: 80 });
+    sc.tool('player', 'buy_item', { name: 'Chip de dados raro', category: 'datashard', price: 80 });
     expect(sc.last().ok).toBe(true);
     expect(sc.state.character.money).toBe(0);
-    sc.tool('interpreter', 'buy_item', { name: 'Chip caro', category: 'datashard', price: 80 });
+    sc.tool('player', 'buy_item', { name: 'Chip caro', category: 'datashard', price: 80 });
     expect(sc.last().ok).toBe(false);
     expect(sc.state.character.money).toBe(0);
   });
 
   it('compra livre de 80 com 100 no bolso deixa 20', () => {
     const sc = scenario().edit(s => ({ ...s, character: { ...s.character, money: 100 } }));
-    sc.tool('interpreter', 'buy_item', { name: 'Holo-mapa de Heywood', category: 'gear', price: 80 });
+    sc.tool('player', 'buy_item', { name: 'Holo-mapa de Heywood', category: 'gear', price: 80 });
     expect(sc.state.character.money).toBe(20);
     expect(sc.item('Holo-mapa de Heywood')).toBeDefined();
   });
@@ -87,7 +87,7 @@ describe('TEST 004 — economia', () => {
     const sc = scenario();
     const before = sc.state.character.money;
     sc.tool('narrator', 'transfer_money', { amount: 50000, counterpart: 'Rafa', reason: 'bônus' });
-    expect(sc.state.character.money).toBe(before + 1000);
+    expect(sc.state.character.money).toBe(before);
     sc.tool('narrator', 'transfer_money', { amount: 300, reason: 'x' });
     expect(sc.last().ok).toBe(false);
   });

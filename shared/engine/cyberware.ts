@@ -210,6 +210,10 @@ export function installCyberware(s0: GameState, key: string, rng: Rng, opts: Ins
     return { ok: false, error: `${def.name} não soma com o reforço muscular que você já tem.` };
   const chip = def.effects.some(e => e.kind === 'skill_chip');
   if (chip && !getSkill(opts.skillId ?? '')) return { ok: false, error: 'Diga qual perícia o chip ensina.' };
+  // A mesma peça não se instala duas vezes (12 Biomonitores; Acelerador Sináptico somando iniciativa).
+  // Fundações têm máximo próprio; opções podem repetir em OUTRA fundação (um em cada braço); chip, por perícia.
+  const sameAs = (cw: CyberwareItem) => cw.key === def.key && (!chip || cw.skillId === opts.skillId);
+  if (!def.foundation && !def.requires && c.cyberware.some(sameAs)) return { ok: false, error: `Você já tem ${def.name}${chip ? ` de ${getSkill(opts.skillId ?? '')?.label}` : ''} instalado.` };
   for (const e of def.effects) {
     if (e.kind === 'body_set') {
       if (!hasCyber(c, 'grafted_muscle')) return { ok: false, error: `${def.name} exige Músculo Enxertado & Osso Reforçado.` };
@@ -218,12 +222,20 @@ export function installCyberware(s0: GameState, key: string, rng: Rng, opts: Ins
   }
   const parents: string[] = [];
   if (def.requires) {
-    const free = foundations(c).filter(f => f.kind === def.requires && f.capacity - f.used >= (def.slots ?? 1));
+    // Fundação dentro de fundação (soquetes de chip no Neural Link) repete até o máximo dela; opção comum, não.
+    const hosting = (f: { item: { id: string } }) => !def.foundation && c.cyberware.some(cw => cw.parentId === f.item.id && sameAs(cw));
+    const free = foundations(c).filter(f => f.kind === def.requires && f.capacity - f.used >= (def.slots ?? 1) && !hosting(f));
     if (free.length < copies) {
-      const have = foundations(c).filter(f => f.kind === def.requires).length;
+      const have = foundations(c).filter(f => f.kind === def.requires);
+      const already = have.length > 0 && have.every(hosting);
       return {
         ok: false,
-        error: have === 0 ? `${def.name} precisa de ${FOUNDATION_LABEL[def.requires]} instalado antes.` : `Sem slots livres em ${FOUNDATION_LABEL[def.requires]}${copies > 1 ? ' (precisa de dois, um de cada lado)' : ''}.`,
+        error:
+          have.length === 0
+            ? `${def.name} precisa de ${FOUNDATION_LABEL[def.requires]} instalado antes.`
+            : already
+              ? `Você já tem ${def.name} em ${FOUNDATION_LABEL[def.requires]}.`
+              : `Sem slots livres em ${FOUNDATION_LABEL[def.requires]}${copies > 1 ? ' (precisa de dois, um de cada lado)' : ''}.`,
       };
     }
     parents.push(...free.slice(0, copies).map(f => f.item.id));
@@ -311,6 +323,10 @@ export function removeCyberware(s0: GameState, idOrKey: string): RemoveResult {
     inventory: c.inventory.filter(i => i.implant !== cw.id),
     humanity: { ...c.humanity, max: c.humanity.max + (def ? maxHumanityPenalty(def) : cw.humanityLoss > 0 ? 2 : 0) },
   };
+  // Tirar o reforço muscular baixa o CORPO e, com ele, a capacidade: o resto do cromo não pode ficar acima do teto.
+  if (cyberCapacityUsed(character) > cyberCapacityMax(character)) {
+    return { ok: false, error: `Sem ${cw.name}, seu corpo sustenta ${cyberCapacityMax(character)} de cromo, mas o que sobra usa ${cyberCapacityUsed(character)}. Remova outros implantes antes.` };
+  }
   const s = emit({ ...s0, character }, 'ITEM_REMOVED', `Implante removido: ${cw.name}`, { target: cw.id });
   return { ok: true, state: s, summary: `${cw.name} removido. A Humanidade máxima volta a ${character.humanity.max} (a perdida só volta com terapia).` };
 }
